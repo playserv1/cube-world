@@ -81,6 +81,6 @@ and death. Every world change goes through platform data so the other servers se
 - The keys for sprinting and sneaking are swapped on request: Shift sprints, Ctrl sneaks (Minecraft: Ctrl sprints, Shift sneaks).
 - Players hold no tools, so stone, bricks and gold take the by-hand time and drop nothing.
 - No hunger: regeneration runs as if food were full. No day and night, mobs, crafting, water or redstone.
-- Hitting works between players on the same server; across a region border players see each other but cannot hit.
+- A hit on a player another server hosts travels through platform data (WorldHit), so anyone within reach can be hit, whichever region they stand in.
 - The world is a small flat slab with a ceiling at 64, and its floor colours mark the three servers.
 - Every player starts with 64 of each block and a cloud function adds one of each per minute.

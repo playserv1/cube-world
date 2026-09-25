@@ -43,6 +43,20 @@ public sealed class WorldPresence
     public long seen_at { get; set; }
 }
 
+/// <summary>A hit on a player another server hosts: written by the attacker's server, applied by the victim's.</summary>
+[EntityName("WorldHit")]
+public sealed class WorldHit
+{
+    public string hit_id { get; set; } = "";
+    public string victim { get; set; } = "";
+    public string attacker { get; set; } = "";
+    public double damage { get; set; }
+    public double kx { get; set; }
+    public double ky { get; set; }
+    public double strength { get; set; }
+    public long at { get; set; }
+}
+
 [EntityName("WorldRegion")]
 public sealed class WorldRegion
 {

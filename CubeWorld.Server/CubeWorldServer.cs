@@ -81,6 +81,7 @@ public sealed class CubeWorldServer : PlatformGameServer
         Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key");
         Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
         Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
+        Platform.RuntimeData.Subscribe(Uplink, "WorldHit", "field:hit_id");
     }
 
     private async Task<int> ClaimRegionAsync()
@@ -305,26 +306,39 @@ public sealed class CubeWorldServer : PlatformGameServer
         Publish(update);
     }
 
+    /// <summary>A hit on whoever is within reach: a player on this server, or one another server hosts.</summary>
     private void Attack(Player player, Command command)
     {
-        if (player.Dead || command.target is null || !_players.TryGetValue(command.target, out var victim) || victim == player || victim.Dead) return;
+        if (player.Dead || command.target is null || command.target == player.Pose.player_id) return;
+        var local = _players.GetValueOrDefault(command.target);
+        var pose = local?.Pose ?? _elsewhere.GetValueOrDefault(command.target);
+        if (pose is null || local is { Dead: true } || pose.health <= 0 || (local is null && Now - pose.seen_at > 5000)) return;
 
         // A hand recharges in 5 ticks; a hit before that is weaker: 20 % plus 80 % of the charge squared.
         var charge = Math.Min(1.0, (_tick - player.LastAttackTick) / (double)Spec.FistChargeTicks);
         player.LastAttackTick = _tick;
 
         var (ex, ey, ez) = Eye(player);
-        if (World.DistanceToHitbox(ex, ey, ez, HitboxOf(victim.Pose)) > Spec.EntityReach + Spec.ReachTolerance) return;
+        if (World.DistanceToHitbox(ex, ey, ez, HitboxOf(pose)) > Spec.EntityReach + Spec.ReachTolerance) return;
 
         var damage = Spec.FistDamage * (0.2 + 0.8 * charge * charge);
-        double dx = victim.Pose.x - player.Pose.x, dy = victim.Pose.y - player.Pose.y;
+        double dx = pose.x - player.Pose.x, dy = pose.y - player.Pose.y;
         var length = Math.Sqrt(dx * dx + dy * dy);
         if (length < 1e-4) { dx = -Math.Sin(player.Pose.yaw); dy = Math.Cos(player.Pose.yaw); length = 1; }
         var strength = Spec.Knockback + (player.Pose.sprinting == 1 ? Spec.SprintKnockback : 0);
-        Hurt(victim, damage, (dx / length, dy / length), strength, player);
+
+        if (local is not null) { Hurt(local, damage, (dx / length, dy / length), strength, player.Pose.player_id); return; }
+
+        // The victim is on another server: hand the hit over through platform data; that server applies it.
+        var hit = new WorldHit
+        {
+            hit_id = $"{player.Pose.player_id}:{_tick}:{Guid.NewGuid():N}", victim = command.target, attacker = player.Pose.player_id,
+            damage = damage, kx = dx / length, ky = dy / length, strength = strength, at = Now,
+        };
+        Platform.RuntimeData.Write(Uplink, "WorldHit", hit.hit_id, hit);
     }
 
-    private void Hurt(Player victim, double damage, (double x, double y)? direction, double strength, Player? by)
+    private void Hurt(Player victim, double damage, (double x, double y)? direction, double strength, string? by)
     {
         if (victim.Dead || _tick - victim.LastHurtTick < Spec.InvulnerabilityTicks) return;
         victim.LastHurtTick = _tick;
@@ -332,14 +346,14 @@ public sealed class CubeWorldServer : PlatformGameServer
         victim.Moved = true;
         Broadcast(new
         {
-            type = "hurt", player = victim.Pose.player_id, health = victim.Pose.health, by = by?.Pose.player_id,
+            type = "hurt", player = victim.Pose.player_id, health = victim.Pose.health, by,
             kx = direction?.x * strength ?? 0, ky = direction?.y * strength ?? 0, strength = direction is null ? 0 : strength,
         });
 
         if (victim.Pose.health > 0) return;
         victim.Dead = true;
         StopDig(victim);
-        Broadcast(new { type = "death", player = victim.Pose.player_id, by = by?.Pose.player_id });
+        Broadcast(new { type = "death", player = victim.Pose.player_id, by });
     }
 
     private void Respawn(Player player)
@@ -413,6 +427,12 @@ public sealed class CubeWorldServer : PlatformGameServer
             case "WorldPresence" when update.Data.Deserialize<WorldPresence>() is { } pose:
                 if (update.IsDelete) _elsewhere.TryRemove(pose.player_id, out _);
                 else _elsewhere[pose.player_id] = pose;
+                break;
+
+            case "WorldHit" when !update.IsDelete && update.Data.Deserialize<WorldHit>() is { } hit
+                                 && Now - hit.at < 5000 && _players.TryGetValue(hit.victim, out var victim):
+                lock (_world) Hurt(victim, hit.damage, (hit.kx, hit.ky), hit.strength, hit.attacker);
+                Platform.RuntimeData.Delete(Uplink, "WorldHit", hit.hit_id);
                 break;
         }
     }
