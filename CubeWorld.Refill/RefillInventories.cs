@@ -1,3 +1,4 @@
+using System.Text.Json;
 using PlayServ.Sdk;
 using PlayServ.Sdk.Data;
 
@@ -8,29 +9,58 @@ public sealed class CubeInventory
 {
     public string player_id { get; set; } = "";
     public int cubes { get; set; }
+    public string stacks { get; set; } = "";
 }
 
-public sealed record RefillRequest(int? Amount);
-
-public sealed class RefillInventories : PlatformFunction<RefillRequest>
+/// Every minute: every player gets one more block of each kind, up to 64.
+public sealed class RefillInventories : PlatformFunction<object>
 {
-    private const int MaxCubes = 10;
+    private const int StackSize = 64;
+    private static readonly string[] Kinds = ["grass", "dirt", "sand", "stone", "wood", "brick", "glass", "gold", "leaves"];
 
-    protected override async Task<FunctionResponse> HandleAsync(RefillRequest body, CancellationToken ct)
+    private ITable<CubeInventory> Inventories => Platform.Table<CubeInventory>();
+
+    protected override async Task<FunctionResponse> HandleAsync(object _, CancellationToken ct)
     {
-        var amount = body.Amount ?? 3;
-        var inventories = Platform.Table<CubeInventory>();
-        var refilled = 0;
-
-        foreach (var row in await inventories.Query().Where(i => i.cubes < MaxCubes).Take(200).ToListAsync(ct))
+        foreach (var player in await LoadInventories(ct))
         {
-            var inventory = row.Fields!;
-            inventory.cubes = Math.Min(MaxCubes, inventory.cubes + amount);
-            await inventories.UpsertByAsync(i => i.player_id, inventory.player_id, UpsertMode.Managed, inventory, ct);
-            refilled++;
+            var stacks = ReadStacks(player);
+            GiveOneOfEachKind(stacks);
+            await Save(player, stacks, ct);
         }
 
-        await Platform.Log($"refilled {refilled} inventories by {amount}", ct: ct);
-        return FunctionResponse.Json(new { refilled, amount });
+        return FunctionResponse.Json(new { ok = true });
+    }
+
+    private async Task<List<CubeInventory>> LoadInventories(CancellationToken ct)
+    {
+        var rows = await Inventories.Query().Take(200).ToListAsync(ct);
+        return rows.Select(r => r.Fields!).ToList();
+    }
+
+    /// How many blocks of each kind the player has, e.g. { "sand": 12, "stone": 64 }.
+    private static Dictionary<string, int> ReadStacks(CubeInventory player)
+    {
+        if (string.IsNullOrEmpty(player.stacks))
+        {
+            return new Dictionary<string, int>();
+        }
+
+        return JsonSerializer.Deserialize<Dictionary<string, int>>(player.stacks)!;
+    }
+
+    private static void GiveOneOfEachKind(Dictionary<string, int> stacks)
+    {
+        foreach (var kind in Kinds)
+        {
+            stacks[kind] = Math.Min(StackSize, stacks.GetValueOrDefault(kind) + 1);
+        }
+    }
+
+    private async Task Save(CubeInventory player, Dictionary<string, int> stacks, CancellationToken ct)
+    {
+        player.stacks = JsonSerializer.Serialize(stacks);
+        player.cubes = stacks.Values.Sum();
+        await Inventories.UpsertByAsync(i => i.player_id, player.player_id, UpsertMode.Managed, player, ct);
     }
 }
