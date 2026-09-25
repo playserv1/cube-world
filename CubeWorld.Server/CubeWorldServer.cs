@@ -52,7 +52,7 @@ public sealed class CubeWorldServer : PlatformGameServer
             catch { }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
-        await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, world ready");
+        await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, world ready");
         _ = Task.Run(ShareMovesAsync);
         _ = Task.Run(TickAsync);
 
