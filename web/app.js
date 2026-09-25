@@ -428,8 +428,9 @@ function gameTick() {
     const input = controls.isLocked ? {
       forward: (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0),
       strafe: (keys.has("KeyA") ? 1 : 0) - (keys.has("KeyD") ? 1 : 0),
-      jump: keys.has("Space"), sneak: keys.has("ShiftLeft") || keys.has("ShiftRight"),
-      sprint: keys.has("ControlLeft") || keys.has("ControlRight"), yaw,
+      // Swapped from Minecraft's default on request: Shift sprints, Ctrl sneaks.
+      jump: keys.has("Space"), sneak: keys.has("ControlLeft") || keys.has("ControlRight"),
+      sprint: keys.has("ShiftLeft") || keys.has("ShiftRight"), yaw,
     } : { forward: 0, strafe: 0, jump: false, sneak: false, sprint: false, yaw };
     pushAway(me, avatarBoxes());
     physicsTick(me, input, world.isSolidForPhysics);

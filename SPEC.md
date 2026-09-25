@@ -17,8 +17,8 @@ Every mechanic below follows the [Minecraft Wiki](https://minecraft.wiki). The c
 | Hitbox | 0.6 × 1.8 blocks, 1.5 tall sneaking | [Player](https://minecraft.wiki/w/Player) |
 | Eye height | 1.62, 1.27 sneaking | [Player](https://minecraft.wiki/w/Player) |
 | Walking | 4.317 m/s (acceleration 0.1/tick, keyboard input × 0.98, friction 0.91 × slipperiness 0.6) | [Walking](https://minecraft.wiki/w/Walking), [Entity § Motion](https://minecraft.wiki/w/Entity) |
-| Sprinting | 5.612 m/s (+30 %), Ctrl, needs forward input, FOV × 1.15 | [Sprinting](https://minecraft.wiki/w/Sprinting) |
-| Sneaking | 1.295 m/s (× 0.3), Shift, the player cannot walk off an edge, the name tag hides | [Sneaking](https://minecraft.wiki/w/Sneaking) |
+| Sprinting | 5.612 m/s (+30 %), Shift (see the deviations), needs forward input, FOV × 1.15 | [Sprinting](https://minecraft.wiki/w/Sprinting) |
+| Sneaking | 1.295 m/s (× 0.3), Ctrl (see the deviations), the player cannot walk off an edge, the name tag hides | [Sneaking](https://minecraft.wiki/w/Sneaking) |
 | Air control | acceleration 0.02/tick, friction 0.91 | [Entity § Motion](https://minecraft.wiki/w/Entity) |
 | Gravity | 0.08 blocks/tick², vertical drag 0.98, terminal velocity 3.92 blocks/tick (78.4 m/s) | [Entity § Motion](https://minecraft.wiki/w/Entity) |
 | Jump | 0.42 blocks/tick up, 1.2522 blocks high, +0.2 forward when sprinting, 10 ticks between jumps while the key is held | [Jumping](https://minecraft.wiki/w/Jumping) |
@@ -78,6 +78,7 @@ and death. Every world change goes through platform data so the other servers se
 
 ## Where this world differs, on purpose
 
+- The keys for sprinting and sneaking are swapped on request: Shift sprints, Ctrl sneaks (Minecraft: Ctrl sprints, Shift sneaks).
 - Players hold no tools, so stone, bricks and gold take the by-hand time and drop nothing.
 - No hunger: regeneration runs as if food were full. No day and night, mobs, crafting, water or redstone.
 - Hitting works between players on the same server; across a region border players see each other but cannot hit.
