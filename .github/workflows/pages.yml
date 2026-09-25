@@ -4,10 +4,9 @@
 # a page on https may not open an insecure WebSocket.
 name: Publish web client to GitHub Pages
 
+# Manual until Pages is enabled in the repository settings (source "GitHub Actions" and a custom
+# domain served over http); on a push it would only fail while Pages is off.
 on:
-  push:
-    branches: [dev, main]
-    paths: ['web/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
