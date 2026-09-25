@@ -163,12 +163,12 @@ public sealed class CubeWorldServer : PlatformGameServer
         if (stage != dig.Stage)
         {
             dig.Stage = stage;
-            Broadcast(new { type = "dig", player = player.Pose.player_id, dig.X, dig.Y, dig.Z, stage });
+            Broadcast(new { type = "dig", player = player.Pose.player_id, x = dig.X, y = dig.Y, z = dig.Z, stage });
         }
         if (elapsed < dig.Ticks) return;
 
         player.Dig = null;
-        Broadcast(new { type = "dig", player = player.Pose.player_id, dig.X, dig.Y, dig.Z, stage = -1 });
+        Broadcast(new { type = "dig", player = player.Pose.player_id, x = dig.X, y = dig.Y, z = dig.Z, stage = -1 });
         if (_world.Break(dig.X, dig.Y, dig.Z, player.Pose.player_id, _server) is not { } broken) return;
 
         if (broken.Broken.Drop is { } drop && player.Inventory.Give(drop)) ShareInventory(player);
@@ -179,7 +179,7 @@ public sealed class CubeWorldServer : PlatformGameServer
     {
         if (player.Dig is not { } dig) return;
         player.Dig = null;
-        Broadcast(new { type = "dig", player = player.Pose.player_id, dig.X, dig.Y, dig.Z, stage = -1 });
+        Broadcast(new { type = "dig", player = player.Pose.player_id, x = dig.X, y = dig.Y, z = dig.Z, stage = -1 });
     }
 
     protected override async Task OnPlayerConnected(PlayerSession session)
@@ -349,7 +349,7 @@ public sealed class CubeWorldServer : PlatformGameServer
     private void Publish(WorldUpdate update)
     {
         foreach (var fall in update.Falls)
-            Broadcast(new { type = "fall", fall.Kind, fall.X, fall.Y, fall.FromZ, fall.ToZ });
+            Broadcast(new { type = "fall", kind = fall.Kind, x = fall.X, y = fall.Y, fromZ = fall.FromZ, toZ = fall.ToZ });
         foreach (var (op, cube) in update.Changes)
         {
             if (op == "delete") Platform.RuntimeData.Delete(Uplink, "WorldCube", cube.key);

@@ -8,7 +8,7 @@ Everything below runs against the dev platform, `https://dev.platform.playserv.i
 | # | who | step |
 |---|---|---|
 | A1 | agent (MCP) | `create_project(name="Cube World", region="fra")` → `$PROJECT` |
-| A2 | agent (MCP) | `apply_schema_state` with four entities: `WorldCube` (`key` text **primary**, `x` `y` `z` integer, `kind` text, `placed_by` text, `placed_on` text), `CubeInventory` (`player_id` text **primary**, `cubes` integer indexed), `WorldPresence` (`player_id` text **primary**, `name` `server` `color` text, `x` `y` `z` `yaw` decimal, `seen_at` integer) and `WorldRegion` (`region` text **primary**, `server` `color` `room` text, `seen_at` integer) |
+| A2 | agent (MCP) | `apply_schema_state` with four entities: `WorldCube` (`key` text **primary**, `x` `y` `z` integer, `kind` text, `placed_by` text, `placed_on` text), `CubeInventory` (`player_id` text **primary**, `cubes` integer indexed, `stacks` text), `WorldPresence` (`player_id` text **primary**, `name` `server` `color` text, `x` `y` `z` `yaw` `pitch` `health` decimal, `sneaking` `sprinting` `seen_at` integer) and `WorldRegion` (`region` text **primary**, `server` `color` `room` text, `seen_at` integer) |
 | A3 | agent (MCP) | `create_api_key(type="server")` → `$SK`; `create_api_key(type="client")` → `$PK` |
 | A4 | agent (MCP) | `create_function(name="cubeworld", slug=$SLUG, runtime="dotnet10", kind="game_server", hosting_mode="multi-room")` → `$FN` |
 | A5 | agent (MCP) | `set_room_configuration(function_id=$FN, capacity=16, reservation_ttl_seconds=20, room_lifetime_seconds=86400, room_idle_timeout_seconds=60, max_rooms=20)` |

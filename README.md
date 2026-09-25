@@ -5,7 +5,7 @@ and break cubes, see each other across the whole world, and walk from one server
 into the next without a loading screen. Several copies of one C# game server run on
 platform machines; none of them owns the world. The cubes live in platform
 data, and every server hears every change the moment another server writes it. A cloud
-function refills each player's cubes once a minute.
+function tops up each player's blocks once a minute.
 
 ## What it shows
 
@@ -24,8 +24,9 @@ function refills each player's cubes once a minute.
 
 | Path | What |
 |---|---|
-| `CubeWorld.Server/World.cs` | The two tables and the world's rules: stack, break, apply a change from elsewhere. |
-| `CubeWorld.Server/CubeWorldServer.cs` | The game server: loads the world, keeps its room open, answers players, writes and hears changes. |
+| `CubeWorld.Server/Spec.cs` | The Minecraft numbers and the block registry (hardness, drops, gravity). |
+| `CubeWorld.Server/World.cs` | The tables and the world's rules: superflat terrain, place against a face, break, falling sand, apply a change from elsewhere, the inventory. |
+| `CubeWorld.Server/CubeWorldServer.cs` | The game server: loads the world, keeps its room open, ticks 20 times a second, times digs, deals damage, writes and hears changes. |
 | `CubeWorld.Refill/` | The refill function. |
 | `CubeWorld.Tests/` | The world's rules. |
 | `web/` | The browser client, a static page. |
@@ -47,5 +48,7 @@ python3 -m http.server 5173 -d web
 
 Fill `config.js` with the API URL, the project's client key and the game server's slug,
 then open `http://localhost:5173` in several tabs and pick a different server in each.
+`http://localhost:5173/?offline=1` runs the client alone, without the platform: a local world with
+one other player, for looking at blocks, physics and the model.
 
 Deploying the servers and the function is in `RUNBOOK.md`.

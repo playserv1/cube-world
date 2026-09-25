@@ -3,26 +3,39 @@ body { margin: 0; display: flex; height: 100vh; font: 14px/1.4 system-ui, sans-s
 aside { width: 280px; padding: 16px; overflow-y: auto; background: #111c28; border-right: 1px solid #1f2d3d; }
 main { flex: 1; position: relative; overflow: hidden; }
 #view { position: absolute; inset: 0; }
-#view canvas { display: block; }
+#view canvas { display: block; image-rendering: pixelated; }
 #banner { position: absolute; top: 12px; left: 12px; padding: 6px 12px; border-radius: 6px; background: rgba(0,0,0,.45); font-weight: 600; }
-#crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 22px; color: #fff; text-shadow: 0 0 3px #000; pointer-events: none; }
+#crosshair { position: absolute; top: 50%; left: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); pointer-events: none; mix-blend-mode: difference; }
+#crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; }
+#crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+#crosshair::after { top: 8px; left: 0; width: 18px; height: 2px; }
+#hurt { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, rgba(255,0,0,0) 45%, rgba(220,0,0,.45) 100%); opacity: 0; transition: opacity .15s; }
+#hud { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: flex-start; gap: 4px; pointer-events: none; }
+#hearts { display: flex; gap: 1px; height: 20px; }
+#hearts i { width: 18px; height: 18px; background: #3b0a0a; clip-path: polygon(50% 100%, 10% 55%, 0 35%, 10% 10%, 30% 0, 50% 15%, 70% 0, 90% 10%, 100% 35%, 90% 55%); position: relative; }
+#hearts i.full { background: #e0201c; }
+#hearts i.half { background: linear-gradient(90deg, #e0201c 50%, #3b0a0a 50%); }
+#hotbar { display: flex; gap: 2px; padding: 2px; background: rgba(0,0,0,.55); border: 2px solid #8b8b8b; pointer-events: auto; }
+#hotbar .slot { width: 44px; height: 44px; position: relative; border: 2px solid #555; background: rgba(139,139,139,.35); }
+#hotbar .slot.selected { border-color: #fff; outline: 2px solid #fff; }
+#hotbar .slot img { width: 100%; height: 100%; image-rendering: pixelated; }
+#hotbar .slot.empty img { opacity: .3; }
+#hotbar .slot b { position: absolute; right: 2px; bottom: 0; font-size: 13px; color: #fff; text-shadow: 1px 1px 0 #000; }
+#held { align-self: center; color: #fff; text-shadow: 1px 1px 0 #000; font-weight: 600; height: 18px; }
+#death { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: rgba(120,0,0,.55); }
+#death[hidden] { display: none; }
+#death h2 { font-size: 36px; margin: 0; color: #fff; text-shadow: 2px 2px 0 #000; }
+#death button { font-size: 18px; padding: 8px 32px; background: #6b6b6b; border: 2px solid #000; color: #fff; }
 h1 { margin: 0 0 12px; font-size: 20px; }
 h2 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8aa0b6; }
-h2 small { text-transform: none; letter-spacing: 0; }
 ul { list-style: none; margin: 0; padding: 0; }
 #servers li { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; margin-bottom: 4px; border-radius: 6px; background: #172433; border-left: 6px solid var(--c, #555); }
 #servers li.current { outline: 2px solid #fff; }
 button { font: inherit; color: inherit; background: #1e3a52; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button:hover { background: #26506f; }
-#inventory { display: flex; gap: 3px; margin-top: 6px; }
-#inventory span { width: 18px; height: 18px; border-radius: 3px; background: #334155; }
-#inventory span.full { background: #facc15; }
-#kinds { display: flex; flex-wrap: wrap; gap: 6px; }
-#kinds button { width: 36px; height: 36px; padding: 0; border: 2px solid transparent; }
-#kinds button.selected { border-color: #fff; }
-#players li { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
-#players i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-#players em { margin-left: auto; font-style: normal; font-size: 12px; }
+#players li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+#players span { margin-left: auto; font-size: 12px; color: #8aa0b6; }
+#players em { font-style: normal; font-size: 12px; }
 .hint { color: #8aa0b6; font-size: 12px; margin-top: 16px; }
 #log { font-size: 11px; color: #8aa0b6; white-space: pre-wrap; max-height: 160px; overflow-y: auto; }
 #join { display: flex; gap: 6px; }

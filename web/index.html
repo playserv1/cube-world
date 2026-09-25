@@ -23,23 +23,30 @@
       <h2>You</h2>
       <form id="join"><input id="name" placeholder="your name" maxlength="20" required><button>Play</button></form>
       <p id="me"></p>
-      <div id="inventory"></div>
-    </section>
-    <section>
-      <h2>Block <small>1–6</small></h2>
-      <div id="kinds"></div>
     </section>
     <section>
       <h2>Players</h2>
       <ul id="players"></ul>
     </section>
-    <p class="hint">Click the world to play. WASD move, mouse look, space jump.<br>Left click places, right click breaks, Esc frees the mouse.<br>Cubes outlined in white came from another server.</p>
+    <p class="hint">Click the world to play. WASD move, mouse look, Space jump, Ctrl sprint, Shift sneak.<br>
+      Hold left click to break, right click places, 1–9 or the wheel picks a block, Esc frees the mouse.<br>
+      Left click a player to hit them.</p>
     <pre id="log"></pre>
   </aside>
   <main>
     <div id="view"></div>
+    <div id="hurt"></div>
     <div id="banner"></div>
-    <div id="crosshair">+</div>
+    <div id="crosshair"></div>
+    <div id="hud">
+      <div id="hearts"></div>
+      <div id="hotbar"></div>
+      <div id="held"></div>
+    </div>
+    <div id="death" hidden>
+      <h2>You died!</h2>
+      <button id="respawn">Respawn</button>
+    </div>
   </main>
   <script src="config.js"></script>
   <script type="module" src="app.js"></script>
