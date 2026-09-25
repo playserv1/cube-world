@@ -6,18 +6,30 @@ using PlayServ.Sdk.Rooms;
 
 namespace CubeWorld.Server;
 
-public sealed class CubeWorldServer : PlatformGameServer
+/// <summary>
+/// The game server. It is the authority Minecraft's server is: it checks reach and the face a block is placed
+/// against, times every dig by the block's hardness, deals damage and knockback, and ticks 20 times a second.
+/// Movement itself is simulated by the client and reported back, as Minecraft clients do.
+/// </summary>
+/// <remarks>
+/// This file is the outline: how the server starts, what one tick does, what a player can do, what it hears from the
+/// other servers. The details are next to it: <c>CubeWorldServer.Players.cs</c> (moving, digging, placing, fighting),
+/// <c>CubeWorldServer.Bombs.cs</c> and <c>CubeWorldServer.Sharing.cs</c> (the regions and the world the servers share).
+/// </remarks>
+public sealed partial class CubeWorldServer : PlatformGameServer
 {
-    private const int MaxCubes = 10;
     private const string Uplink = "";
 
     private readonly World _world = new();
     private readonly ConcurrentDictionary<string, Player> _players = new();
     private readonly ConcurrentDictionary<string, WorldPresence> _elsewhere = new();
+    private readonly Dictionary<string, LiveBomb> _bombs = new();
+    private readonly List<Change> _heard = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));
     private int _region = -1;
     private WorldRegion[] _regions = [];
+    private long _tick;
 
     private string Color => _region >= 0 ? World.RegionColors[_region] : "grey";
 
@@ -26,6 +38,8 @@ public sealed class CubeWorldServer : PlatformGameServer
     private static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     protected override TimeSpan ReconnectGrace => TimeSpan.Zero;
+
+    // ── the server's life ───────────────────────────────────────────────────────────────────────────
 
     protected override Task OnStartupAsync()
     {
@@ -36,198 +50,160 @@ public sealed class CubeWorldServer : PlatformGameServer
 
     private async Task RunAsync()
     {
+        await LoadWorldAndClaimRegion();    // tries again every 5 s until the tables answer and a region is free
+        StartTicking();                     // the game 20 times a second, player positions 5 times a second
+        OpenRoom();
+        await KeepRoomOpen();               // until the operator closes the room
+        await Restart();
+    }
+
+    private async Task LoadWorldAndClaimRegion()
+    {
         while (true)
         {
             try
             {
+                // Subscribe before loading: a change written while the world loads arrives as an update
+                // instead of being missed (applying one that the load already holds changes nothing).
+                Subscribe();
                 _world.Load(await LoadCubesAsync());
+                await LoadBombs();
                 _region = await ClaimRegionAsync();
-                if (_region >= 0) break;
+                if (_region >= 0)
+                {
+                    break;
+                }
             }
-            catch { }
+            catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5 s: {e.Message}"); }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
-        await Platform.Log($"{RoomName}: {_world.Cubes.Count()} cubes loaded, world ready");
-        _ = Task.Run(ShareMovesAsync);
+        await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, {_bombs.Count} bombs, world ready");
+    }
 
+    private void StartTicking()
+    {
+        _ = Task.Run(ShareMovesAsync);
+        _ = Task.Run(TickAsync);
+    }
+
+    private void OpenRoom() => _rooms.GetOrCreate(RoomName);
+
+    /// <summary>The room is gone only when the platform ended it: the operator closed it, or it reached its lifetime.</summary>
+    private async Task KeepRoomOpen()
+    {
+        while (_rooms.Find(RoomName) is { IsDisposed: false })
+        {
+            await SayThisServerIsAlive();
+            await Task.Delay(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    // ── the game tick ───────────────────────────────────────────────────────────────────────────────
+
+    private async Task TickAsync()
+    {
+        var next = Environment.TickCount64;
         while (true)
         {
-            if (_rooms.Find(RoomName) is null or { IsDisposed: true })
+            next += 1000 / Spec.TicksPerSecond;
+            var wait = next - Environment.TickCount64;
+            if (wait > 0) await Task.Delay((int)wait); else next = Environment.TickCount64;
+            Tick();
+        }
+    }
+
+    /// <summary>One tick: digging progresses and finishes, health regenerates, bombs come down and fly.</summary>
+    private void Tick()
+    {
+        _tick++;
+
+        foreach (var player in _players.Values)
+        {
+            Safely("tick", () =>
             {
-                _rooms.Remove(RoomName);
-                _rooms.GetOrCreate(RoomName);
-                foreach (var player in _players.Values)
-                    InRoom(room => room.AddPlayer(new WorldPlayer { Id = player.Pose.player_id, DisplayName = player.Pose.name }));
-            }
-            Platform.RuntimeData.Write(Uplink, "WorldRegion", $"{_region}", Claim(_region));
-            try { _regions = await LiveRegionsAsync(); } catch { }
-            Broadcast(new { type = "regions", regions = _regions });
-            Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key");
-            Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
-            Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
-            await Task.Delay(TimeSpan.FromSeconds(5));
+                ProgressDigging(player);
+                RegenerateHealth(player);
+            });
         }
-    }
 
-    private async Task<int> ClaimRegionAsync()
-    {
-        var regions = Platform.Table<WorldRegion>();
-        for (var region = 0; region < World.RegionColors.Length; region++)
+        Safely("bombs", () =>
         {
-            var holder = (await regions.FindByAsync(r => r.region, $"{region}"))?.Fields;
-            if (holder is not null && holder.server != _server && Now - holder.seen_at < 30_000) continue;
-
-            await regions.UpsertByAsync(r => r.region, $"{region}", UpsertMode.Managed, Claim(region));
-            await Task.Delay(TimeSpan.FromSeconds(1));
-            if ((await regions.FindByAsync(r => r.region, $"{region}"))?.Fields?.server == _server) return region;
-        }
-        return -1;
+            MoveBombs();
+            SendWhatOtherServersChanged();
+        });
     }
 
-    private WorldRegion Claim(int region) => new()
-    {
-        region = $"{region}", server = _server, color = World.RegionColors[region], room = $"{World.RegionColors[region]}-{_server}", seen_at = Now,
-    };
-
-    private static async Task<WorldRegion[]> LiveRegionsAsync()
-    {
-        var rows = await Platform.Table<WorldRegion>().Query().ToListAsync();
-        return rows.Select(r => r.Fields!).Where(r => Now - r.seen_at < 30_000).ToArray();
-    }
-
-    private async Task ShareMovesAsync()
-    {
-        for (var tick = 0; ; tick++)
-        {
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
-
-            if (tick % 2 == 0)
-                foreach (var player in _players.Values.Where(p => p.Moved || Now - p.Pose.seen_at > 2000))
-                {
-                    player.Moved = false;
-                    player.Pose.seen_at = Now;
-                    Platform.RuntimeData.Write(Uplink, "WorldPresence", player.Pose.player_id, player.Pose);
-                }
-
-            var everyone = _players.Values.Select(p => p.Pose)
-                .Concat(_elsewhere.Values.Where(p => Now - p.seen_at < 5000 && !_players.ContainsKey(p.player_id)));
-            Broadcast(new { type = "players", players = everyone });
-        }
-    }
+    // ── players ─────────────────────────────────────────────────────────────────────────────────────
 
     protected override async Task OnPlayerConnected(PlayerSession session)
     {
         var name = session.DisplayName ?? session.Id;
-        var saved = await Platform.Table<CubeInventory>().FindByAsync(i => i.player_id, session.Id);
-        var inventory = saved?.Fields ?? new CubeInventory { player_id = session.Id, cubes = MaxCubes };
-        Platform.RuntimeData.Write(Uplink, "CubeInventory", session.Id, inventory);
+        var inventory = await LoadInventory(session.Id);
+        var player = new Player(session, inventory, WorldPresence.Arriving(Spawn(session.Id, name), _elsewhere.GetValueOrDefault(session.Id), Now));
 
-        var pose = new WorldPresence { player_id = session.Id, name = name, server = _server, color = Color, x = (_region + 0.5) * World.RegionSize, y = World.Depth / 2.0 };
-        _players[session.Id] = new Player(session, inventory, pose);
+        _players[session.Id] = player;
         InRoom(room => room.AddPlayer(new WorldPlayer { Id = session.Id, DisplayName = name }));
-
-        WorldCube[] cubes;
-        lock (_world) cubes = _world.Cubes.ToArray();
-        Send(session, new
-        {
-            type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = pose,
-            width = World.Width, depth = World.Depth, regionSize = World.RegionSize, height = World.Height,
-            kinds = World.Kinds, world = cubes, inventory = inventory.cubes,
-        });
+        SendWelcome(player);
     }
 
     protected override Task OnPlayerMessage(PlayerSession session, byte[] message)
     {
         if (!_players.TryGetValue(session.Id, out var player) || Parse(message) is not { } command) return Task.CompletedTask;
-
-        if (command.op == "move")
-        {
-            player.Pose.x = Math.Clamp(command.x, 0, World.Width);
-            player.Pose.y = Math.Clamp(command.y, 0, World.Depth);
-            player.Pose.z = Math.Clamp(command.z, 0, World.Height + 4);
-            player.Pose.yaw = command.yaw;
-            player.Moved = true;
-        }
-
         InRoom(room => room.MarkActive(room.GetPlayer(session.Id)));
-        if (command.op == "move") return Task.CompletedTask;
-        int x = (int)command.x, y = (int)command.y;
-        WorldCube? cube = null;
+
         lock (_world)
         {
-            if (command.op == "place" && player.Inventory.cubes > 0)
+            switch (command.op)
             {
-                cube = _world.Place(x, y, command.kind ?? "stone", session.Id, _server);
-                if (cube is not null) player.Inventory.cubes--;
+                case "move": Move(player, command); break;
+                case "dig": Dig(player, command); break;
+                case "place": Place(player, command); break;
+                case "attack": Attack(player, command); break;
+                case "respawn": Respawn(player); break;
+                case "throw": Throw(player, command); break;
             }
-            else if (command.op == "break")
-            {
-                cube = _world.Break(x, y);
-            }
         }
-
-        if (cube is null)
-        {
-            Send(session, new { type = "refused", command.op, inventory = player.Inventory.cubes });
-            return Task.CompletedTask;
-        }
-
-        if (command.op == "place")
-        {
-            Platform.RuntimeData.Write(Uplink, "WorldCube", cube.key, cube);
-            Platform.RuntimeData.Write(Uplink, "CubeInventory", session.Id, player.Inventory);
-            Send(session, new { type = "inventory", inventory = player.Inventory.cubes });
-        }
-        else
-        {
-            Platform.RuntimeData.Delete(Uplink, "WorldCube", cube.key);
-        }
-        Broadcast(new { type = "cube", op = command.op == "place" ? "upsert" : "delete", cube, remote = false });
         return Task.CompletedTask;
     }
 
     protected override Task OnPlayerDisconnected(PlayerSession session, DisconnectReason reason)
     {
-        _players.TryRemove(session.Id, out _);
+        if (_players.TryRemove(session.Id, out var player)) lock (_world) StopDig(player);
         Platform.RuntimeData.Delete(Uplink, "WorldPresence", session.Id);
         InRoom(room => room.RemovePlayer(session.Id));
         return Task.CompletedTask;
     }
+
+    // ── what the other servers and the functions changed ────────────────────────────────────────────
 
     private void OnDataChanged(Platform.RuntimeDataUpdate update)
     {
         switch (update.Entity)
         {
             case "WorldCube" when update.Data.Deserialize<WorldCube>() is { } cube:
-                bool changed;
-                lock (_world) changed = _world.Apply(update.Op, cube);
-                if (changed) Broadcast(new { type = "cube", op = update.Op, cube, remote = true });
+                HearCube(update.Op, cube);
                 break;
-
-            case "CubeInventory" when update.Data.Deserialize<CubeInventory>() is { } refill
-                                      && _players.TryGetValue(refill.player_id, out var player):
-                lock (_world) player.Inventory.cubes = Math.Min(refill.cubes, MaxCubes);
-                Send(player.Session, new { type = "inventory", inventory = player.Inventory.cubes });
+            case "CubeInventory" when update.Data.Deserialize<CubeInventory>() is { } refill:
+                HearRefill(refill);
                 break;
-
             case "WorldPresence" when update.Data.Deserialize<WorldPresence>() is { } pose:
-                if (update.IsDelete) _elsewhere.TryRemove(pose.player_id, out _);
-                else _elsewhere[pose.player_id] = pose;
+                HearPresence(pose, update.IsDelete);
+                break;
+            case "WorldHit" when !update.IsDelete && update.Data.Deserialize<WorldHit>() is { } hit:
+                HearHit(hit);
+                break;
+            case "WorldBomb" when !update.IsDelete && update.Data.Deserialize<WorldBomb>() is { } bomb:
+                HearBomb(bomb);
                 break;
         }
     }
 
-    private static async Task<List<WorldCube>> LoadCubesAsync()
+    // ── small helpers ───────────────────────────────────────────────────────────────────────────────
+
+    private static void Safely(string what, Action action)
     {
-        var cubes = new List<WorldCube>();
-        string? cursor = null;
-        do
-        {
-            var page = await Platform.Table<WorldCube>().Query().Take(200).WithCursor(cursor).ToPageAsync();
-            cubes.AddRange(page.Items.Select(r => r.Fields!));
-            cursor = page.NextCursor;
-        } while (!string.IsNullOrEmpty(cursor));
-        return cubes;
+        try { action(); }
+        catch (Exception e) { _ = Platform.Log($"{what}: {e.Message}"); }
     }
 
     private void Broadcast(object frame)
@@ -252,12 +228,12 @@ public sealed class CubeWorldServer : PlatformGameServer
     private static string ServerName(string? machineId) =>
         string.IsNullOrEmpty(machineId) ? "local" : machineId[^5..].ToLowerInvariant();
 
-    private sealed record Player(PlayerSession Session, CubeInventory Inventory, WorldPresence Pose)
+    private sealed record Command(string op, double x, double y, double z, double yaw, double pitch, int nx, int ny, int nz,
+        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting)
     {
-        public bool Moved { get; set; }
+        /// <summary>The block the command points at.</summary>
+        public (int x, int y, int z) Block => ((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z));
     }
-
-    private sealed record Command(string op, double x, double y, double z, double yaw, string? kind);
 }
 
 public sealed class WorldPlayer : RoomPlayer;

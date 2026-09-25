@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="../CubeWorld.Server/CubeWorld.Server.csproj" />
     <ProjectReference Include="../CubeWorld.Refill/CubeWorld.Refill.csproj" />
+    <ProjectReference Include="../CubeWorld.Drop/CubeWorld.Drop.csproj" />
   </ItemGroup>
 
 </Project>
