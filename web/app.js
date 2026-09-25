@@ -44,6 +44,7 @@ async function signIn(name) {
   state.player = OFFLINE ? { player_id: "offline-you", access_token: "", name } : await api("POST", "/auth/players/anon", { display_name: name });
   state.player.name = name;
   $("join").hidden = true;
+  $("name").blur();
   $("me").textContent = name;
 }
 
@@ -503,7 +504,7 @@ function enterOffline() {
   const dummy = { player_id: "offline-steve", name: "Steve", server: "local", color: "blue", x: 39, y: 12, z: 0, yaw: Math.PI, pitch: 0, health: 20, sneaking: 0, sprinting: 0 };
   let dig = null;
   const kindAt = (x, y, z) => overrides.get(`${x}:${y}:${z}`) ?? (z === -4 ? "bedrock" : z === -3 || z === -2 ? "dirt" : z === -1 ? "grass" : "air");
-  const emit = f => onFrame(f);
+  const emit = f => onFrame(f, true);
   const setBlock = (x, y, z, kind) => {
     const cube = { key: `${x}:${y}:${z}`, x, y, z, kind, placed_by: "you", placed_on: "local" };
     const generated = kindAt(x, y, z) === kind && !overrides.has(cube.key);
@@ -588,4 +589,4 @@ $("join").onsubmit = async e => {
     log(err.message);
   }
 };
-window.cubeworld = { state, enter, send, world, avatars, me, camera, aim };
+window.cubeworld = { state, enter, send, world, avatars, me, camera, aim, controls, keys, mouse };
