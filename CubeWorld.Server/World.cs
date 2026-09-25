@@ -158,16 +158,12 @@ public sealed class World
         return Math.Sqrt(dx * dx + dy * dy + dz * dz);
     }
 
+    // Every change is an upsert, even "air" where the terrain is air: the other servers hear an upsert the
+    // moment it is written, while a deleted record does not reach them. So a broken block is written as air.
     private void Set(int x, int y, int z, string kind, string by, string on, WorldUpdate update)
     {
-        var key = Key(x, y, z);
-        if (kind == Generated(x, y, z))
-        {
-            if (_overrides.Remove(key, out var old)) update.Changes.Add(new Change("delete", old));
-            return;
-        }
-        var cube = new WorldCube { key = key, x = x, y = y, z = z, kind = kind, placed_by = by, placed_on = on };
-        _overrides[key] = cube;
+        var cube = new WorldCube { key = Key(x, y, z), x = x, y = y, z = z, kind = kind, placed_by = by, placed_on = on };
+        _overrides[cube.key] = cube;
         update.Changes.Add(new Change("upsert", cube));
     }
 

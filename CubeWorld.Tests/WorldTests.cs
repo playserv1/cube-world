@@ -96,7 +96,7 @@ public class WorldTests
     }
 
     [Fact]
-    public void Breaking_a_generated_block_records_air_and_breaking_a_placed_one_deletes_it()
+    public void Breaking_any_block_writes_air_so_every_server_hears_it()
     {
         var world = new World();
         world.Place(2, 2, -1, 0, 0, 1, "gold", "p", "a", Nobody);
@@ -105,11 +105,12 @@ public class WorldTests
         var (generated, grass) = world.Break(2, 2, -1, "p", "a")!.Value;
 
         Assert.Equal("gold", gold.Kind);
-        Assert.Equal("delete", Assert.Single(placed.Changes).Op);
+        Assert.Equal(("upsert", "air"), (Assert.Single(placed.Changes).Op, placed.Changes[0].Cube.kind));
         Assert.Equal("grass", grass.Kind);
-        Assert.Equal(("upsert", "air"), (generated.Changes[0].Op, generated.Changes[0].Cube.kind));
+        Assert.Equal(("upsert", "air"), (Assert.Single(generated.Changes).Op, generated.Changes[0].Cube.kind));
         Assert.Equal("air", world.KindAt(2, 2, -1));
         Assert.Equal("air", world.KindAt(2, 2, 0));
+        Assert.Equal(2, world.Overrides.Count());
     }
 
     [Fact]

@@ -45,6 +45,9 @@ public sealed class CubeWorldServer : PlatformGameServer
         {
             try
             {
+                // Subscribe before loading: a change written while the world loads arrives as an update
+                // instead of being missed (applying one that the load already holds changes nothing).
+                Subscribe();
                 _world.Load(await LoadCubesAsync());
                 _region = await ClaimRegionAsync();
                 if (_region >= 0) break;
@@ -68,11 +71,16 @@ public sealed class CubeWorldServer : PlatformGameServer
             Platform.RuntimeData.Write(Uplink, "WorldRegion", $"{_region}", Claim(_region));
             try { _regions = await LiveRegionsAsync(); } catch { }
             Broadcast(new { type = "regions", regions = _regions });
-            Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key");
-            Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
-            Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
+            Subscribe();
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
+    }
+
+    private static void Subscribe()
+    {
+        Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key");
+        Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
+        Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
     }
 
     private async Task<int> ClaimRegionAsync()
