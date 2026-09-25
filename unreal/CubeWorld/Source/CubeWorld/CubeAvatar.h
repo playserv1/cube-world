@@ -1,0 +1,68 @@
+// Another player: Minecraft's model (head 8×8×8, body 8×12×4, arms and legs 4×12×4 pixels, 16 pixels to
+// the block, drawn at 15/16) wearing the skin painted from their id, with a walk cycle, a name tag,
+// the sneaking pose and a red flash when hurt. A dead player leaves the map; their tombstone stands where they fell. The model faces +X; the actor's yaw turns it.
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "CubeAvatar.generated.h"
+
+class UProceduralMeshComponent;
+class UMaterialInstanceDynamic;
+class UTextRenderComponent;
+class USceneComponent;
+class ACubeTombstone;
+
+UCLASS()
+class CUBEWORLD_API ACubeAvatar : public AActor
+{
+	GENERATED_BODY()
+
+public:
+	ACubeAvatar();
+	virtual void Tick(float DeltaSeconds) override;
+	virtual void Destroyed() override;
+
+	void Setup(const FString& PlayerId, const FString& Name, UMaterialInterface* SkinBase);
+	/**
+	 * Server coordinates in blocks; yaw and pitch are Minecraft's, in radians. The avatar walks there at a steady
+	 * pace and gets there a bit after the next position is due, so it neither dashes nor waits (web/follow.js).
+	 */
+	void SetTarget(double X, double Y, double Z, double Yaw, double Pitch, bool bSneaking, double Health);
+	void Hurt();
+	bool IsDead() const { return Health <= 0; }
+	/** Not in the latest list: walks on the way it was going for a moment (a border crossing), and leaves after a while. */
+	void MarkMissing() { if (MissingSince == 0) MissingSince = FPlatformTime::Seconds(); }
+	double MissingFor() const { return MissingSince == 0 ? 0 : FPlatformTime::Seconds() - MissingSince; }
+	/** Where a bomb they hold sits: the right arm, which swings as they walk. */
+	USceneComponent* Hand() const { return RightArm; }
+
+	FString PlayerId;
+	double TX = 0, TY = 0, TZ = 0, Yaw = 0, Pitch = 0, Health = 20;
+	bool bSneaking = false;
+
+private:
+	UProceduralMeshComponent* MakeBox(USceneComponent* Pivot, const TCHAR* Name, int32 U, int32 V, int32 W, int32 H, int32 D, const FVector& OffsetPx);
+	USceneComponent* MakePivot(const TCHAR* Name, const FVector& PositionPx);
+
+	UPROPERTY() USceneComponent* Head = nullptr;
+	UPROPERTY() USceneComponent* Body = nullptr;
+	UPROPERTY() USceneComponent* RightArm = nullptr;
+	UPROPERTY() USceneComponent* LeftArm = nullptr;
+	UPROPERTY() USceneComponent* RightLeg = nullptr;
+	UPROPERTY() USceneComponent* LeftLeg = nullptr;
+	UPROPERTY() UTextRenderComponent* Tag = nullptr;
+	UPROPERTY() UMaterialInstanceDynamic* Skin = nullptr;
+	UPROPERTY() ACubeTombstone* Tomb = nullptr;
+	FVector Last = FVector::ZeroVector;
+	/** What is drawn: the actor walks from here toward TX, TY, TZ, Yaw, Pitch. */
+	double ShownYaw = 0, ShownPitch = 0;
+	/** Seconds between positions of this player, measured; when the last came; when the avatar reaches it. */
+	double Interval = 0.1, HeardAt = 0, ArriveAt = 0, DrawnAt = 0;
+	/** Blocks a second, from the last two poses heard: how a missing player is carried on. */
+	double VX = 0, VY = 0;
+	double MissingSince = 0;
+	double Swing = 0, Amount = 0;
+	double HurtUntil = 0;
+	bool bPlaced = false;
+};

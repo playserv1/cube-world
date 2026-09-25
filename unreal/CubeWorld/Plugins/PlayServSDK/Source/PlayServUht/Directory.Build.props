@@ -1,0 +1,10 @@
+<Project>
+  <!-- Must be set before Microsoft.Common.props (i.e. here, not in the csproj) so NuGet's
+       MSBuildProjectExtensionsPath follows it — keeps obj\ out of Source\ (Rocket packaging
+       ships sources only; see PlayServUht.ubtplugin.csproj for the matching OutputPath). -->
+  <PropertyGroup>
+    <!-- GetFullPath keeps literal ".." out of the evaluated value — UE 5.8's UBT rejects
+         mid-pattern ".." when evaluating script-module paths for non-editor targets. -->
+    <BaseIntermediateOutputPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\Intermediate\PlayServUht\obj\'))</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

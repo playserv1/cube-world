@@ -1,0 +1,28 @@
+{
+	"FileVersion": 3,
+	"Version": 7,
+	"VersionName": "0.7.0",
+	"FriendlyName": "PlayServ SDK",
+	"Description": "Unreal Engine SDK for PlayServ \u2014 authentication, entity persistence, cloud functions and rooms.",
+	"Category": "Game Services",
+	"CreatedBy": "PlayServ",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Modules": [
+		{
+			"Name": "PlayServRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "PlayServRuntimeTests",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "PlayServEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
