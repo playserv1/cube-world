@@ -47,7 +47,7 @@ public sealed class CubeWorldServer : PlatformGameServer
             catch { }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
-        await Platform.Log($"{RoomName}: {_world.Cubes.Count()} cubes loaded");
+        await Platform.Log($"{RoomName}: {_world.Cubes.Count()} cubes loaded, world ready");
         _ = Task.Run(ShareMovesAsync);
 
         while (true)
