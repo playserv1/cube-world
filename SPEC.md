@@ -54,6 +54,9 @@ Every mechanic below follows the [Minecraft Wiki](https://minecraft.wiki). The c
 | Gravity blocks | sand falls when nothing is under it, at 0.04 blocks/tick² | [Sand](https://minecraft.wiki/w/Sand), [Falling Block](https://minecraft.wiki/w/Falling_Block) |
 | Glass | transparent, faces between two glass blocks are not drawn | [Glass](https://minecraft.wiki/w/Glass) |
 | Terrain | Superflat "Classic Flat": bedrock, dirt, dirt, grass block; the world is 72 × 24 blocks and 68 high (z −4 to 63) | [Superflat](https://minecraft.wiki/w/Superflat) |
+| Trees | oaks, four per region: five logs, two 5 × 5 leaf layers without corners, a 3 × 3 layer and a cross on top; logs and leaves can be cut | [Tree](https://minecraft.wiki/w/Tree), [Oak](https://minecraft.wiki/w/Oak) |
+| Leaves | hardness 0.2, transparent, drop nothing by hand | [Leaves](https://minecraft.wiki/w/Leaves) |
+| Grass colour | tinted per region as Minecraft tints grass per biome: red region warm, blue region cool, green plain | [Color § Biome colors](https://minecraft.wiki/w/Color) |
 | Hotbar | 9 slots, keys 1–9 and the mouse wheel, stacks of 64 | [Hotbar](https://minecraft.wiki/w/Hotbar), [Item § Stacking](https://minecraft.wiki/w/Item) |
 | Block outline | a thin black box around the targeted block | [Block](https://minecraft.wiki/w/Block) |
 

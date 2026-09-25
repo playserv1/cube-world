@@ -4,8 +4,17 @@
 import * as THREE from "three";
 import { TEXTURE_SIZE as T } from "./spec.js";
 
+// Grass is tinted per region, as Minecraft tints it per biome: the server's colour names the tint.
+export const GRASS_TINTS = { green: [93, 160, 60], red: [200, 118, 48], blue: [58, 150, 150] };
+
+export function grassFaces(color) {
+  const tint = GRASS_TINTS[color] ? color : "green";
+  return { top: `grass_top_${tint}`, side: `grass_side_${tint}`, bottom: "dirt" };
+}
+
 export const FACES = {
-  grass: { top: "grass_top", side: "grass_side", bottom: "dirt" },
+  grass: grassFaces("green"),
+  leaves: { top: "leaves", side: "leaves", bottom: "leaves" },
   dirt: { top: "dirt", side: "dirt", bottom: "dirt" },
   sand: { top: "sand", side: "sand", bottom: "sand" },
   stone: { top: "stone", side: "stone", bottom: "stone" },
@@ -17,7 +26,8 @@ export const FACES = {
 };
 
 const CRACKS = Array.from({ length: 10 }, (_, i) => `crack${i}`);
-export const TILES = ["grass_top", "grass_side", "dirt", "sand", "stone", "log_side", "log_top", "brick", "glass", "gold", "bedrock", ...CRACKS];
+const GRASS = Object.keys(GRASS_TINTS).flatMap(t => [`grass_top_${t}`, `grass_side_${t}`]);
+export const TILES = [...GRASS, "leaves", "dirt", "sand", "stone", "log_side", "log_top", "brick", "glass", "gold", "bedrock", ...CRACKS];
 const COLUMNS = 8;
 
 function rng(seed) {
@@ -38,18 +48,23 @@ function noise(g, x0, y0, base, spread, random) {
 }
 
 const painters = {
-  grass_top: (g, x, y, r) => noise(g, x, y, [93, 160, 60], 0.28, r),
+  leaves: (g, x, y, r) => {
+    noise(g, x, y, [58, 122, 40], 0.4, r);
+    for (let i = 0; i < 70; i++) g.clearRect(x + (r() * T | 0), y + (r() * T | 0), 1, 1);
+    for (let i = 0; i < 20; i++) { g.fillStyle = shade([96, 168, 58], 1); g.fillRect(x + (r() * T | 0), y + (r() * T | 0), 1, 1); }
+  },
   dirt: (g, x, y, r) => { noise(g, x, y, [121, 85, 58], 0.3, r); for (let i = 0; i < 14; i++) { g.fillStyle = shade([90, 62, 40], 1); g.fillRect(x + (r() * T | 0), y + (r() * T | 0), 1, 1); } },
   sand: (g, x, y, r) => noise(g, x, y, [219, 205, 160], 0.14, r),
   stone: (g, x, y, r) => { noise(g, x, y, [126, 126, 126], 0.22, r); for (let i = 0; i < 6; i++) { g.fillStyle = shade([100, 100, 100], 1); g.fillRect(x + (r() * 14 | 0), y + (r() * 14 | 0), 2, 1); } },
   bedrock: (g, x, y, r) => { noise(g, x, y, [80, 80, 80], 0.9, r); },
-  grass_side: (g, x, y, r) => {
+  grass_side: (g, x, y, r, tint) => {
     painters.dirt(g, x, y, r);
     for (let px = 0; px < T; px++) {
       const depth = 2 + (r() * 3 | 0);
-      for (let py = 0; py < depth; py++) { g.fillStyle = shade([93, 160, 60], 0.85 + r() * 0.3); g.fillRect(x + px, y + py, 1, 1); }
+      for (let py = 0; py < depth; py++) { g.fillStyle = shade(tint, 0.85 + r() * 0.3); g.fillRect(x + px, y + py, 1, 1); }
     }
   },
+  grass_top: (g, x, y, r, tint) => noise(g, x, y, tint, 0.28, r),
   log_side: (g, x, y, r) => {
     for (let px = 0; px < T; px++) {
       const tone = px % 4 === 0 ? 0.75 : px % 4 === 2 ? 1.05 : 0.92;
@@ -119,6 +134,7 @@ export function buildAtlas() {
   TILES.forEach((name, i) => {
     const x = (i % COLUMNS) * T, y = Math.floor(i / COLUMNS) * T;
     if (name.startsWith("crack")) crack(g, x, y, Number(name.slice(5)));
+    else if (name.startsWith("grass_")) { const [, face, tint] = name.split("_"); painters[`grass_${face}`](g, x, y, random, GRASS_TINTS[tint]); }
     else painters[name](g, x, y, random);
   });
   const texture = new THREE.CanvasTexture(canvas);

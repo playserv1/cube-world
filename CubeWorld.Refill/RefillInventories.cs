@@ -18,7 +18,7 @@ public sealed record RefillRequest(int? Amount);
 public sealed class RefillInventories : PlatformFunction<RefillRequest>
 {
     private const int StackSize = 64;
-    private static readonly string[] Kinds = ["grass", "dirt", "sand", "stone", "wood", "brick", "glass", "gold"];
+    private static readonly string[] Kinds = ["grass", "dirt", "sand", "stone", "wood", "brick", "glass", "gold", "leaves"];
 
     protected override async Task<FunctionResponse> HandleAsync(RefillRequest body, CancellationToken ct)
     {

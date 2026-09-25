@@ -200,7 +200,7 @@ public sealed class CubeWorldServer : PlatformGameServer
         {
             type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = pose,
             width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
-            layers = Spec.Layers.Select(l => new { l.z, l.kind }),
+            layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
             blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
             hotbar = Spec.Placeable, world, inventory = inventory.Stacks, tick = _tick,
         });

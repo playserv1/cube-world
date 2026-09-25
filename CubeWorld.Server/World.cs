@@ -85,6 +85,7 @@ public sealed class World
     public static string Generated(int x, int y, int z)
     {
         if (!Inside(x, y, z)) return "air";
+        if (z >= 0) return Spec.TreeBlocks.GetValueOrDefault(Key(x, y, z), "air");
         foreach (var layer in Spec.Layers) if (layer.z == z) return layer.kind;
         return "air";
     }

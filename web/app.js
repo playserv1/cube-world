@@ -4,7 +4,7 @@ import * as S from "./spec.js";
 import { createBody, tick as physicsTick, knockback, pushAway, bodyHeight, eyeHeight } from "./physics.js";
 import { buildAtlas, blockIcon } from "./textures.js";
 import { buildPlayerModel, animatePlayer } from "./skin.js";
-import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlocks, raycastPlayers } from "./voxels.js";
+import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlocks, raycastPlayers, buildTreeMap, TREES } from "./voxels.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
 const toClient = p => ({ x: p.x, y: p.z, z: p.y });
@@ -119,7 +119,8 @@ function onFrame(frame, teleport) {
     case "welcome": {
       Object.assign(state, { server: frame.server, color: frame.color, region: frame.region ?? -1, regions: frame.regions ?? [],
         regionSize: frame.regionSize, hotbar: frame.hotbar, inventory: frame.inventory, health: frame.you.health, dead: false });
-      world.configure({ width: frame.width, depth: frame.depth, minY: frame.minZ, maxY: frame.maxZ, layers: frame.layers, blocks: frame.blocks });
+      world.configure({ width: frame.width, depth: frame.depth, minY: frame.minZ, maxY: frame.maxZ, layers: frame.layers, blocks: frame.blocks,
+        trees: frame.trees, regionSize: frame.regionSize, regionColors: REGION_COLORS });
       for (const c of frame.world) world.set(c.x, c.z, c.y, c.kind);
       rebuild(world.allChunks());
       for (const crack of cracks.values()) scene.remove(crack);
@@ -498,18 +499,21 @@ function enterOffline() {
     { kind: "brick", Hardness: 2, NeedsTool: true, Transparent: false, Gravity: false, Drop: null, breakTicks: 200 },
     { kind: "glass", Hardness: 0.3, NeedsTool: false, Transparent: true, Gravity: false, Drop: null, breakTicks: 9 },
     { kind: "gold", Hardness: 3, NeedsTool: true, Transparent: false, Gravity: false, Drop: null, breakTicks: 300 },
+    { kind: "leaves", Hardness: 0.2, NeedsTool: false, Transparent: true, Gravity: false, Drop: null, breakTicks: 6 },
   ];
-  const hotbar = ["grass", "dirt", "sand", "stone", "wood", "brick", "glass", "gold"];
+  const hotbar = ["grass", "dirt", "sand", "stone", "wood", "brick", "glass", "gold", "leaves"];
   const overrides = new Map();
+  const trees = buildTreeMap(TREES);
   const dummy = { player_id: "offline-steve", name: "Steve", server: "local", color: "blue", x: 39, y: 12, z: 0, yaw: Math.PI, pitch: 0, health: 20, sneaking: 0, sprinting: 0 };
   let dig = null;
-  const kindAt = (x, y, z) => overrides.get(`${x}:${y}:${z}`) ?? (z === -4 ? "bedrock" : z === -3 || z === -2 ? "dirt" : z === -1 ? "grass" : "air");
+  const generated = (x, y, z) => z >= 0 ? trees.get(`${x},${z},${y}`) ?? "air" : z === -4 ? "bedrock" : z === -3 || z === -2 ? "dirt" : z === -1 ? "grass" : "air";
+  const kindAt = (x, y, z) => overrides.get(`${x}:${y}:${z}`) ?? generated(x, y, z);
   const emit = f => onFrame(f, true);
   const setBlock = (x, y, z, kind) => {
     const cube = { key: `${x}:${y}:${z}`, x, y, z, kind, placed_by: "you", placed_on: "local" };
     const generated = kindAt(x, y, z) === kind && !overrides.has(cube.key);
     if (generated) return;
-    if (kind === (z === -4 ? "bedrock" : z === -3 || z === -2 ? "dirt" : z === -1 ? "grass" : "air")) { overrides.delete(cube.key); emit({ type: "cube", op: "delete", cube, remote: false }); }
+    if (kind === generated(x, y, z)) { overrides.delete(cube.key); emit({ type: "cube", op: "delete", cube, remote: false }); }
     else { overrides.set(cube.key, kind); emit({ type: "cube", op: "upsert", cube, remote: false }); }
   };
   state.socket = {
@@ -558,7 +562,7 @@ function enterOffline() {
   };
   state.room = "offline";
   emit({ type: "welcome", server: "local", color: "grey", region: 1, regions: [], you: { x: 36, y: 12, z: 0, health: 20 },
-    width: 72, depth: 24, regionSize: 24, minZ: -4, maxZ: 64, layers: [{ z: -4, kind: "bedrock" }, { z: -3, kind: "dirt" }, { z: -2, kind: "dirt" }, { z: -1, kind: "grass" }],
+    width: 72, depth: 24, regionSize: 24, minZ: -4, maxZ: 64, layers: [{ z: -4, kind: "bedrock" }, { z: -3, kind: "dirt" }, { z: -2, kind: "dirt" }, { z: -1, kind: "grass" }], trees: TREES,
     blocks, hotbar, world: [], inventory: Object.fromEntries(hotbar.map(k => [k, 64])), tick: 0 });
   let t = 0;
   setInterval(() => {

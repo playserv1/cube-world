@@ -20,6 +20,26 @@ public class WorldTests
     }
 
     [Fact]
+    public void An_oak_stands_at_each_tree_spot_and_its_logs_can_be_cut()
+    {
+        var world = new World();
+        var (x, y) = Spec.Trees[0];
+
+        Assert.Equal("wood", world.KindAt(x, y, 0));
+        Assert.Equal("wood", world.KindAt(x, y, 4));
+        Assert.Equal("leaves", world.KindAt(x, y, 5));
+        Assert.Equal("leaves", world.KindAt(x + 2, y, 3));
+        Assert.Equal("air", world.KindAt(x + 2, y + 2, 3));
+        Assert.Equal("air", world.KindAt(x, y, 7));
+        Assert.Equal(12, Spec.Trees.Length);
+
+        var (update, log) = world.Break(x, y, 0, "p", "a")!.Value;
+        Assert.Equal("wood", log.Kind);
+        Assert.Equal(("upsert", "air"), (update.Changes[0].Op, update.Changes[0].Cube.kind));
+        Assert.Equal("air", world.KindAt(x, y, 0));
+    }
+
+    [Fact]
     public void A_block_is_placed_against_the_face_that_was_clicked()
     {
         var world = new World();

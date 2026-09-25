@@ -3,10 +3,31 @@
 // 0.6, bottom 0.5), glass drawn as a cutout with faces between two glass blocks dropped.
 
 import * as THREE from "three";
-import { FACES } from "./textures.js";
+import { FACES, grassFaces } from "./textures.js";
 
 const CHUNK = 16;
 const key = (x, y, z) => `${x},${y},${z}`;
+
+// Where the oaks stand, in the server's ground coordinates (x, y): four per region, clear of the spawn.
+// Mirrors Spec.Trees on the server; the server also sends the list in its welcome frame.
+export const TREES = [0, 1, 2].flatMap(r => [[r * 24 + 4, 5], [r * 24 + 18, 4], [r * 24 + 6, 18], [r * 24 + 19, 17]].map(([x, y]) => ({ x, y })));
+
+// An oak in client coordinates: five logs, two 5 × 5 leaf layers without corners around the top two logs,
+// a 3 × 3 layer above the trunk and a cross on top. Mirrors Spec.BuildTrees on the server.
+export function buildTreeMap(trees) {
+  const map = new Map();
+  for (const { x: tx, y: ty } of trees) {
+    for (let dy = 0; dy < 5; dy++) map.set(key(tx, dy, ty), "wood");
+    for (let dx = -2; dx <= 2; dx++)
+      for (let dz = -2; dz <= 2; dz++) {
+        const corner = Math.abs(dx) === 2 && Math.abs(dz) === 2, trunk = dx === 0 && dz === 0;
+        for (let dy = 3; dy <= 4; dy++) if (!corner && !trunk && !map.has(key(tx + dx, dy, ty + dz))) map.set(key(tx + dx, dy, ty + dz), "leaves");
+        if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && !map.has(key(tx + dx, 5, ty + dz))) map.set(key(tx + dx, 5, ty + dz), "leaves");
+        if (Math.abs(dx) + Math.abs(dz) <= 1 && !map.has(key(tx + dx, 6, ty + dz))) map.set(key(tx + dx, 6, ty + dz), "leaves");
+      }
+  }
+  return map;
+}
 
 // Each face: normal, the four corners as bottom-left, bottom-right, top-right, top-left seen from outside,
 // its tile (top, side, bottom) and its light.
@@ -23,15 +44,21 @@ export class VoxelWorld {
   constructor() {
     this.width = 72; this.depth = 24; this.minY = -4; this.maxY = 64;
     this.layers = new Map();
+    this.trees = buildTreeMap(TREES);
     this.blocks = new Map();
     this.overrides = new Map();
     this.hidden = new Set();
+    this.regionSize = 24;
+    this.regionColors = ["red", "blue", "green"];
   }
 
-  configure({ width, depth, minY, maxY, layers, blocks }) {
+  configure({ width, depth, minY, maxY, layers, blocks, trees, regionSize, regionColors }) {
     this.width = width; this.depth = depth; this.minY = minY; this.maxY = maxY;
     this.layers = new Map(layers.map(l => [l.z, l.kind]));
+    this.trees = buildTreeMap(trees ?? TREES);
     this.blocks = new Map(blocks.map(b => [b.kind, b]));
+    this.regionSize = regionSize ?? this.regionSize;
+    this.regionColors = regionColors ?? this.regionColors;
     this.overrides.clear();
     this.hidden.clear();
   }
@@ -40,7 +67,13 @@ export class VoxelWorld {
 
   inside(x, y, z) { return x >= 0 && x < this.width && z >= 0 && z < this.depth && y >= this.minY && y < this.maxY; }
 
-  generated(x, y, z) { return this.inside(x, y, z) ? this.layers.get(y) ?? "air" : "air"; }
+  generated(x, y, z) {
+    if (!this.inside(x, y, z)) return "air";
+    if (y >= 0) return this.trees.get(key(x, y, z)) ?? "air";
+    return this.layers.get(y) ?? "air";
+  }
+
+  regionColor(x) { return this.regionColors[Math.floor(x / this.regionSize)] ?? "green"; }
 
   kindAt(x, y, z) {
     const k = key(x, y, z);
@@ -104,7 +137,7 @@ export function meshChunk(world, atlas, materials, id) {
         const kind = world.kindAt(x, y, z);
         if (kind === "air") continue;
         const block = world.block(kind);
-        const faces = FACES[kind] ?? FACES.stone;
+        const faces = kind === "grass" ? grassFaces(world.regionColor(x)) : FACES[kind] ?? FACES.stone;
         const part = block.Transparent ? parts.cutout : parts.opaque;
         for (const side of SIDES) {
           if (!faceVisible(world, kind, block.Transparent, x + side.n[0], y + side.n[1], z + side.n[2])) continue;
