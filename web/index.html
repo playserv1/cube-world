@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cube World</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+  <aside>
+    <h1>Cube World</h1>
+    <section>
+      <h2>Servers</h2>
+      <ul id="servers"></ul>
+    </section>
+    <section>
+      <h2>You</h2>
+      <form id="join"><input id="name" placeholder="your name" maxlength="20" required><button>Play</button></form>
+      <p id="me"></p>
+      <div id="inventory"></div>
+    </section>
+    <section>
+      <h2>Block <small>1–6</small></h2>
+      <div id="kinds"></div>
+    </section>
+    <section>
+      <h2>Players</h2>
+      <ul id="players"></ul>
+    </section>
+    <p class="hint">Click the world to play. WASD move, mouse look, space jump.<br>Left click places, right click breaks, Esc frees the mouse.<br>Cubes outlined in white came from another server.</p>
+    <pre id="log"></pre>
+  </aside>
+  <main>
+    <div id="view"></div>
+    <div id="banner"></div>
+    <div id="crosshair">+</div>
+  </main>
+  <script src="config.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

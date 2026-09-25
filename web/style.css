@@ -1,0 +1,30 @@
+* { box-sizing: border-box; }
+body { margin: 0; display: flex; height: 100vh; font: 14px/1.4 system-ui, sans-serif; background: #0f1720; color: #e5e7eb; }
+aside { width: 280px; padding: 16px; overflow-y: auto; background: #111c28; border-right: 1px solid #1f2d3d; }
+main { flex: 1; position: relative; overflow: hidden; }
+#view { position: absolute; inset: 0; }
+#view canvas { display: block; }
+#banner { position: absolute; top: 12px; left: 12px; padding: 6px 12px; border-radius: 6px; background: rgba(0,0,0,.45); font-weight: 600; }
+#crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 22px; color: #fff; text-shadow: 0 0 3px #000; pointer-events: none; }
+h1 { margin: 0 0 12px; font-size: 20px; }
+h2 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8aa0b6; }
+h2 small { text-transform: none; letter-spacing: 0; }
+ul { list-style: none; margin: 0; padding: 0; }
+#servers li { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; margin-bottom: 4px; border-radius: 6px; background: #172433; border-left: 6px solid var(--c, #555); }
+#servers li.current { outline: 2px solid #fff; }
+button { font: inherit; color: inherit; background: #1e3a52; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { background: #26506f; }
+#inventory { display: flex; gap: 3px; margin-top: 6px; }
+#inventory span { width: 18px; height: 18px; border-radius: 3px; background: #334155; }
+#inventory span.full { background: #facc15; }
+#kinds { display: flex; flex-wrap: wrap; gap: 6px; }
+#kinds button { width: 36px; height: 36px; padding: 0; border: 2px solid transparent; }
+#kinds button.selected { border-color: #fff; }
+#players li { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+#players i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+#players em { margin-left: auto; font-style: normal; font-size: 12px; }
+.hint { color: #8aa0b6; font-size: 12px; margin-top: 16px; }
+#log { font-size: 11px; color: #8aa0b6; white-space: pre-wrap; max-height: 160px; overflow-y: auto; }
+#join { display: flex; gap: 6px; }
+#join input { flex: 1; min-width: 0; font: inherit; color: inherit; background: #0f1720; border: 1px solid #26506f; border-radius: 6px; padding: 4px 8px; }
+#join[hidden] { display: none; }

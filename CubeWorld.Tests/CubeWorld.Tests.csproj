@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>CubeWorld.Tests</RootNamespace>
+    <AssemblyName>CubeWorld.Tests</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <PlayServGenerateEntryPoint>false</PlayServGenerateEntryPoint>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.*" />
+    <PackageReference Include="xunit.v3" Version="4.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../CubeWorld.Server/CubeWorld.Server.csproj" />
+    <ProjectReference Include="../CubeWorld.Refill/CubeWorld.Refill.csproj" />
+  </ItemGroup>
+
+</Project>

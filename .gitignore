@@ -1,0 +1,9 @@
+bin/
+obj/
+.env
+.env.*
+!.env.local.example
+.vs/
+.idea/
+*.user
+web/config.js

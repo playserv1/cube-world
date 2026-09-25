@@ -1,0 +1,8 @@
+{
+  "name": "cubeworld",
+  "kind": "game_server",
+  "language": "csharp",
+  "entry": "CubeWorld.Server.CubeWorldServer",
+  "sdk_version": "1.0.*",
+  "auth": "player"
+}
