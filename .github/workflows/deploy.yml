@@ -84,6 +84,9 @@ name: Auto-deploy to PlayServ
 on:
   push:
     branches: ['**']   # every branch (not tags) — the platform-served mapping decides
+    # A push that only changes the browser client or the docs deploys nothing here:
+    # the client goes to GitHub Pages (pages.yml) and must not roll the game servers.
+    paths-ignore: ['web/**', '.github/workflows/pages.yml', '*.md']
 
 # One deploy at a time per repo: two pushes must never roll a pool at once, and two
 # branches bound to the same env would otherwise race on a first registration.
