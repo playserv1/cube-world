@@ -41,6 +41,8 @@ public sealed partial class CubeWorldServer
         try { _regions = await LiveRegionsAsync(); } catch { }
         Broadcast(new { type = "regions", regions = _regions });
         Subscribe();
+        ReconcileCubesNow();
+        ReadBombsAgainNow();
     }
 
     private static async Task<WorldRegion[]> LiveRegionsAsync()
@@ -92,27 +94,50 @@ public sealed partial class CubeWorldServer
 
     private void HearPresence(WorldPresence pose, bool gone)
     {
-        if (gone) _elsewhere.TryRemove(pose.player_id, out _);
-        else _elsewhere[pose.player_id] = pose;
+        if (gone)
+        {
+            if (WorldPresence.DeleteTakesOut(_elsewhere.GetValueOrDefault(pose.player_id), pose)) _elsewhere.TryRemove(pose.player_id, out _);
+            return;
+        }
+        var before = _elsewhere.GetValueOrDefault(pose.player_id);
+        _elsewhere[pose.player_id] = pose;
+        // A player another server hosts was hurt (a hit from here goes over as a WorldHit, a fall or a blast happens
+        // there): that server tells only its own players, so this one shows ours the flash.
+        if (!_players.ContainsKey(pose.player_id) && WorldPresence.WasHurt(before, pose))
+            Broadcast(new { type = "hurt", player = pose.player_id, health = pose.health, by = (string?)null, kx = 0, ky = 0, strength = 0 });
     }
 
     // ── the blocks ──────────────────────────────────────────────────────────────────────────────────
 
     private static async Task<List<WorldCube>> LoadCubesAsync() =>
-        (await ReadAll(Platform.Table<WorldCube>().Query())).Select(r => r.Fields!).ToList();
+        (await ReadAll(() => Platform.Table<WorldCube>().Query())).Select(r => r.Fields!).ToList();
 
-    /// <summary>Every row a query finds, 200 a page.</summary>
-    private static async Task<List<Record<T>>> ReadAll<T>(RecordQuery<T> query) where T : class
+    /// <summary>
+    /// Every row a query finds, 200 a page, each page the rows after the last record id of the page before (PSV-3014).
+    /// The platform's cursor skips a count of rows in updated_at order, newest first, so a row written or deleted while
+    /// the read ran moved others past a page boundary, and they were never returned: on dev on 2026-10-02 two Unreal
+    /// servers lost 39 and 288 blocks in one read that way. A record id never changes, and the platform filters and sorts
+    /// it with the same collation, so a boundary stays where it was. <paramref name="query"/> makes a fresh query for
+    /// each page, since a query adds every filter it is given to the ones it has.
+    /// </summary>
+    private static async Task<List<Record<T>>> ReadAll<T>(Func<RecordQuery<T>> query) where T : class
     {
         var rows = new List<Record<T>>();
-        string? cursor = null;
-        do
+        string? after = null;
+        while (true)
         {
-            var page = await query.Take(200).WithCursor(cursor).ToPageAsync();
+            var next = query().WithSort("id", "asc").Take(200);
+            if (after is not null) next.WithFilters(new RecordFilterTerm("id", "gt", after));
+            var page = await next.ToPageAsync();
             rows.AddRange(page.Items);
-            cursor = page.NextCursor;
-        } while (!string.IsNullOrEmpty(cursor));
-        return rows;
+            if (string.IsNullOrEmpty(page.NextCursor)) return rows;
+            // A page that names no last row, or the one the page before ended on, cannot be followed: the read fails
+            // rather than come back short, since a caller takes a short read for the whole table.
+            var last = page.Items.Count > 0 ? page.Items[^1].Id : null;
+            if (string.IsNullOrEmpty(last) || last == after)
+                throw new InvalidOperationException("a page said more rows follow, but it did not end on a new record id");
+            after = last;
+        }
     }
 
     /// <summary>A block changed here: the other servers hear it through platform data, our players see it now.</summary>
@@ -124,6 +149,48 @@ public sealed partial class CubeWorldServer
             else Platform.RuntimeData.Write(Uplink, "WorldCube", cube.key, cube);
         }
         BroadcastCubes(update.Falls, update.Changes, remote: false);
+    }
+
+    /// <summary>
+    /// Every 30 s the whole table is read back and what this server missed is applied: the platform's pushes to a game
+    /// server are lost when the uplink drops for a moment, and nothing replays them, so a block placed or deleted then
+    /// stayed wrong here until the process restarted. A block that changed here since the read began is left as it is;
+    /// a row is taken only when it is newer than what this server holds;
+    /// a block whose row is gone goes back to the terrain (World.Forget), as ACubeWorldGameMode::ReconcileCubes does
+    /// on the Unreal servers.
+    /// </summary>
+    private async Task ReconcileCubesAsync()
+    {
+        var started = Now;
+        long asOf;
+        lock (_world) asOf = _world.Version;
+        var rows = (await ReadAll(() => Platform.Table<WorldCube>().Query())).Select(r => r.Fields!).ToList();
+        int taken = 0, gone;
+        lock (_world)
+        {
+            foreach (var cube in rows)
+            {
+                if (_world.ChangedSince(cube.key, asOf) || !_world.Reconcile(cube, _server, Now)) continue;
+                _heard.Add(new Change("upsert", cube));
+                taken++;
+            }
+            var forgotten = _world.Forget(rows.Select(c => c.key).ToHashSet(), asOf, _server, Now);
+            foreach (var cube in forgotten) _heard.Add(new Change("delete", cube));
+            gone = forgotten.Count;
+        }
+        _cubesReadAt = started;
+        if (taken + gone > 0) _ = Platform.Log($"{RoomName}: blocks read back from the table: {taken} taken, {gone} back to the terrain");
+    }
+
+    private void ReconcileCubesNow()
+    {
+        if (Now - _cubesReadAt < 30_000 || Interlocked.Exchange(ref _reconciling, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            try { await ReconcileCubesAsync(); }
+            catch (Exception e) { _ = Platform.Log($"{RoomName}: blocks not read back, again in 30 s: {e.Message}"); }
+            finally { Interlocked.Exchange(ref _reconciling, 0); }
+        });
     }
 
     private void HearCube(string op, WorldCube cube)

@@ -125,6 +125,20 @@ export class VoxelWorld {
     return ids;
   }
 
+  // The chunks where the blocks differ from a copy taken earlier with snapshot(): a border crossing hears the same
+  // world again from the next server, and only what really changed is meshed again, not the whole world at once.
+  snapshot() { return { size: `${this.width},${this.depth},${this.minY},${this.maxY}`, overrides: new Map(this.overrides), hidden: new Set(this.hidden) }; }
+
+  changedSince(before) {
+    if (!before || before.size !== `${this.width},${this.depth},${this.minY},${this.maxY}`) return this.allChunks();
+    const ids = new Set();
+    const touch = k => { const [x, , z] = k.split(",").map(Number); for (const id of this.chunksAround(x, z)) ids.add(id); };
+    for (const [k, kind] of this.overrides) if (before.overrides.get(k) !== kind) touch(k);
+    for (const k of before.overrides.keys()) if (!this.overrides.has(k)) touch(k);
+    for (const k of before.hidden) if (!this.hidden.has(k)) touch(k);
+    return [...ids];
+  }
+
   allChunks() {
     const ids = [];
     for (let cx = 0; cx * CHUNK < this.width; cx++) for (let cz = 0; cz * CHUNK < this.depth; cz++) ids.push(`${cx},${cz}`);

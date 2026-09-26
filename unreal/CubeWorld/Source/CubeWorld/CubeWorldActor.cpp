@@ -127,7 +127,7 @@ void ACubeWorldActor::Rebuild(const TSet<FIntPoint>& Ids)
 {
 	const double Start = FPlatformTime::Seconds();
 	for (const FIntPoint& Id : Ids) RebuildChunk(Id);
-	if (FParse::Param(FCommandLine::Get(), TEXT("logframes"))) UE_LOG(LogCubeWorld, Log, TEXT("rebuilt %d chunks in %.1f ms"), Ids.Num(), (FPlatformTime::Seconds() - Start) * 1000);
+	if (FParse::Param(FCommandLine::Get(), TEXT("logframes")) || FParse::Param(FCommandLine::Get(), TEXT("logcrossing"))) UE_LOG(LogCubeWorld, Log, TEXT("rebuilt %d chunks in %.1f ms"), Ids.Num(), (FPlatformTime::Seconds() - Start) * 1000);
 }
 
 void ACubeWorldActor::RebuildChunk(const FIntPoint& Id)

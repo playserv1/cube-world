@@ -20,6 +20,15 @@ namespace CubeSpec
 	constexpr double Width = 0.6, Height = 1.8, SneakHeight = 1.5, EyeHeight = 1.62, SneakEyeHeight = 1.27, StepHeight = 0.6;
 	// Reach: 4.5 blocks for blocks, 3 for entities; the server allows a little extra for latency.
 	constexpr double BlockReach = 4.5, EntityReach = 3.0, ReachTolerance = 1.0;
+	// A client walks itself, but no faster than MoveSpeed blocks a second, counted horizontally plus upward (a fall is
+	// free, it reaches 78 m/s): a sprint-jump averages 7.1. Unspent, the allowance holds up to MoveBurst, for the
+	// network's jitter and a crossing's first move; a hit's knockback adds KnockbackReach per unit of strength
+	// (FCubeMoveCheck, Spec.cs). A server digs and places only for a player within BorderSlack of its region.
+	constexpr double MoveSpeed = 10, MoveBurst = 12, MoveSlack = 1, KnockbackReach = 12, BorderSlack = 6.0;
+	// How long a player past the border, in a region another server holds, still digs, places and takes bombs through
+	// the old server: a crossing that works is done by then. One still with the old server after that was not let into
+	// the next room, and can only walk there (CubeServes, Spec.CrossingMs). The client gives up on a crossing after 10 s.
+	constexpr int64 CrossingMs = 5000;
 	constexpr double MaxHealth = 20, KnockbackLift = 0.4, Push = 0.05;
 	constexpr int32 HurtTicks = 10, DigCooldownTicks = 5;
 	// Field of view 70° is Minecraft's VERTICAL angle (Options); Unreal's camera takes the horizontal one, so
@@ -84,6 +93,12 @@ namespace CubeSpec
 struct FBlockDef
 {
 	FName Kind;
+	/**
+	 * The kind as the platform's tables and the JSON clients spell it: the registry's own lowercase name. Never
+	 * Kind.ToString(): an FName keeps the casing its first spelling in the process had, and the engine names "Stone"
+	 * before this registry runs.
+	 */
+	FString Name;
 	double Hardness = 0;
 	bool bNeedsTool = false;
 	bool bTransparent = true;
@@ -123,7 +138,7 @@ namespace CubeSpec
 			for (const FRow& R : Rows)
 			{
 				FBlockDef B;
-				B.Kind = FName(R.Kind); B.Hardness = R.Hardness; B.bNeedsTool = R.bNeedsTool; B.bTransparent = R.bTransparent; B.bGravity = R.bGravity;
+				B.Kind = FName(R.Kind); B.Name = R.Kind; B.Hardness = R.Hardness; B.bNeedsTool = R.bNeedsTool; B.bTransparent = R.bTransparent; B.bGravity = R.bGravity;
 				B.Drop = R.Drop ? FName(R.Drop) : NAME_None; B.BlastResistance = R.Blast;
 				B.BreakTicks = B.IsBreakable() ? FMath::CeilToInt32(R.Hardness * (R.bNeedsTool ? 100 : 30) - 1e-9) : -1;
 				Out.Add(B);
@@ -139,15 +154,31 @@ namespace CubeSpec
 		return Blocks()[0];
 	}
 
-	/** A block kind as one byte on the wire: its index in Blocks(). Unknown kinds are air. */
+	/** On the wire, the kind of a block that goes back to the generated terrain: no override at all (the kind None). */
+	constexpr uint8 GeneratedIndex = 255;
+
+	/** A block kind as one byte on the wire: its index in Blocks(), or GeneratedIndex for None. Unknown kinds are air. */
 	inline uint8 KindIndex(FName Kind)
 	{
+		if (Kind == NAME_None) return GeneratedIndex;
 		const TArray<FBlockDef>& All = Blocks();
 		for (int32 I = 0; I < All.Num(); I++) if (All[I].Kind == Kind) return (uint8)I;
 		return 0;
 	}
 
-	inline FName KindOf(uint8 Index) { return Blocks().IsValidIndex(Index) ? Blocks()[Index].Kind : Blocks()[0].Kind; }
+	inline FName KindOf(uint8 Index) { return Index == GeneratedIndex ? FName(NAME_None) : Blocks().IsValidIndex(Index) ? Blocks()[Index].Kind : Blocks()[0].Kind; }
+
+	/**
+	 * A kind as it goes out to the platform's tables and to the JSON clients: the registry's lowercase spelling, whatever
+	 * casing the FName carries. Until 2026-10-02 the Unreal side wrote FName::ToString(), which gave "Stone": the C#
+	 * servers read it as air and the web client could not draw it.
+	 */
+	inline FString KindName(FName Kind)
+	{
+		if (Kind.IsNone()) return Kind.ToString();
+		for (const FBlockDef& B : Blocks()) if (B.Kind == Kind) return B.Name;
+		return Kind.ToString().ToLower();
+	}
 
 	/** Hotbar order: every placeable kind. */
 	inline const TArray<FName>& Hotbar()

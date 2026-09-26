@@ -5,6 +5,7 @@
 #include "Core/PlayServSettings.h"
 #include "Core/PlayServSubsystem.h"
 #include "Rooms/PlayServAdmissionTable.h"
+#include "Rooms/PlayServLogForwarder.h"
 #include "Rooms/PlayServRoomRuntime.h"
 #include "Core/PlayServHttp.h"
 #include "Rooms/PlayServRoomsClientWire.h"
@@ -778,6 +779,83 @@ bool FPlayServRoomsModuleTest::RunTest(const FString& Parameters)
 
 	FPlayServRoomsTestAccess::End(Server);
 	TestFalse(TEXT("stopped"), Server->IsHosting());
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Module.OperatorRemovesAPlayerAndClosesARoom
+//
+// The admin's Remove player and Delete room (uplink contract §1.4, PSV-2864 / PSV-2862): the hello
+// declares participant_remove and room_close, so the platform sends them; each reaches the game as
+// OnPlayerRemoved / OnRoomEnded with the operator's reason, and is answered ok with its request_id.
+// Without this the platform told the operator not_supported and the player played on.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsOperatorActionsTest,
+	"PlayServ.Rooms.Module.OperatorRemovesAPlayerAndClosesARoom",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsOperatorActionsTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	UPlayServRooms* Server = PS ? PS->GetRooms() : nullptr;
+	if (!TestNotNull(TEXT("rooms module"), Server))
+	{
+		return false;
+	}
+	UPlayServRoomsEventSpy* Spy = NewObject<UPlayServRoomsEventSpy>(GetTransientPackage());
+	Server->OnPlayerRemoved.AddDynamic(Spy, &UPlayServRoomsEventSpy::OnPlayerRemoved);
+	Server->OnRoomEnded.AddDynamic(Spy, &UPlayServRoomsEventSpy::OnRoomEnded);
+
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+	TSharedPtr<FPlayServFakeUplinkTransport> Socket = Factory.Current();
+	Socket->SimulateConnected();
+	// The hello is held here: a range-for over the array of a temporary's object would read it after it is freed.
+	const TSharedPtr<FJsonObject> Hello = Socket->SentJson(0);
+	TSet<FString> Capabilities;
+	for (const TSharedPtr<FJsonValue>& V : Hello->GetArrayField(TEXT("capabilities"))) Capabilities.Add(V->AsString());
+	TestTrue(TEXT("hello declares participant_remove"), Capabilities.Contains(TEXT("participant_remove")));
+	TestTrue(TEXT("hello declares room_close"), Capabilities.Contains(TEXT("room_close")));
+	Socket->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	FPlayServRoomsTestAccess::AddRegisteredRoom(Server, MakeSnapshot(TEXT("blob-7a3f")), Clock.Now);
+
+	// A member is removed: the roster lets them go with a leave, the game hears the operator's reason, the platform an ok.
+	Socket->SimulateMessage(TEXT("{\"type\":\"ticket_offer\",\"reservation_token\":\"rsv_1\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_a\",\"expires_in\":10}"));
+	APlayerController* PlayerA = NewObject<APlayerController>(GetTransientPackage());
+	Server->VerifyTicket(TEXT("rsv_1"));
+	FPlayServRoomsTestAccess::PostLogin(Server, PlayerA, TEXT("203.0.113.5:7777?rsv=rsv_1"));
+	TestTrue(TEXT("plr_a is on the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_a")));
+	Socket->SimulateMessage(TEXT("{\"type\":\"participant_remove\",\"request_id\":\"req-1\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_a\"}"));
+	TestFalse(TEXT("the removed player is off the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_a")));
+	TestTrue(TEXT("the game hears removed_by_operator"), Spy->WasRemoved(TEXT("plr_a"), TEXT("removed_by_operator")));
+	TSharedPtr<FJsonObject> Leave = Socket->LastSentOfType(TEXT("room_presence"));
+	TestTrue(TEXT("a leave frame"), Leave.IsValid() && Leave->GetStringField(TEXT("event")) == TEXT("leave"));
+	TSharedPtr<FJsonObject> Removed = Socket->LastSentOfType(TEXT("participant_remove_result"));
+	TestTrue(TEXT("answered ok with the request_id"), Removed.IsValid() && Removed->GetBoolField(TEXT("ok")) && Removed->GetStringField(TEXT("request_id")) == TEXT("req-1"));
+
+	// One the roster never held is still told to the game (it may hold them) and is answered ok: the outcome holds.
+	Socket->SimulateMessage(TEXT("{\"type\":\"participant_remove\",\"request_id\":\"req-2\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_web\"}"));
+	TestTrue(TEXT("the game hears it for a player off the roster"), Spy->WasRemoved(TEXT("plr_web"), TEXT("removed_by_operator")));
+	Removed = Socket->LastSentOfType(TEXT("participant_remove_result"));
+	TestTrue(TEXT("and it is answered ok"), Removed.IsValid() && Removed->GetBoolField(TEXT("ok")) && Removed->GetStringField(TEXT("request_id")) == TEXT("req-2"));
+
+	// A close ends the room for the game with the operator's reason, and is answered ok; a room not here is ok too.
+	Socket->SimulateMessage(TEXT("{\"type\":\"room_close\",\"request_id\":\"req-3\",\"room_name\":\"blob-7a3f\"}"));
+	TestTrue(TEXT("the game hears room_closed_by_operator"), Spy->Ended.Num() == 1 && Spy->Ended[0].Get<0>() == TEXT("blob-7a3f") && Spy->Ended[0].Get<1>() == TEXT("room_closed_by_operator"));
+	TestEqual(TEXT("the room is gone here"), Server->GetRoomNames().Num(), 0);
+	TSharedPtr<FJsonObject> Closed = Socket->LastSentOfType(TEXT("room_close_result"));
+	TestTrue(TEXT("answered ok with the request_id"), Closed.IsValid() && Closed->GetBoolField(TEXT("ok")) && Closed->GetStringField(TEXT("request_id")) == TEXT("req-3"));
+	Socket->SimulateMessage(TEXT("{\"type\":\"room_close\",\"request_id\":\"req-4\",\"room_name\":\"blob-7a3f\"}"));
+	Closed = Socket->LastSentOfType(TEXT("room_close_result"));
+	TestTrue(TEXT("a room not here is answered ok"), Closed.IsValid() && Closed->GetBoolField(TEXT("ok")) && Closed->GetStringField(TEXT("request_id")) == TEXT("req-4"));
+	TestEqual(TEXT("and the game is not told twice"), Spy->Ended.Num(), 1);
+
+	Server->OnPlayerRemoved.RemoveDynamic(Spy, &UPlayServRoomsEventSpy::OnPlayerRemoved);
+	Server->OnRoomEnded.RemoveDynamic(Spy, &UPlayServRoomsEventSpy::OnRoomEnded);
+	FPlayServRoomsTestAccess::End(Server);
 	return true;
 }
 
@@ -2018,6 +2096,329 @@ bool FPlayServRoomsHostWireTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
+// PlayServ.Rooms.Data.SubscribeResendsAndRoutesUpdates
+//
+// SubscribeData speaks the C# SDK's RuntimeData wire: `subscribe_data` names the entity and its key path, and the
+// platform answers with a `data_update` per changed record, upserts and deletes alike. A subscription lives on the
+// socket it went out on, so every new socket carries it again, and the game hears each time that it went out: what
+// changed in between is not sent again.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsDataSubscriptionTest,
+	"PlayServ.Rooms.Data.SubscribeResendsAndRoutesUpdates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsDataSubscriptionTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+	TArray<FString> Subscribed;
+	TArray<FPlayServDataUpdate> Updates;
+	const FDelegateHandle SubscribedHandle = Server->OnDataSubscribed.AddLambda([&Subscribed](const FString& Entity) { Subscribed.Add(Entity); });
+	const FDelegateHandle UpdateHandle = Server->OnDataUpdate.AddLambda([&Updates](const FPlayServDataUpdate& Update) { Updates.Add(Update); });
+
+	TSharedPtr<FPlayServFakeUplinkTransport> First = Factory.Current();
+	First->SimulateConnected();
+	Server->SubscribeData(TEXT("WorldCube"), TEXT("field:key"));
+	TestEqual(TEXT("nothing goes out before the hello ack"), First->CountSentOfType(TEXT("subscribe_data")), 0);
+	TestEqual(TEXT("and nothing is reported"), Subscribed.Num(), 0);
+
+	First->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	const TSharedPtr<FJsonObject> Frame = First->LastSentOfType(TEXT("subscribe_data"));
+	if (TestNotNull(TEXT("the subscription goes out once the uplink is ready"), Frame.Get()))
+	{
+		TestEqual(TEXT("entity"), Frame->GetStringField(TEXT("entity")), FString(TEXT("WorldCube")));
+		TestEqual(TEXT("key path"), Frame->GetStringField(TEXT("key_path")), FString(TEXT("field:key")));
+		TestTrue(TEXT("project_id and client_key are empty, as the C# SDK sends them"),
+			Frame->HasField(TEXT("project_id")) && Frame->GetStringField(TEXT("project_id")).IsEmpty()
+			&& Frame->HasField(TEXT("client_key")) && Frame->GetStringField(TEXT("client_key")).IsEmpty());
+	}
+	TestEqual(TEXT("sent once"), First->CountSentOfType(TEXT("subscribe_data")), 1);
+	TestTrue(TEXT("and reported"), Subscribed.Num() == 1 && Subscribed[0] == TEXT("WorldCube"));
+
+	// A delete a cloud function made over HTTP, an upsert another server wrote, and a delete with no record.
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"entity\":\"WorldCube\",\"id\":\"rec_1\",\"op\":\"delete\",\"data\":{\"key\":\"5:6:-1\",\"x\":5,\"y\":6,\"z\":-1,\"kind\":\"air\"}}"));
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"entity\":\"WorldCube\",\"id\":\"rec_2\",\"op\":\"upsert\",\"data\":{\"key\":\"1:2:0\",\"x\":1,\"y\":2,\"z\":0,\"kind\":\"brick\"}}"));
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"entity\":\"WorldCube\",\"id\":\"rec_3\",\"op\":\"delete\"}"));
+	if (TestEqual(TEXT("every update reaches the game"), Updates.Num(), 3))
+	{
+		TestTrue(TEXT("a delete is a delete"), Updates[0].IsDelete() && Updates[0].Entity == TEXT("WorldCube") && Updates[0].Id == TEXT("rec_1"));
+		TestTrue(TEXT("with the record it removed"), Updates[0].Data.IsValid() && Updates[0].Data->GetNumberField(TEXT("z")) == -1.0);
+		TestTrue(TEXT("an upsert is not"), !Updates[1].IsDelete() && Updates[1].Data.IsValid() && Updates[1].Data->GetStringField(TEXT("kind")) == TEXT("brick"));
+		TestTrue(TEXT("an update without data still arrives, with none"), Updates[2].IsDelete() && !Updates[2].Data.IsValid());
+	}
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"id\":\"rec_4\",\"op\":\"delete\"}"));
+	TestEqual(TEXT("an update that names no entity is dropped"), Updates.Num(), 3);
+
+	// A renewed session token on the same socket leaves the subscription where it is.
+	First->SimulateMessage(TEXT("{\"type\":\"session_token\",\"session_token\":\"eyJ.renewed.token\",\"expires_in\":3600}"));
+	TestEqual(TEXT("a renewed token sends nothing again"), First->CountSentOfType(TEXT("subscribe_data")), 1);
+
+	// A new socket carries every subscription again, and the game hears that it went out.
+	First->SimulateClosed(1012, TEXT("Service Restart"));
+	Clock.Now += 2.0;
+	FPlayServRoomsTestAccess::Tick(Server, Clock.Now);
+	TSharedPtr<FPlayServFakeUplinkTransport> Second = Factory.Current();
+	TestTrue(TEXT("the client reconnected on a second socket"), Second.IsValid() && Second != First);
+	Second->SimulateConnected();
+	Second->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	TestEqual(TEXT("the new socket subscribes again"), Second->CountSentOfType(TEXT("subscribe_data")), 1);
+	TestEqual(TEXT("and it is reported again"), Subscribed.Num(), 2);
+
+	// On a ready uplink a subscription goes out at once; an entity unsubscribed stays off the next socket.
+	Server->SubscribeData(TEXT("WorldBomb"), TEXT("field:bomb_id"));
+	TestEqual(TEXT("at once on a ready uplink"), Second->CountSentOfType(TEXT("subscribe_data")), 2);
+	Server->UnsubscribeData(TEXT("WorldCube"));
+	const TSharedPtr<FJsonObject> Off = Second->LastSentOfType(TEXT("unsubscribe_data"));
+	TestTrue(TEXT("unsubscribe names the entity"), Off.IsValid() && Off->GetStringField(TEXT("entity")) == TEXT("WorldCube"));
+	Second->SimulateClosed(1012, TEXT("Service Restart"));
+	Clock.Now += 2.0;
+	FPlayServRoomsTestAccess::Tick(Server, Clock.Now);
+	TSharedPtr<FPlayServFakeUplinkTransport> Third = Factory.Current();
+	Third->SimulateConnected();
+	Third->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	const TSharedPtr<FJsonObject> Again = Third->LastSentOfType(TEXT("subscribe_data"));
+	TestTrue(TEXT("only the entity still subscribed goes out"),
+		Third->CountSentOfType(TEXT("subscribe_data")) == 1 && Again.IsValid() && Again->GetStringField(TEXT("entity")) == TEXT("WorldBomb"));
+
+	Server->OnDataSubscribed.Remove(SubscribedHandle);
+	Server->OnDataUpdate.Remove(UpdateHandle);
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Data.WritesGoOutAsDataWriteFrames
+//
+// WriteData and DeleteData speak the C# SDK's RuntimeData wire: a `data_write` frame names the entity, the op, the
+// record's business key and its fields; the platform upserts or deletes the row by that key. project_id is empty, as for
+// a subscription: the platform takes the uplink's own project. A delete carries an empty data object, the shape the
+// platform's contract shows (the C# SDK's delete sent none and never left the server, PSV-2989). Nothing is queued:
+// while the uplink is not ready a write is refused.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsDataWriteTest,
+	"PlayServ.Rooms.Data.WritesGoOutAsDataWriteFrames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsDataWriteTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+	TSharedPtr<FPlayServFakeUplinkTransport> Socket = Factory.Current();
+	Socket->SimulateConnected();
+
+	TSharedRef<FJsonObject> Pose = MakeShared<FJsonObject>();
+	Pose->SetStringField(TEXT("player_id"), TEXT("plr_1"));
+	Pose->SetNumberField(TEXT("x"), 23.5);
+	Pose->SetNumberField(TEXT("sneaking"), 0);
+	TestFalse(TEXT("before the hello ack a write is refused"), Server->WriteData(TEXT("WorldPresence"), TEXT("plr_1"), Pose));
+	TestEqual(TEXT("and nothing goes out, nor later"), Socket->CountSentOfType(TEXT("data_write")), 0);
+
+	Socket->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	TestEqual(TEXT("a refused write is not sent once the uplink is ready"), Socket->CountSentOfType(TEXT("data_write")), 0);
+	TestTrue(TEXT("on a ready uplink a write goes out"), Server->WriteData(TEXT("WorldPresence"), TEXT("plr_1"), Pose));
+	const TSharedPtr<FJsonObject> Upsert = Socket->LastSentOfType(TEXT("data_write"));
+	if (TestNotNull(TEXT("as a data_write frame"), Upsert.Get()))
+	{
+		TestEqual(TEXT("entity"), Upsert->GetStringField(TEXT("entity")), FString(TEXT("WorldPresence")));
+		TestEqual(TEXT("an upsert"), Upsert->GetStringField(TEXT("op")), FString(TEXT("upsert")));
+		TestEqual(TEXT("by its business key"), Upsert->GetStringField(TEXT("id")), FString(TEXT("plr_1")));
+		TestTrue(TEXT("project_id is there and empty"), Upsert->HasField(TEXT("project_id")) && Upsert->GetStringField(TEXT("project_id")).IsEmpty());
+		const TSharedPtr<FJsonObject>* Data = nullptr;
+		TestTrue(TEXT("with the record's fields as an object"), Upsert->TryGetObjectField(TEXT("data"), Data)
+			&& (*Data)->GetNumberField(TEXT("x")) == 23.5 && (*Data)->GetStringField(TEXT("player_id")) == TEXT("plr_1") && (*Data)->HasField(TEXT("sneaking")));
+	}
+
+	TestTrue(TEXT("a delete goes out"), Server->DeleteData(TEXT("WorldPresence"), TEXT("plr_1")));
+	const TSharedPtr<FJsonObject> Delete = Socket->LastSentOfType(TEXT("data_write"));
+	if (TestNotNull(TEXT("as a data_write frame too"), Delete.Get()))
+	{
+		TestEqual(TEXT("a delete"), Delete->GetStringField(TEXT("op")), FString(TEXT("delete")));
+		TestEqual(TEXT("by the same key"), Delete->GetStringField(TEXT("id")), FString(TEXT("plr_1")));
+		const TSharedPtr<FJsonObject>* Data = nullptr;
+		TestTrue(TEXT("with an empty data object, not none"), Delete->TryGetObjectField(TEXT("data"), Data) && (*Data)->Values.Num() == 0);
+	}
+	TestEqual(TEXT("two frames in all"), Socket->CountSentOfType(TEXT("data_write")), 2);
+
+	TestFalse(TEXT("no entity: refused"), Server->WriteData(FString(), TEXT("plr_1"), Pose));
+	TestFalse(TEXT("no key: refused"), Server->DeleteData(TEXT("WorldPresence"), FString()));
+	TestEqual(TEXT("and not sent"), Socket->CountSentOfType(TEXT("data_write")), 2);
+
+	Socket->SimulateClosed(1012, TEXT("Service Restart"));
+	TestFalse(TEXT("a closed uplink refuses a write"), Server->WriteData(TEXT("WorldPresence"), TEXT("plr_1"), Pose));
+
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Logs.LinesWaitForTheUplinkAndGoOutAsLogFrames
+//
+// Log speaks the C# SDK's Platform.Log over the uplink: a `log` frame with message, level and optional data. On a
+// pool server a line logged before the uplink is ready waits for it (the C# SDK's dial-in buffer of 200): the platform
+// files it under the game server's function either way.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	TArray<TSharedPtr<FJsonObject>> SentLogs(const FPlayServFakeUplinkTransport& Transport)
+	{
+		TArray<TSharedPtr<FJsonObject>> Logs;
+		for (int32 I = 0; I < Transport.Sent.Num(); ++I)
+		{
+			const TSharedPtr<FJsonObject> Frame = Transport.SentJson(I);
+			FString Type;
+			if (Frame.IsValid() && Frame->TryGetStringField(TEXT("type"), Type) && Type == TEXT("log")) Logs.Add(Frame);
+		}
+		return Logs;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsLogTest,
+	"PlayServ.Rooms.Logs.LinesWaitForTheUplinkAndGoOutAsLogFrames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsLogTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+
+	TSharedPtr<FPlayServFakeUplinkTransport> First = Factory.Current();
+	First->SimulateConnected();
+	Server->Log(TEXT("world loaded"), EPlayServLogLevel::Info);
+	Server->Log(TEXT("region 3 is held"), EPlayServLogLevel::Warn);
+	TestEqual(TEXT("nothing goes out before the hello ack"), SentLogs(*First).Num(), 0);
+
+	First->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	TArray<TSharedPtr<FJsonObject>> Logs = SentLogs(*First);
+	if (TestEqual(TEXT("the waiting lines go out once the uplink is ready"), Logs.Num(), 2))
+	{
+		TestEqual(TEXT("oldest first"), Logs[0]->GetStringField(TEXT("message")), FString(TEXT("world loaded")));
+		TestEqual(TEXT("info is the C# SDK's info"), Logs[0]->GetStringField(TEXT("level")), FString(TEXT("info")));
+		TestEqual(TEXT("then the warning"), Logs[1]->GetStringField(TEXT("message")), FString(TEXT("region 3 is held")));
+		TestEqual(TEXT("as warn"), Logs[1]->GetStringField(TEXT("level")), FString(TEXT("warn")));
+		TestFalse(TEXT("a line without data carries none"), Logs[0]->HasField(TEXT("data")));
+	}
+
+	// On a ready uplink a line goes at once, with its data.
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetNumberField(TEXT("players"), 3);
+	Server->Log(TEXT("room closed"), EPlayServLogLevel::Error, Data);
+	Logs = SentLogs(*First);
+	if (TestEqual(TEXT("at once on a ready uplink"), Logs.Num(), 3))
+	{
+		TestEqual(TEXT("error"), Logs[2]->GetStringField(TEXT("level")), FString(TEXT("error")));
+		const TSharedPtr<FJsonObject>* Carried = nullptr;
+		TestTrue(TEXT("with its data"), Logs[2]->TryGetObjectField(TEXT("data"), Carried) && (*Carried)->GetNumberField(TEXT("players")) == 3.0);
+	}
+	Server->Log(FString::ChrN(UPlayServRooms::MaxLogMessageChars + 500, TEXT('x')), EPlayServLogLevel::Debug);
+	TestEqual(TEXT("a very long line is cut"), SentLogs(*First).Last()->GetStringField(TEXT("message")).Len(), UPlayServRooms::MaxLogMessageChars + 3);
+
+	// While the uplink is down the last 200 wait, after a line that counts the dropped ones.
+	First->SimulateClosed(1012, TEXT("Service Restart"));
+	for (int32 I = 0; I < UPlayServRooms::MaxPendingLogLines + 5; ++I) Server->Log(FString::Printf(TEXT("line %d"), I), EPlayServLogLevel::Info);
+	Clock.Now += 2.0;
+	FPlayServRoomsTestAccess::Tick(Server, Clock.Now);
+	TSharedPtr<FPlayServFakeUplinkTransport> Second = Factory.Current();
+	Second->SimulateConnected();
+	Second->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	Logs = SentLogs(*Second);
+	if (TestEqual(TEXT("the notice and the last 200 go out on the next socket"), Logs.Num(), UPlayServRooms::MaxPendingLogLines + 1))
+	{
+		TestTrue(TEXT("the notice counts the 5 dropped"), Logs[0]->GetStringField(TEXT("message")).Contains(TEXT("5 log line(s) not sent")));
+		TestEqual(TEXT("then the oldest kept"), Logs[1]->GetStringField(TEXT("message")), FString(TEXT("line 5")));
+		TestEqual(TEXT("and the newest last"), Logs.Last()->GetStringField(TEXT("message")), FString::Printf(TEXT("line %d"), UPlayServRooms::MaxPendingLogLines + 4));
+	}
+
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Logs.ForwardingPicksLinesByCategoryVerbosityAndRate
+//
+// ForwardLogs catches the process's own UE_LOG lines: a named category from its own verbosity, every other one from the
+// rules' Everything, at most so many lines in ten seconds. A line the sending itself logs is not caught again.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServLogForwardingTest,
+	"PlayServ.Rooms.Logs.ForwardingPicksLinesByCategoryVerbosityAndRate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServLogForwardingTest::RunTest(const FString& Parameters)
+{
+	FPlayServLogForwarding Rules;
+	Rules.Categories.Add(TEXT("LogGame"), ELogVerbosity::Log);
+	Rules.MaxLinesPerTenSeconds = 3;
+	EPlayServLogLevel Level;
+	TestTrue(TEXT("the game's own line goes"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogGame"), ELogVerbosity::Log, Level) && Level == EPlayServLogLevel::Info);
+	TestTrue(TEXT("as does its warning, as warn"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogGame"), ELogVerbosity::Warning, Level) && Level == EPlayServLogLevel::Warn);
+	TestFalse(TEXT("not its verbose line"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogGame"), ELogVerbosity::Verbose, Level));
+	TestFalse(TEXT("another category's warning stays"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogOther"), ELogVerbosity::Warning, Level));
+	TestTrue(TEXT("every category's error goes"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogOther"), ELogVerbosity::Error, Level) && Level == EPlayServLogLevel::Error);
+	TestTrue(TEXT("and a fatal one, as error"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogOther"), ELogVerbosity::Fatal, Level) && Level == EPlayServLogLevel::Error);
+	TestEqual(TEXT("a room ticket in a travel URL is blanked out"),
+		FPlayServLogForwarder::Redacted(TEXT("Join request: /Engine/Maps/Entry?rsv=rsv_0a1b2c?game=/Script/X")), FString(TEXT("Join request: /Engine/Maps/Entry?rsv=<redacted>?game=/Script/X")));
+	TestEqual(TEXT("every one, in any case"), FPlayServLogForwarder::Redacted(TEXT("a rsv=one b RSV=two")), FString(TEXT("a rsv=<redacted> b RSV=<redacted>")));
+	TestEqual(TEXT("a line without one is left as it is"), FPlayServLogForwarder::Redacted(TEXT("world ready")), FString(TEXT("world ready")));
+
+	double Now = 100.0;
+	FPlayServLogForwarder Forwarder(Rules, [&Now]() { return Now; });
+	for (int32 I = 0; I < 5; ++I) Forwarder.Serialize(*FString::Printf(TEXT("joined %d"), I), ELogVerbosity::Log, TEXT("LogGame"));
+	Forwarder.Serialize(TEXT("ignored"), ELogVerbosity::Log, TEXT("LogOther"));
+	TArray<TPair<FString, EPlayServLogLevel>> Out;
+	Forwarder.Drain([&Out, &Forwarder](const FString& Text, EPlayServLogLevel L)
+	{
+		Out.Add({ Text, L });
+		// The sending logs about itself: that line is not caught again.
+		Forwarder.Serialize(TEXT("sent a line"), ELogVerbosity::Log, TEXT("LogGame"));
+	});
+	if (TestEqual(TEXT("three lines in ten seconds, and the count of the rest"), Out.Num(), 4))
+	{
+		TestEqual(TEXT("with the category in front"), Out[0].Key, FString(TEXT("LogGame: joined 0")));
+		TestEqual(TEXT("in order"), Out[2].Key, FString(TEXT("LogGame: joined 2")));
+		TestTrue(TEXT("the count of the two left out, as a warning"), Out[3].Key.Contains(TEXT("2 log line(s) not sent")) && Out[3].Value == EPlayServLogLevel::Warn);
+	}
+	Out.Reset();
+	Forwarder.Drain([&Out](const FString& Text, EPlayServLogLevel L) { Out.Add({ Text, L }); });
+	TestEqual(TEXT("the sending's own line was not caught"), Out.Num(), 0);
+
+	Now += 10.0;
+	Forwarder.Serialize(TEXT("ten seconds on"), ELogVerbosity::Display, TEXT("LogGame"));
+	Forwarder.Drain([&Out](const FString& Text, EPlayServLogLevel L) { Out.Add({ Text, L }); });
+	TestTrue(TEXT("a new ten seconds lets lines through again"), Out.Num() == 1 && Out[0].Key == TEXT("LogGame: ten seconds on"));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // PlayServ.Auth.LoginServerAcceptsDeploymentToken
 //
 // Decision 14: a platform-started server presents a deployment token (a JWT) instead of sk_*.
@@ -2059,6 +2460,65 @@ bool FPlayServAuthDeploymentTokenTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a pk_ key is refused at the boundary"), bRefused);
 
 	Auth->Logout(FPlayServSimpleCallback());
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Admission.AdmitVerifiedReportsTheJoinAndTheLeave
+//
+// A player who comes in through the game's own transport (Cube World's WebSocket door for browsers)
+// never reaches the engine's PostLogin. AdmitVerified is their PostLogin: the platform hears the join
+// with the reservation token, once; RemovePlayer is their leave. A refused verdict, a ticket never
+// verified here and one admitted already are not reported.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsAdmitVerifiedTest,
+	"PlayServ.Rooms.Admission.AdmitVerifiedReportsTheJoinAndTheLeave",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsAdmitVerifiedTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	TSharedPtr<FPlayServFakeUplinkTransport> Socket = BeginHostingOneRoom(Server, Factory, Clock, TEXT("blob-7a3f"));
+
+	const int32 FramesBefore = Socket->CountSentOfType(TEXT("room_presence"));
+	Socket->SimulateMessage(TEXT("{\"type\":\"ticket_offer\",\"reservation_token\":\"rsv_web\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_web\",\"expires_in\":10}"));
+	const FPlayServTicketVerdict Verdict = Server->VerifyTicket(TEXT("rsv_web"));
+	TestTrue(TEXT("the door's ticket is accepted"), Verdict.bAccepted && Verdict.PlayerId == TEXT("plr_web"));
+	TestEqual(TEXT("verifying alone reports nothing (the bug: the door stopped here)"), Socket->CountSentOfType(TEXT("room_presence")), FramesBefore);
+
+	TestTrue(TEXT("AdmitVerified admits the player"), Server->AdmitVerified(Verdict));
+	TSharedPtr<FJsonObject> Join = Socket->LastSentOfType(TEXT("room_presence"));
+	TestTrue(TEXT("one join frame, with the reservation token"), Socket->CountSentOfType(TEXT("room_presence")) == FramesBefore + 1 && Join.IsValid()
+		&& Join->GetStringField(TEXT("event")) == TEXT("join") && Join->GetStringField(TEXT("player_id")) == TEXT("plr_web")
+		&& Join->GetStringField(TEXT("reservation_token")) == TEXT("rsv_web"));
+	TestTrue(TEXT("the player is in the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_web")));
+	TestEqual(TEXT("player count"), Server->GetRoomPlayerCount(TEXT("blob-7a3f")), 1);
+
+	TestFalse(TEXT("the same ticket is not admitted twice"), Server->AdmitVerified(Verdict));
+	FPlayServTicketVerdict Refused;
+	Refused.ReservationToken = TEXT("rsv_web");
+	Refused.PlayerId = TEXT("plr_web");
+	TestFalse(TEXT("a refused verdict is not admitted"), Server->AdmitVerified(Refused));
+	FPlayServTicketVerdict Never = Verdict;
+	Never.ReservationToken = TEXT("rsv_never_verified");
+	TestFalse(TEXT("a ticket never verified here is not admitted"), Server->AdmitVerified(Never));
+	TestEqual(TEXT("and none of them sends a frame"), Socket->CountSentOfType(TEXT("room_presence")), FramesBefore + 1);
+
+	TestTrue(TEXT("RemovePlayer is the leave"), Server->RemovePlayer(TEXT("blob-7a3f"), TEXT("plr_web")));
+	TSharedPtr<FJsonObject> Leave = Socket->LastSentOfType(TEXT("room_presence"));
+	TestTrue(TEXT("a leave frame at once"), Leave.IsValid() && Leave->GetStringField(TEXT("event")) == TEXT("leave") && Leave->GetStringField(TEXT("player_id")) == TEXT("plr_web"));
+	TestFalse(TEXT("off the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_web")));
+
+	FPlayServRoomsTestAccess::End(Server);
 	return true;
 }
 

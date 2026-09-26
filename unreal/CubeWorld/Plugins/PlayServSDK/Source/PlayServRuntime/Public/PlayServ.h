@@ -385,8 +385,34 @@ namespace PlayServ::Rooms
 	/** The PlayServ player id of a connection this server admitted by ticket, also after a seamless travel; empty for any other connection. */
 	PLAYSERVRUNTIME_API FString GetPlayerId(const APlayerController* Player);
 
+	/** Admit a player VerifyTicket accepted on a connection the engine does not log in (a WebSocket door, a beacon): the platform hears the join. RemovePlayer is their leave. */
+	PLAYSERVRUNTIME_API bool AdmitVerified(const FPlayServTicketVerdict& Verdict);
+
 	/** The game's own removal decision (kick, ban, quit): reported at once, with no reconnect grace. */
 	PLAYSERVRUNTIME_API bool RemovePlayer(const FString& RoomName, const FString& PlayerId);
+
+	/** Hear every upsert and delete of an entity's records over the uplink, in UPlayServRooms::OnDataUpdate; KeyPath is `field:<key field>`. Resent on every new uplink socket. */
+	PLAYSERVRUNTIME_API void SubscribeData(const FString& Entity, const FString& KeyPath);
+
+	/** Stop hearing an entity's changes. */
+	PLAYSERVRUNTIME_API void UnsubscribeData(const FString& Entity);
+
+	/** Upsert a record over the uplink by its business key (UPlayServRooms::WriteData): no version check, no answer. False while the uplink is not ready. */
+	PLAYSERVRUNTIME_API bool WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data);
+
+	/** Delete a record over the uplink by its business key (UPlayServRooms::DeleteData). False while the uplink is not ready. */
+	PLAYSERVRUNTIME_API bool DeleteData(const FString& Entity, const FString& Id);
+
+	// ---- Logs ------------------------------------------------------------------------------
+
+	/** A line in this game server's logs on the platform (list_function_logs), sent over the uplink as the C# SDK's Platform.Log; a line logged before the uplink is ready waits for it (the last 200). Game thread. */
+	PLAYSERVRUNTIME_API void Log(const FString& Message, EPlayServLogLevel Level = EPlayServLogLevel::Info, const TSharedPtr<FJsonObject>& Data = nullptr);
+
+	/** Send this process's own UE_LOG lines to the platform's logs as well, by category and verbosity, at most a set number of lines in ten seconds. Lines may be logged on any thread. */
+	PLAYSERVRUNTIME_API void ForwardLogs(const FPlayServLogForwarding& Rules);
+
+	/** Stop ForwardLogs, sending what it had caught. */
+	PLAYSERVRUNTIME_API void StopForwardingLogs();
 
 	// ---- Joining ---------------------------------------------------------------------------
 

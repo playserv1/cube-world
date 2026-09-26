@@ -10,6 +10,7 @@ import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tic
 import { buildTombstone } from "./tombstone.js";
 import { refusal, roomOf, downRegions } from "./rooms.js";
 import { createFollower, hear, follow } from "./follow.js";
+import { withKinds } from "./kinds.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
 const toClient = p => ({ x: p.x, y: p.z, z: p.y });
@@ -24,11 +25,13 @@ const $ = id => document.getElementById(id);
 const ROOM_SLUGS = cfg.slugs ?? [cfg.slug, `${cfg.slug}-ue`];
 
 const state = { player: null, socket: null, room: null, server: null, color: "grey", region: -1, regions: [],
-  regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, placed: false,
+  regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, pending: null, placed: false,
   health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null,
-  stash: [], carry: null, inventoryOpen: false,
+  stash: [], carry: null, inventoryOpen: false, notice: false,
   // A room that turned the player away is not tried again before this time (performance.now()), per room name.
-  notBefore: {}, roomSlugs: {} };
+  notBefore: {}, roomSlugs: {},
+  // A room that holds the player out, by name: what it said (rooms.js), until it lets them in again.
+  barred: {} };
 const world = new VoxelWorld();
 const chunks = new Map();
 const avatars = new Map();
@@ -61,8 +64,13 @@ function refreshSession() {
         body: JSON.stringify({ refresh_token: state.player.refresh_token }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`session refresh → ${res.status} ${json.code || json.title || ""}`);
+      if (!res.ok) {
+        // A refused token is spent for good: the guest it kept is gone, the next sign-in makes a new one.
+        if (res.status === 401 || res.status === 403) forgetGuest(state.player.name);
+        throw new Error(`session refresh → ${res.status} ${json.code || json.title || ""}`);
+      }
       Object.assign(state.player, { access_token: json.access_token, refresh_token: json.refresh_token });
+      keepGuest(state.player);
       scheduleRefresh((new Date(json.expires_at) - Date.now()) / 1000);
     } finally { refreshing = null; }
   })();
@@ -74,14 +82,48 @@ function scheduleRefresh(seconds) {
   scheduleRefresh.timer = setTimeout(() => refreshSession().catch(() => {}), Math.max(10, (seconds || 900) - 60) * 1000);
 }
 
+// A guest is kept per name in this browser: signing in again under the same name resumes the same player, instead of
+// adding one more to the project's players every time. The refresh token is the guest's only credential, and it is
+// single-use: every rotation is written back at once. The Unreal client keeps its guests the same way, in a file.
+const guestKey = name => `cubeworld.guest.${name.toLowerCase()}`;
+
+function keepGuest(player) {
+  try { localStorage.setItem(guestKey(player.name), JSON.stringify({ player_id: player.player_id, refresh_token: player.refresh_token })); } catch {}
+}
+
+function forgetGuest(name) {
+  try { localStorage.removeItem(guestKey(name)); } catch {}
+}
+
+/** The guest kept under this name, signed in again; null when there is none or the platform refused its token. */
+async function resumeGuest(name) {
+  let kept = null;
+  try { kept = JSON.parse(localStorage.getItem(guestKey(name)) || "null"); } catch {}
+  if (!kept?.refresh_token || !kept.player_id) return null;
+  const res = await fetch(`${cfg.api}/auth/players/refresh`, {
+    method: "POST", headers: { "X-PlayServ-Client": cfg.clientKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: kept.refresh_token }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) forgetGuest(name);
+    else throw new Error(`session refresh → ${res.status} ${json.code || json.title || ""}`);
+    return null;
+  }
+  const expiresIn = json.expires_at ? (new Date(json.expires_at) - Date.now()) / 1000 : json.expires_in;
+  return { player_id: json.player_id ?? kept.player_id, access_token: json.access_token, refresh_token: json.refresh_token, expires_in: expiresIn };
+}
+
 async function signIn(name) {
   sessionStorage.setItem("cubeworld.name", name);
-  state.player = OFFLINE ? { player_id: "offline-you", access_token: "", name } : await api("POST", "/auth/players/anon", { display_name: name });
+  state.player = OFFLINE ? { player_id: "offline-you", access_token: "", name }
+    : await resumeGuest(name) ?? await api("POST", "/auth/players/anon", { display_name: name });
   state.player.name = name;
-  if (!OFFLINE) scheduleRefresh(state.player.expires_in);
-  $("join").hidden = true;
+  if (!OFFLINE) { keepGuest(state.player); scheduleRefresh(state.player.expires_in); }
+  // Once in, the panel holds the servers and the players only; the control hints are for before Play, as in Unreal.
+  $("you").hidden = true;
   $("name").blur();
-  $("me").textContent = name;
+  document.querySelector(".hint").hidden = true;
 }
 
 async function refreshServers() {
@@ -91,25 +133,16 @@ async function refreshServers() {
   const pages = await Promise.all(ROOM_SLUGS.map(slug => api("GET", `/rooms/${slug}:browse`)
     .then(page => page.data.map(room => ({ ...room, slug })), e => { if (e.status === 404) return []; throw e; })));
   const rooms = pages.flat().sort((a, b) => a.room_name.localeCompare(b.room_name));
-  $("servers").innerHTML = "";
-  for (const room of rooms) {
-    state.roomSlugs[room.room_name] = room.slug;
-    const li = document.createElement("li");
-    li.className = room.room_name === state.room ? "current" : "";
-    li.style.setProperty("--c", SERVER_COLORS[room.room_name.split("-")[0]] || SERVER_COLORS.grey);
-    li.innerHTML = `<span>${room.room_name} · ${room.players}/${room.capacity}</span>`;
-    const button = document.createElement("button");
-    button.textContent = room.room_name === state.room ? "here" : "enter";
-    button.onclick = () => enter(room.room_name).catch(() => {});
-    li.append(button);
-    $("servers").append(li);
-  }
+  // The browse finds the room to join and each room's type; the panel lists the live regions (renderPanel).
+  for (const room of rooms) state.roomSlugs[room.room_name] = room.slug;
+  if (rooms.length === 0 && !state.placed) $("servers").innerHTML = `<li class="none">No server is running</li>`;
   return rooms;
 }
 
 async function enter(roomName, teleport = true) {
   if (roomName === state.room || state.switching) return;
   state.switching = true;
+  if (teleport) curtain(true, `Joining ${roomName}...`);
   try {
     // A region's claim can carry a stale room type (a C# server that writes none keeps the Unreal one that held the
     // region before): a room not found under one type is tried under the other.
@@ -127,6 +160,12 @@ async function enter(roomName, teleport = true) {
     const door = ticket.attributes && ticket.attributes.ws;
     const url = door ? door : c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${cfg.api.replace(/^http/, "ws")}/games/${slug}`;
     const socket = new WebSocket(url);
+    // This crossing's socket: only it ends the crossing. The old room's socket, closed once the welcome comes, closes
+    // later, and by then the player may have walked on into the next region and begun the next crossing.
+    state.pending = socket;
+    // A server that has not welcomed the player in 10 s is given up, as the Unreal client gives up a handshake
+    // (CubeGameEngine.h): the player plays on where they are, and the crossing is tried again.
+    const giveUp = setTimeout(() => { if (state.socket !== socket) socket.close(); }, 10000);
     socket.onopen = () => socket.send(JSON.stringify({
       playerId: state.player.player_id, displayName: state.player.name,
       token: state.player.access_token, reservationToken: ticket.reservation_token,
@@ -134,10 +173,13 @@ async function enter(roomName, teleport = true) {
     socket.onmessage = e => {
       const frame = JSON.parse(e.data);
       if (frame.type === "welcome" && state.socket !== socket) {
+        clearTimeout(giveUp);
         const previous = state.socket;
         state.socket = socket;
         state.room = roomName;
+        if (state.pending === socket) state.pending = null;
         state.switching = false;
+        delete state.barred[roomName];
         previous?.close();
         onFrame(frame, teleport || !state.placed);
         // The new server hears where the player stands with the next tick's move, even if they stand still.
@@ -148,15 +190,20 @@ async function enter(roomName, teleport = true) {
       if (state.socket === socket) onFrame(frame);
     };
     socket.onclose = e => {
+      clearTimeout(giveUp);
       if (state.socket === socket) {
         const turned = refusal({ reason: e.reason });
-        if (turned.message) state.notBefore[roomName] = performance.now() + turned.waitMs;
+        if (turned.message) { state.notBefore[roomName] = performance.now() + turned.waitMs; state.barred[roomName] = turned; notice(turned); }
         state.room = null;
+        renderPanel();
       }
-      if (state.socket !== socket) state.switching = false;
+      // A crossing that failed is over; the old room's socket closing ends nothing (see state.pending).
+      if (state.socket !== socket && state.pending === socket) { state.pending = null; state.switching = false; if (teleport) curtain(false); }
     };
   } catch (e) {
+    state.pending = null;
     state.switching = false;
+    if (teleport) curtain(false);
     throw e;
   }
 }
@@ -180,26 +227,32 @@ function downNow() { return OFFLINE ? new Set() : downRegions(state.regions, sta
 // ── frames from the server ───────────────────────────────────────────────────────────────────────
 
 function onFrame(frame, teleport) {
+  // Rows an Unreal server wrote before 2026-10-02 spell stone "Stone": every kind is taken in this client's spelling.
+  withKinds(frame);
   switch (frame.type) {
     case "welcome": {
       Object.assign(state, { server: frame.server, color: frame.color, region: frame.region ?? -1, regions: frame.regions ?? [],
-        regionSize: frame.regionSize, hotbar: [...frame.hotbar], inventory: frame.inventory, health: frame.you.health, dead: false });
+        regionSize: frame.regionSize, hotbar: [...frame.hotbar], inventory: frame.inventory, health: frame.you.health, dead: false,
+        // Each server numbers its own corrections from 0.
+        moveSeq: 0 });
       loadLayout(frame.hotbar);
+      const before = chunks.size > 0 ? world.snapshot() : null;
       world.configure({ width: frame.width, depth: frame.depth, minY: frame.minZ, maxY: frame.maxZ, layers: frame.layers, blocks: frame.blocks,
         trees: frame.trees, regionSize: frame.regionSize, regionColors: REGION_COLORS });
       for (const c of frame.world) world.set(c.x, c.z, c.y, c.kind);
-      world.setDown(downNow());
-      rebuild(world.allChunks());
+      const down = world.setDown(downNow());
+      rebuild(down.length ? down : world.changedSince(before));
       for (const crack of cracks.values()) scene.remove(crack);
       cracks.clear();
       if (teleport) spawn(frame.you);
+      // The old server's dig ended with the player; one still held starts again on this server with the next tick.
+      state.dig = null;
       for (const id of [...bombs.keys()]) removeBomb(id);
       for (const bomb of frame.bombs ?? []) onBomb(bomb);
       // This client can show a bomb in the hand and throw it, and reads blocks batched in one "cubes" frame; the
       // server hands bombs, and batches, only to clients that say so.
       send({ op: "bombs" });
-      $("banner").textContent = `you are on server ${frame.color}-${frame.server}`;
-      $("banner").style.borderLeft = `6px solid ${SERVER_COLORS[frame.color]}`;
+      renderPanel();
       $("death").hidden = true;
       renderHotbar();
       renderHearts();
@@ -208,6 +261,7 @@ function onFrame(frame, teleport) {
     case "regions":
       state.regions = frame.regions;
       rebuild(world.setDown(downNow()));
+      renderPanel();
       break;
     case "cube": {
       const c = frame.cube;
@@ -249,6 +303,13 @@ function onFrame(frame, teleport) {
     case "bomb":
       onBomb(frame);
       break;
+    case "correct":
+      // A move too far for the time it took (the server's move check): back to where the last good move left us. Not
+      // while crossing: the room being left is behind, and following it back over the border crossed again, and again.
+      if (state.switching) break;
+      state.moveSeq = frame.seq;
+      snapTo(frame);
+      break;
     case "respawn":
       state.dead = false;
       state.health = frame.you.health;
@@ -271,11 +332,50 @@ function onHurt(frame) {
   if (avatar) avatar.hurtUntil = performance.now() + S.HURT_TICKS * S.TICK_MS;
 }
 
+// From Play, or a jump from the server list, until the player stands where the server put them the view is curtained,
+// then it fades in a moment later, once the world is drawn there: it never shows from the wrong place first.
+let curtainTimer = 0;
+function curtain(on, text) {
+  const c = $("curtain");
+  clearTimeout(curtainTimer);
+  if (text !== undefined) $("curtain-status").textContent = text;
+  c.classList.toggle("lifting", !on);
+  if (on) c.classList.add("shown");
+  else curtainTimer = setTimeout(() => c.classList.remove("shown"), 250);
+}
+
+// An operator's close or removal is told over the game, as the death screen is, until the player clicks OK or presses
+// Enter; the mouse is freed meanwhile. The Unreal client draws the same notice (CubeHUD).
+function notice(turned) {
+  $("notice-title").textContent = turned.title;
+  $("notice-text").textContent = turned.message;
+  state.notice = true;
+  keys.clear();
+  mouse.left = false;
+  $("menu").hidden = true;
+  $("notice").hidden = false;
+  controls.unlock();
+}
+
+function closeNotice() {
+  if (!state.notice) return;
+  state.notice = false;
+  $("notice").hidden = true;
+  if (state.placed && !state.dead) controls.lock();
+}
+
 function spawn(at) {
   const p = toClient(at);
-  Object.assign(me, { x: p.x, y: p.y, z: p.z, px: p.x, py: p.y, pz: p.z, vx: 0, vy: 0, vz: 0, onGround: false });
+  Object.assign(me, { x: p.x, y: p.y, z: p.z, px: p.x, py: p.y, pz: p.z, vx: 0, vy: 0, vz: 0, peak: p.y, onGround: false });
   state.placed = true;
+  curtain(false);
   unstick();
+}
+
+function snapTo(at) {
+  const p = toClient(at);
+  Object.assign(me, { x: p.x, y: p.y, z: p.z, px: p.x, py: p.y, pz: p.z, vx: 0, vy: 0, vz: 0 });
+  lastPose = "";
 }
 
 function unstick() {
@@ -296,6 +396,8 @@ function overlapsBlocks() {
 // A free bomb comes down under its parachute, a held one sits in its holder's hand, a thrown one flies the
 // path the server flies it. The server says when one is picked up, thrown, explodes or fizzles out.
 
+const BOMB_RANK = { free: 0, held: 1, flying: 2 };
+
 function onBomb({ bomb: b, age = 0, z }) {
   const at = toClient(b);
   let e = bombs.get(b.bomb_id);
@@ -309,6 +411,9 @@ function onBomb({ bomb: b, age = 0, z }) {
     removeBomb(b.bomb_id);
     return;
   }
+  // A bomb only moves forward (free, held, flying): a frame that would take it back is stale, and never takes a bomb
+  // out of the hand (the Unreal client keeps the same rule).
+  if (e && BOMB_RANK[b.state] < BOMB_RANK[e.state]) return;
   if (!e) {
     e = { id: b.bomb_id, mesh: buildBomb(), parachute: buildParachute(), pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), landed: false };
     e.mesh.add(e.parachute);
@@ -322,7 +427,9 @@ function onBomb({ bomb: b, age = 0, z }) {
   e.parachute.visible = false;
   if (b.state === "free") {
     e.pos.set(at.x, z ?? at.y, at.z);
-    e.landed = false;
+    // Already resting on a block: the parachute stays folded, whatever frame repeats the record (a welcome's list at
+    // every crossing). The Unreal client keeps the same rule.
+    e.landed = descend(world.isSolidForPhysics, e.pos.x, e.pos.y, e.pos.z) === e.pos.y;
     scene.add(e.mesh);
   } else if (b.state === "flying") {
     e.pos.set(at.x, at.y, at.z);
@@ -396,8 +503,9 @@ function renderHotbar() {
     slot.className = `slot${i === state.slot ? " selected" : ""}`;
     slot.title = kind ?? "";
     if (kind) {
+      // A kind this client cannot draw gets a slot without an icon, rather than stopping the hotbar at it.
       icons[kind] ??= blockIcon(atlas, kind);
-      slot.innerHTML = `<img src="${icons[kind]}" alt="${kind}"><b>${count}</b>`;
+      slot.innerHTML = `${icons[kind] ? `<img src="${icons[kind]}" alt="${kind}">` : ""}<b>${count}</b>`;
       if (count === 0) slot.classList.add("empty");
     }
     slot.onclick = () => { state.slot = i; renderHotbar(); };
@@ -526,9 +634,28 @@ function syncAvatars(players) {
     avatar.info = p;
   }
   for (const [id, avatar] of avatars) if (!seen.has(id)) { scene.remove(avatar.model, avatar.tomb); avatars.delete(id); }
-  $("players").innerHTML = [...avatars.values()].map(a => a.info)
-    .concat(state.player ? [{ player_id: state.player.player_id, name: `${state.player.name} (you)`, color: state.color, health: state.health }] : [])
-    .map(p => `<li>${p.name}<span>${isDead(p) ? "dead" : `${Math.ceil(p.health ?? 20)} hp`}</span><em style="color:${SERVER_COLORS[p.color]}">${p.color}</em></li>`).join("");
+  renderPanel();
+}
+
+const esc = text => String(text ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// The panel: the live servers with how many players each holds now, where you are, and the players. The counts are
+// taken from the presence frames (ten a second), not from the room browse, so a player who crosses shows on the next
+// server as soon as their movement does. The Unreal client draws the same panel (CubeHUD::DrawPanel).
+function renderPanel() {
+  const players = [...avatars.values()].map(a => a.info);
+  if (state.player && state.placed) players.push({ name: state.player.name, me: true, color: state.color, health: state.health });
+  const servers = [...state.regions].sort((a, b) => Number(a.region) - Number(b.region));
+  if (servers.length > 0 || state.placed) {
+    $("servers").innerHTML = servers.map(r => {
+      const count = players.filter(p => p.color === r.color).length;
+      const here = state.placed && state.room && r.color === state.color ? `<small>${esc(state.player.name)} — you are here</small>`
+        : state.barred[r.room] ? `<small class="barred">${state.barred[r.room].title}</small>` : "";
+      return `<li style="--c:${SERVER_COLORS[r.color] || SERVER_COLORS.grey}"><div><b>${esc(r.room)}</b>${here}</div><span>${count}</span></li>`;
+    }).join("");
+  }
+  $("players").innerHTML = players
+    .map(p => `<li><b class="who">${esc(p.name)}</b>${p.me ? `<i class="you">(you)</i>` : ""}<span>${isDead(p) ? "dead" : `${Math.ceil(p.health ?? 20)} hp`}</span><em style="color:${SERVER_COLORS[p.color]}">${esc(p.color)}</em></li>`).join("");
 }
 
 function avatarBoxes() {
@@ -539,22 +666,26 @@ function avatarBoxes() {
 // ── input ────────────────────────────────────────────────────────────────────────────────────────
 
 const controls = new PointerLockControls(camera, renderer.domElement);
-renderer.domElement.addEventListener("click", () => { if (!controls.isLocked && !state.dead && !state.inventoryOpen) controls.lock(); });
+renderer.domElement.addEventListener("click", () => { if (!controls.isLocked && !state.dead && !state.inventoryOpen && !state.notice) controls.lock(); });
 // The game menu (Esc), as the Unreal client's: the browser frees the mouse on Esc, and in play that opens the menu.
 // Resume goes back to the game; Exit leaves it for the start page. A click beside the buttons does nothing.
 controls.addEventListener("lock", () => { $("menu").hidden = true; });
 controls.addEventListener("unlock", () => {
-  if (!state.placed || state.dead || state.inventoryOpen) return;
+  if (!state.placed || state.dead || state.inventoryOpen || state.notice) return;
   keys.clear();
   mouse.left = false;
   $("menu").hidden = false;
 });
 $("resume").onclick = () => controls.lock();
+$("notice-ok").onclick = closeNotice;
 $("exit").onclick = () => { const s = state.socket; state.socket = null; s?.close?.(); location.reload(); };
 const keys = new Set();
 const mouse = { left: false };
 addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
+  // The console key (` / ~) hides the panel and shows it again, as in the Unreal client.
+  if (e.code === "Backquote" || e.key === "`" || e.key === "~") { $("panel").hidden = !$("panel").hidden; return; }
+  if (state.notice) { if (e.code === "Enter" || e.code === "NumpadEnter" || e.code === "Escape") closeNotice(); return; }
   if (e.code === "KeyI" && state.placed) { toggleInventory(); return; }
   if (e.code === "Escape" && state.inventoryOpen) { closeInventory(); return; }
   if (state.inventoryOpen) return;
@@ -744,21 +875,34 @@ function gameTick() {
     const pitch = -Math.asin(Math.max(-1, Math.min(1, look.y)));
     const pose = `${me.x.toFixed(3)},${me.y.toFixed(3)},${me.z.toFixed(3)},${yaw.toFixed(3)},${pitch.toFixed(3)},${me.onGround},${me.sneaking},${me.sprinting}`;
     if (pose !== lastPose) {
-      send({ op: "move", x: me.x, y: me.z, z: me.y, yaw, pitch, onGround: me.onGround, sneaking: me.sneaking, sprinting: me.sprinting });
+      // In the air the move says the fall's highest point too: a fall that began on the old server counts on the next.
+      send({ op: "move", x: me.x, y: me.z, z: me.y, yaw, pitch, onGround: me.onGround, sneaking: me.sneaking, sprinting: me.sprinting,
+        seq: state.moveSeq ?? 0, ...(me.onGround ? {} : { peak: me.peak }) });
       lastPose = pose;
     }
   }
 
-  // A crossing that fails is tried again three seconds later, not on every tick; a room an operator closed, or
-  // removed the player from, waits longer (rooms.js).
+  // A crossing that fails is tried again three seconds later, not on every tick; a room an operator closed waits
+  // longer. One that removed the player is asked again on the short delay, since a Delete room lets them back in
+  // under the same name at once; meanwhile the line over the game says why they are held out (rooms.js).
   const here = roomOfRegion(regionAt(me.x, me.z));
   const now = performance.now();
   if (!OFFLINE && here && here !== state.room && !state.switching && now >= (state.crossAfter ?? 0) && now >= (state.notBefore[here] ?? 0))
     enter(here, false).catch(e => {
       state.switching = false;
       const turned = refusal({ code: e.code });
-      if (turned.message) state.notBefore[here] = now + turned.waitMs; else state.crossAfter = now + 3000;
+      if (turned.message) { state.notBefore[here] = now + turned.waitMs; state.barred[here] = turned; renderPanel(); }
+      else state.crossAfter = now + 3000;
     });
+  showBarred(here);
+}
+
+// While the player stands in the region of a room that holds them out, a line over the game says why (rooms.js).
+function showBarred(here) {
+  const turned = !OFFLINE && here && here !== state.room ? state.barred[here] : null;
+  const text = turned ? `${here}: ${turned.barred}` : "";
+  if ($("barred").textContent !== text) $("barred").textContent = text;
+  $("barred").hidden = !text;
 }
 
 let accumulator = 0;
@@ -850,14 +994,15 @@ function enterOffline() {
     if (kind === generated(x, y, z)) { overrides.delete(cube.key); emit({ type: "cube", op: "delete", cube, remote: false }); }
     else { overrides.set(cube.key, kind); emit({ type: "cube", op: "upsert", cube, remote: false }); }
   };
-  // Bombs as the drop function and the server handle them: one dropped every 15 seconds (two to start, near the
-  // spawn), at most five free, picked up by walking into them, thrown with right click.
+  // Bombs as the drop function and the server handle them: two dropped every minute over each room's region (here the
+  // one local room's, region 1; two more to start, near the spawn), at most three free in a region, picked up by walking
+  // into them, thrown with right click.
   const offBombs = new Map();
     const record = (b, p, extra = {}) => ({ bomb_id: b.id, state: b.state, holder: b.holder ?? "", ...toServer(p), vx: 0, vy: 0, vz: 0, dropped_at: b.dropped, at: Date.now(), ...extra });
   const emitBomb = (b, p, extra) => emit({ type: "bomb", bomb: record(b, p, extra), age: 0, z: p.y });
   const dropBomb = (x, z) => {
     const free = [...offBombs.values()].filter(b => b.state === "free").sort((a, b) => a.dropped - b.dropped);
-    while (free.length >= 5) { const old = free.shift(); old.state = "fizzled"; offBombs.delete(old.id); emitBomb(old, old.p); }
+    while (free.length >= 3) { const old = free.shift(); old.state = "fizzled"; offBombs.delete(old.id); emitBomb(old, old.p); }
     const b = { id: `bomb-${Date.now()}-${offBombs.size}`, state: "free", p: new THREE.Vector3(x, S.DROP_HEIGHT, z), dropped: Date.now() };
     offBombs.set(b.id, b);
     emitBomb(b, b.p);
@@ -889,7 +1034,7 @@ function enterOffline() {
     offBombs.delete(b.id);
     emitBomb(b, b.p);
   };
-  setInterval(() => dropBomb(1 + Math.random() * 70, 1 + Math.random() * 22), 15000);
+  setInterval(() => { for (let i = 0; i < 2; i++) dropBomb(25 + Math.random() * 22, 1 + Math.random() * 22); }, 60000);
   setInterval(() => {
     for (const b of [...offBombs.values()]) {
       if (b.state === "free") {
@@ -955,7 +1100,7 @@ function enterOffline() {
     },
   };
   state.room = "offline";
-  emit({ type: "welcome", server: "local", color: "grey", region: 1, regions: [], you: { x: 36, y: 12, z: 0, health: 20 },
+  emit({ type: "welcome", server: "local", color: "grey", region: 1, regions: [{ region: 1, room: "grey-local", color: "grey", server: "local" }], you: { x: 36, y: 12, z: 0, health: 20 },
     width: 72, depth: 48, regionSize: 24, minZ: -4, maxZ: 64, layers: [{ z: -4, kind: "bedrock" }, { z: -3, kind: "dirt" }, { z: -2, kind: "dirt" }, { z: -1, kind: "grass" }], trees: TREES,
     blocks, hotbar, world: [], inventory: Object.fromEntries(hotbar.map(k => [k, 64])), tick: 0 });
   dropBomb(38.5, 14.5);
@@ -976,14 +1121,33 @@ renderHotbar();
 renderHearts();
 requestAnimationFrame(frame);
 $("name").value = sessionStorage.getItem("cubeworld.name") || "";
+// Play enters the first room that lets the player in. A room that holds them out (an operator removed them, or
+// closed it) is marked in the panel and the next is tried; only when every room holds them out does the notice say why.
+async function enterFirst(names) {
+  let first = null;
+  for (const name of names) {
+    try { await enter(name); return; }
+    catch (e) {
+      const turned = refusal({ code: e.code });
+      if (!turned.message) throw e;
+      state.notBefore[name] = performance.now() + turned.waitMs;
+      state.barred[name] = turned;
+      first ??= turned;
+    }
+  }
+  if (first) notice(first);
+}
+
 $("join").onsubmit = async e => {
   e.preventDefault();
+  curtain(true, "Signing in...");
   try {
     await signIn($("name").value.trim());
     if (OFFLINE) { enterOffline(); return; }
     const rooms = await refreshServers();
-    if (rooms.length) await enter(rooms[0].room_name);
+    if (rooms.length) await enterFirst(rooms.map(r => r.room_name));
+    else curtain(false);
     setInterval(() => refreshServers().catch(() => {}), 5000);
-  } catch {}
+  } catch { curtain(false); }
 };
 window.cubeworld = { state, enter, send, world, avatars, me, camera, aim, controls, keys, mouse, bombs };

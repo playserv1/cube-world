@@ -29,6 +29,37 @@ public class PresenceTests
     }
 
     [Fact]
+    public void A_player_who_left_is_taken_over_by_the_next_server_that_writes_them()
+    {
+        var ours = SpawnOnBlue();
+        ours.seen_at = Now;
+
+        Assert.False(WorldPresence.TakenOver(null, ours));
+        Assert.False(WorldPresence.TakenOver(ours, ours));
+        Assert.True(WorldPresence.TakenOver(SeenOnRed(Now + 300), ours));
+    }
+
+    [Fact]
+    public void A_pose_another_server_wrote_before_the_player_came_here_does_not_take_them_over()
+    {
+        var ours = SpawnOnBlue();
+        ours.seen_at = Now;
+
+        Assert.False(WorldPresence.TakenOver(SeenOnRed(Now - 60_000), ours));
+    }
+
+    [Fact]
+    public void A_delete_takes_out_only_the_pose_of_the_server_whose_row_went()
+    {
+        var heldByRed = SeenOnRed(Now);
+
+        Assert.True(WorldPresence.DeleteTakesOut(heldByRed, SeenOnRed(Now - 100)));
+        Assert.False(WorldPresence.DeleteTakesOut(heldByRed, SpawnOnBlue()));
+        Assert.True(WorldPresence.DeleteTakesOut(heldByRed, new WorldPresence { player_id = "p" }));
+        Assert.False(WorldPresence.DeleteTakesOut(null, SeenOnRed(Now)));
+    }
+
+    [Fact]
     public void A_player_walking_over_a_border_keeps_their_health()
     {
         Assert.Equal(13, WorldPresence.Arriving(SpawnOnBlue(), SeenOnRed(Now - 200), Now).health);
@@ -45,6 +76,29 @@ public class PresenceTests
     {
         Assert.Equal(36, WorldPresence.Arriving(SpawnOnBlue(), null, Now).x);
         Assert.Equal(36, WorldPresence.Arriving(SpawnOnBlue(), SeenOnRed(Now - 5000), Now).x);
+    }
+
+    [Fact]
+    public void A_player_seen_a_step_short_of_the_border_stands_inside_the_region()
+    {
+        var lagging = SeenOnRed(Now - 200);
+        lagging.x = 22.5;   // the old server's last pose is a step behind the walk
+
+        var pose = WorldPresence.Arriving(SpawnOnBlue(), lagging, Now);
+
+        Assert.Equal((24 + Spec.PlayerWidth / 2, 6.0, 13.0), (pose.x, pose.y, pose.health));
+    }
+
+    [Fact]
+    public void A_player_who_jumped_here_from_the_server_list_starts_at_the_spawn_with_their_health()
+    {
+        var farAway = SeenOnRed(Now - 200);
+        (farAway.x, farAway.y) = (12, 12);   // red's middle: nowhere near blue's border
+
+        var pose = WorldPresence.Arriving(SpawnOnBlue(), farAway, Now);
+
+        Assert.Equal((36.0, 12.0, 13.0), (pose.x, pose.y, pose.health));
+        Assert.Equal(("hywr1", "blue"), (pose.server, pose.color));
     }
 
     [Fact]

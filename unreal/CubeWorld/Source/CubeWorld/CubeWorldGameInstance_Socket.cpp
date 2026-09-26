@@ -1,7 +1,7 @@
 // The JSON socket to a C# server: the browser client's protocol (web/app.js), spoken over CubeSocket. The frames
 // land in the same handlers the Unreal server's replication feeds, so the world, the pawn and the HUD see one game
-// whichever server the player stands on. Leaving an Unreal server for a C# one first travels back to the local map,
-// since the socket's world is the client's own.
+// whichever server the player stands on. Leaving an Unreal server for a C# one keeps the world: the socket connects
+// while the player still plays on the Unreal server, which is left when the C# one welcomes them (UCubeGameEngine).
 #include "CubeWorldGameInstance.h"
 #include "CubeWorld.h"
 #include "CubeSocket.h"
@@ -15,6 +15,7 @@
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "CubeGameEngine.h"
 
 namespace
 {
@@ -38,6 +39,22 @@ namespace
 		FString V;
 		if (O.IsValid()) O->TryGetStringField(FStringView(Field), V);
 		return V;
+	}
+
+	/** A welcome's changed blocks, cell to kind. */
+	TMap<FIntVector, FName> ReadWorld(const TSharedPtr<FJsonObject>& Frame)
+	{
+		TMap<FIntVector, FName> Cells;
+		const TArray<TSharedPtr<FJsonValue>>* WorldJson;
+		if (!Frame.IsValid() || !Frame->TryGetArrayField(TEXT("world"), WorldJson)) return Cells;
+		Cells.Reserve(WorldJson->Num());
+		for (const TSharedPtr<FJsonValue>& V : *WorldJson)
+		{
+			const TSharedPtr<FJsonObject> C = V.IsValid() ? V->AsObject() : nullptr;
+			if (!C.IsValid()) continue;
+			Cells.Add(FIntVector((int32)Num(C, TEXT("x")), (int32)Num(C, TEXT("y")), (int32)Num(C, TEXT("z"))), FName(*Str(C, TEXT("kind"))));
+		}
+		return Cells;
 	}
 
 	FCubePresenceRep ReadPresence(const TSharedPtr<FJsonObject>& P)
@@ -69,9 +86,9 @@ namespace
 		if (!Cube.IsValid()) return;
 		FCubeChangeRep C;
 		C.X = (int16)Num(Cube, TEXT("x")); C.Y = (int16)Num(Cube, TEXT("y")); C.Z = (int16)Num(Cube, TEXT("z"));
-		// A deleted record restores the generated block, which is what "air" over generated air means too; the
-		// voxel world keeps generated blocks under an "air" override, so a delete here is an "air" upsert.
-		C.Kind = bDelete ? CubeSpec::KindIndex(TEXT("air")) : CubeSpec::KindIndex(FName(*Str(Cube, TEXT("kind"))));
+		// A deleted record restores the generated block: a dug-out grass block or a felled log comes back, which an
+		// "air" override would keep dug out.
+		C.Kind = bDelete ? CubeSpec::GeneratedIndex : CubeSpec::KindIndex(FName(*Str(Cube, TEXT("kind"))));
 		C.On = Str(Cube, TEXT("placed_on"));
 		Out.Add(C);
 	}
@@ -97,11 +114,16 @@ void UCubeWorldGameInstance::Send(const TSharedRef<FJsonObject>& Frame)
 	if (bViaSocket && Socket.IsValid() && Socket->IsConnected()) Socket->Send(ToText(Frame));
 }
 
-// A C# server is reached from the client's own world: from an Unreal server's world, the client goes back to the
-// local map first and connects once it is there (HandlePostLoadMap).
+// A C# server is played from the client's own world. From an Unreal server's world the socket connects at once and the
+// world becomes the client's own when the welcome comes (LeaveUnrealServerKeepWorld); on a fresh join, or without the
+// client's engine (-noseamless), the client goes back to the local map first and connects once it is there.
 void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FString& Host, int32 Port, bool bSecure, const FString& ReservationToken, bool bTeleport)
 {
-	if (IsInNetworkedWorld())
+	// Make before break, from an Unreal server: the socket connects while the player still plays there, and the world is
+	// kept when the C# server's welcome comes (LeaveUnrealServerKeepWorld). Without the client's engine, the old way: back
+	// to the local map first, then connect.
+	const bool bLeaveOnWelcome = IsInNetworkedWorld() && UCubeGameEngine::Get() && !bTeleport && bPlaced && !FParse::Param(FCommandLine::Get(), TEXT("noseamless"));
+	if (IsInNetworkedWorld() && !bLeaveOnWelcome)
 	{
 		SocketPlan = { true, RoomName, Host, ReservationToken, Port, bSecure, bTeleport };
 		Crossing = bTeleport ? FCubeCrossing() : LastBody;
@@ -115,6 +137,7 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		return;
 	}
 	Log(FString::Printf(TEXT("connecting to %s://%s:%d"), bSecure ? TEXT("wss") : TEXT("ws"), *Host, Port));
+	if (!bTeleport && bPlaced) LogFramesFor(3);
 	TSharedPtr<FCubeSocket> NewSocket = MakeShared<FCubeSocket>(Host, Port, bSecure, TEXT("/"));
 	PendingSocket = NewSocket;
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
@@ -131,10 +154,17 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		Hello->SetStringField(TEXT("reservationToken"), ReservationToken);
 		WeakSocket.Pin()->Send(ToText(Hello));
 	});
+	// Only this crossing's socket (PendingSocket) ends the crossing. The old room's socket, closed once the welcome comes,
+	// reports its close later, and by then the player may have walked on into the next region and begun the next
+	// crossing: ending that one too started a second connection to the same room (the web client's rule too).
 	NewSocket->OnError.AddLambda([Weak, WeakSocket, RoomName](const FString& Error)
 	{
 		if (!Weak.IsValid()) return;
-		const bool bLive = Weak->Socket == WeakSocket.Pin();
+		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
+		const bool bLive = This.IsValid() && Weak->Socket == This;
+		const bool bPending = This.IsValid() && Weak->PendingSocket == This;
+		if (!bLive && !bPending) return;
+		if (bPending) Weak->PendingSocket.Reset();
 		Weak->bSwitching = false;
 		Weak->CrossAfter = FPlatformTime::Seconds() + 3;
 		Weak->Log(FString::Printf(TEXT("could not reach %s: %s"), *RoomName, *Error));
@@ -144,27 +174,34 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 	NewSocket->OnClosed.AddLambda([Weak, WeakSocket, RoomName](const FString& Reason)
 	{
 		if (!Weak.IsValid()) return;
-		if (Weak->Socket == WeakSocket.Pin())
+		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
+		if (This.IsValid() && Weak->Socket == This)
 		{
 			Weak->Socket.Reset();
 			Weak->bViaSocket = false;
 			Weak->Disconnected(Reason);
 		}
-		else Weak->bSwitching = false;
+		else if (This.IsValid() && Weak->PendingSocket == This)
+		{
+			Weak->PendingSocket.Reset();
+			Weak->bSwitching = false;
+		}
 	});
-	NewSocket->OnMessage.AddLambda([Weak, WeakSocket, RoomName, bTeleport](const FString& Text)
+	NewSocket->Decode = &UCubeWorldGameInstance::DecodeSocketFrame;
+	NewSocket->OnFrame.AddLambda([Weak, WeakSocket, RoomName, bTeleport](FCubeSocketFrame& Parsed)
 	{
 		if (!Weak.IsValid() || !WeakSocket.IsValid()) return;
-		TSharedPtr<FJsonObject> Frame;
-		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Frame) || !Frame.IsValid()) return;
+		const TSharedPtr<FJsonObject> Frame = Parsed.Json;
 		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
 		if (Str(Frame, TEXT("type")) == TEXT("welcome") && Weak->Socket != This)
 		{
+			// Still on an Unreal server: it is left now, and the world with everything on screen stays.
+			if (Weak->IsInNetworkedWorld()) Weak->LeaveUnrealServerKeepWorld();
 			const TSharedPtr<FCubeSocket> Previous = Weak->Socket;
 			Weak->Socket = This;
 			Weak->PendingSocket.Reset();
 			if (Previous.IsValid()) Previous->Close();
-			Weak->OnSocketWelcome(Frame, RoomName, bTeleport || !Weak->bPlaced);
+			Weak->OnSocketWelcome(Frame, RoomName, bTeleport || !Weak->bPlaced, MoveTemp(Parsed.World));
 			return;
 		}
 		if (Weak->Socket == This) Weak->OnSocketFrame(Frame, RoomName, false);
@@ -172,12 +209,24 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 	NewSocket->Connect();
 }
 
-void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport)
+// A C# server's welcome carries every changed block of the world: the worker that parses it reads the blocks too, so the
+// game thread only swaps them in, and drops them from the frame, so that their JSON is freed there and not on the game
+// thread, where freeing it took most of a crossing's frame (PSV-3004).
+void UCubeWorldGameInstance::DecodeSocketFrame(FCubeSocketFrame& Parsed)
+{
+	if (!Parsed.Json.IsValid() || !Parsed.Json->HasField(TEXT("world"))) return;
+	Parsed.World = ReadWorld(Parsed.Json);
+	Parsed.Json->RemoveField(TEXT("world"));
+}
+
+void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport, TOptional<TMap<FIntVector, FName>> PreRead)
 {
 	const bool bCrossed = !bTeleport;
 	bViaSocket = true;
 	Server = Str(Frame, TEXT("server")); Color = Str(Frame, TEXT("color")); Region = (int32)Num(Frame, TEXT("region"), -1);
 	Room = RoomName;
+	Barred.Remove(RoomName);
+	FirstRefusal = FCubeRefusal();
 	Travelling.Empty();
 	bSwitching = false;
 	bSigningIn = false;
@@ -189,16 +238,13 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	const bool bKeepWorld = bCrossed && bPlaced;
 	Snapshot.Reset();
 	if (!bKeepWorld) World.Clear();
-	const TArray<TSharedPtr<FJsonValue>>* WorldJson;
-	if (Frame->TryGetArrayField(TEXT("world"), WorldJson))
-		for (const auto& V : *WorldJson)
-		{
-			const TSharedPtr<FJsonObject> C = V->AsObject();
-			const FIntVector At((int32)Num(C, TEXT("x")), (int32)Num(C, TEXT("y")), (int32)Num(C, TEXT("z")));
-			const FName Kind(*Str(C, TEXT("kind")));
-			if (bKeepWorld) Snapshot.Add(At, Kind); else World.Set(At.X, At.Y, At.Z, Kind);
-		}
-	if (bKeepWorld) ApplySnapshot();
+	// Read on the worker that parsed the frame; a welcome handed in without it is read here.
+	const double ApplyStart = FPlatformTime::Seconds();
+	TMap<FIntVector, FName> Cells = PreRead.IsSet() ? MoveTemp(PreRead.GetValue()) : ReadWorld(Frame);
+	const int32 Blocks = Cells.Num();
+	if (bKeepWorld) { Snapshot = MoveTemp(Cells); ApplySnapshot(); }
+	else for (const TPair<FIntVector, FName>& C : Cells) World.Set(C.Key.X, C.Key.Y, C.Key.Z, C.Value);
+	Log(FString::Printf(TEXT("welcome: %d blocks applied in %.1f ms"), Blocks, (FPlatformTime::Seconds() - ApplyStart) * 1000));
 	const TSharedPtr<FJsonObject>* InventoryJson;
 	if (Frame->TryGetObjectField(TEXT("inventory"), InventoryJson))
 	{
@@ -219,7 +265,11 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	bPlaced = true;
 	const TArray<TSharedPtr<FJsonValue>>* BombsJson;
 	if (Frame->TryGetArrayField(TEXT("bombs"), BombsJson))
-		for (const auto& V : *BombsJson) OnBombFrame(ReadBomb(V->AsObject()));
+	{
+		TArray<FCubeBombRep> List;
+		for (const auto& V : *BombsJson) List.Add(ReadBomb(V->AsObject()));
+		OnBombListFrame(List);
+	}
 	// This client shows bombs and reads batched cube frames; the server hands both only to clients that say so.
 	const TSharedRef<FJsonObject> Bombs = MakeShared<FJsonObject>();
 	Bombs->SetStringField(TEXT("op"), TEXT("bombs"));
@@ -308,6 +358,11 @@ void UCubeWorldGameInstance::OnSocketFrame(const TSharedPtr<FJsonObject>& Frame,
 	}
 	if (Type == TEXT("hurt")) { OnHurtFrame(Str(Frame, TEXT("player")), Num(Frame, TEXT("health")), Num(Frame, TEXT("kx")), Num(Frame, TEXT("ky")), Num(Frame, TEXT("strength"))); return; }
 	if (Type == TEXT("death")) { OnDeathFrame(Str(Frame, TEXT("player")), Str(Frame, TEXT("by"))); return; }
+	if (Type == TEXT("correct"))
+	{
+		OnCorrectFrame(FCubePose{ Num(Frame, TEXT("x")), Num(Frame, TEXT("y")), Num(Frame, TEXT("z")), Health }, (int32)Num(Frame, TEXT("seq")));
+		return;
+	}
 	if (Type == TEXT("respawn"))
 	{
 		const TSharedPtr<FJsonObject>* You;

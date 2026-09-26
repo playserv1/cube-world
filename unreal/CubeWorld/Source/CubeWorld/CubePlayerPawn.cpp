@@ -76,6 +76,15 @@ void ACubePlayerPawn::BeginPlay()
 	}
 }
 
+// A crossing that keeps the world (UCubeGameEngine) destroys this pawn with the old server's actors, and the next pawn
+// takes over the client's own actors this one made: the other players' models, the bombs, the tombstone. They stay on
+// screen through the crossing instead of being made again from the next server's lists.
+void ACubePlayerPawn::EndPlay(const EEndPlayReason::Type Reason)
+{
+	if (Game && bBound && Reason == EEndPlayReason::Destroyed) Game->CarryOver(Avatars, Bombs, MyTomb);
+	Super::EndPlay(Reason);
+}
+
 // The local player's pawn binds once it is possessed: on a network client the controller arrives after BeginPlay.
 void ACubePlayerPawn::Bind()
 {
@@ -85,17 +94,23 @@ void ACubePlayerPawn::Bind()
 
 	Game->OnWelcome.AddUObject(this, &ACubePlayerPawn::HandleWelcome);
 	Game->OnRespawn.AddUObject(this, &ACubePlayerPawn::HandleRespawn);
+	Game->OnCorrect.AddUObject(this, &ACubePlayerPawn::HandleCorrect);
 	Game->OnHurt.AddUObject(this, &ACubePlayerPawn::HandleHurt);
 	Game->OnDeath.AddUObject(this, &ACubePlayerPawn::HandleDeath);
 	Game->OnPlayers.AddUObject(this, &ACubePlayerPawn::HandlePlayers);
 	Game->OnCube.AddUObject(this, &ACubePlayerPawn::HandleCube);
 	Game->OnBomb.AddUObject(this, &ACubePlayerPawn::HandleBomb);
+	Game->OnBombList.AddUObject(this, &ACubePlayerPawn::HandleBombList);
+	// The mouse is added up for the rest of the game from here: a crossing's gap turns the view by what no controller took.
+	CubeKeys::StartMouse();
 	bBound = true;
 	OnRep_PlayerId();
 
 	// After a border crossing the player stands where they were, in the world the client already holds, and keeps
 	// walking while the new server's welcome is on its way: no start screen, no jump to the region's middle.
 	const bool bCrossingIn = Game->Crossing.bSet;
+	if (bCrossingIn) Game->TakeCarried(Avatars, Bombs, MyTomb);
+	else Game->DropCarried();
 	if (bCrossingIn)
 	{
 		// The body the client carried since the old world went, up to this very moment: position, speed, the tick's
@@ -113,7 +128,7 @@ void ACubePlayerPawn::Bind()
 		// A -walkto test keeps walking through the border, as a player holding the key does.
 		AxisForward = C.Forward; AxisRight = C.Strafe; bMouseCaptured = true;
 		FString WalkTo;
-		if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"))) TestForward = 1.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"))) { TestForward = 1.f; bTestSprint = true; }
 	}
 	else Body.Teleport(36, 12, 0);
 	Game->bPlaced = bCrossingIn;
@@ -164,8 +179,10 @@ void ACubePlayerPawn::SetupUnattended()
 {
 	if (FParse::Param(FCommandLine::Get(), TEXT("autoplay")))
 	{
+		// Bound to this pawn: a crossing can put another pawn in its place within the second, and a timer that still ran
+		// on a destroyed pawn read freed memory (a crash on dev, 2026-10-02, PSV-3018).
 		FTimerHandle Handle;
-		GetWorldTimerManager().SetTimer(Handle, [this]() { if (Game) Game->StartPlay(Game->PlayerName); }, 1.f, false);
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, [this]() { if (Game) Game->StartPlay(Game->PlayerName); }), 1.f, false);
 	}
 	float Seconds = 0;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-screenshot="), Seconds) && Seconds > 0)
@@ -208,11 +225,24 @@ void ACubePlayerPawn::SetupPlayerInputComponent(UInputComponent* Input)
 	Input->BindAction(TEXT("SlotPrevious"), IE_Pressed, this, &ACubePlayerPawn::OnSlotPrevious);
 	Input->BindAction(TEXT("Confirm"), IE_Pressed, this, &ACubePlayerPawn::OnConfirm);
 	Input->BindAction(TEXT("Release"), IE_Pressed, this, &ACubePlayerPawn::OnRelease);
+	Input->BindAction(TEXT("TogglePanel"), IE_Pressed, this, &ACubePlayerPawn::OnTogglePanel);
 }
 
-// The axis value is the raw pixel delta (DefaultInput.ini sets the mouse sensitivity to 1 and the legacy scales off).
-void ACubePlayerPawn::OnTurn(float V) { if (bMouseCaptured) AddControllerYawInput(V * CubeSpec::DegreesPerMousePixel); }
-void ACubePlayerPawn::OnLookUp(float V) { if (bMouseCaptured) AddControllerPitchInput(V * CubeSpec::DegreesPerMousePixel); }
+// The axis value is the raw pixel delta (DefaultInput.ini sets the mouse sensitivity to 1 and the legacy scales off),
+// scaled by the engine with the field of view (bEnableFOVScaling).
+void ACubePlayerPawn::OnTurn(float V)
+{
+	if (!bMouseCaptured) return;
+	AddControllerYawInput(V * CubeSpec::DegreesPerMousePixel);
+	if (Game) Game->FrameTurn.X += V * CubeSpec::DegreesPerMousePixel;
+}
+
+void ACubePlayerPawn::OnLookUp(float V)
+{
+	if (!bMouseCaptured) return;
+	AddControllerPitchInput(V * CubeSpec::DegreesPerMousePixel);
+	if (Game) Game->FrameTurn.Y += V * CubeSpec::DegreesPerMousePixel;
+}
 
 void ACubePlayerPawn::CaptureMouse(bool bCapture)
 {
@@ -241,6 +271,7 @@ void ACubePlayerPawn::OnSlot(int32 Index) { if (Game) Game->Slot = FMath::Clamp(
 void ACubePlayerPawn::OnConfirm()
 {
 	if (!Game) return;
+	if (Game->Notice.IsSet()) { CloseNotice(); return; }
 	if (Game->bDead) { CmdRespawn(); return; }
 	if (!Game->IsConnected() && !Game->IsSigningIn()) { Game->StartPlay(Game->PlayerName); return; }
 	if (Game->IsConnected()) CaptureMouse(true);
@@ -249,8 +280,22 @@ void ACubePlayerPawn::OnConfirm()
 /** Esc opens the game menu and shuts it again. */
 void ACubePlayerPawn::OnRelease()
 {
+	if (Game && Game->Notice.IsSet()) { CloseNotice(); return; }
 	if (!bMouseCaptured && Game && Game->IsConnected() && !Game->bDead) { CaptureMouse(true); return; }
 	CaptureMouse(false);
+}
+
+// The console key (` / ~): the HUD's panel goes and comes back, as on the web. The engine's console moved to F10.
+void ACubePlayerPawn::OnTogglePanel()
+{
+	if (Game) Game->bPanelHidden = !Game->bPanelHidden;
+}
+
+/** OK, Enter or Esc puts an operator's notice away; the game goes on with the mouse captured again, if there is one. */
+void ACubePlayerPawn::CloseNotice()
+{
+	Game->CloseNotice();
+	if (Game->IsConnected() && Game->bPlaced && !Game->bDead) CaptureMouse(true);
 }
 
 /** A click while the game menu is open: Resume goes back to the game, Exit closes it; anywhere else does nothing. */
@@ -261,6 +306,7 @@ void ACubePlayerPawn::ClickMenu()
 	float MX, MY;
 	if (!Hud || !PC->GetMousePosition(MX, MY)) { CaptureMouse(true); return; }
 	const int32 Button = Hud->MenuButtonAt(FVector2D(MX, MY));
+	if (Game && Game->Notice.IsSet()) { if (Button == 3) CloseNotice(); return; }
 	if (Button == 1) CaptureMouse(true);
 	else if (Button == 2) UKismetSystemLibrary::QuitGame(this, PC, EQuitPreference::Quit, false);
 }
@@ -271,6 +317,7 @@ void ACubePlayerPawn::OnDig(bool bHeld)
 	if (!Game || !bHeld) return;
 	if (!bMouseCaptured)
 	{
+		if (Game->Notice.IsSet()) { ClickMenu(); return; }
 		if (Game->bDead) { OnConfirm(); return; }
 		if (Game->IsConnected()) ClickMenu();
 		else OnConfirm();
@@ -306,15 +353,20 @@ void ACubePlayerPawn::Unstick()
 	while (CubePhysics::Overlaps(Body, Solid) && Guard++ < 80) { Body.Z = FMath::Floor(Body.Z) + 1; Body.PZ = Body.Z; }
 }
 
-void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
+void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 {
-	// A crossing keeps the body where the client has walked it meanwhile; the server's pose is where the crossing began.
-	const bool bKeep = Game->bPlaced && FMath::Abs(You.X - Body.X) + FMath::Abs(You.Y - Body.Y) + FMath::Abs(You.Z - Body.Z) < 12;
+	// A crossing keeps the body where the client has walked it, as the browser client does: the next server's pose is
+	// where it last heard of the player, or its spawn when it heard nothing (a C# server that missed the old server's
+	// last presence), and moving there was the teleport at the border. The next server hears where the player is with
+	// the very next tick's move. Only a fresh join takes the server's pose.
+	LastPose.Empty();
+	// The old server's dig ended with the player; one still held starts again on this server with the next tick.
+	bDigging = false;
+	const bool bKeep = Game->bPlaced && !bTeleport;
 	if (bKeep) Unstick();
 	else
 	{
 		Spawn(You.X, You.Y, You.Z);
-		LastPose.Empty();
 		for (auto& Pair : Avatars) if (Pair.Value) Pair.Value->Destroy();
 		Avatars.Empty();
 		TArray<FString> Ids;
@@ -393,24 +445,35 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 			}
 		}), 0.5f, true, 6.f);
 	}
-	// -walkto=<x> or -walkto=<x>,<y>: keep walking towards that spot, one axis at a time (a border crossing test).
+	// -walkto=<x>, -walkto=<x>,<y>, or spots one after another, -walkto=<x>,<y>;<x>,<y>: keep walking towards each spot in
+	// turn, one axis at a time (a border crossing test). The spot reached so far is the game instance's, so the walk goes
+	// on from it after a crossing. It steers as soon as the welcome is in (the world has arrived by then): walking on
+	// blind for 2 s took the walk 11-15 blocks off its route, over the next border and into craters it could not climb
+	// out of, after a crossing and after a fresh join alike.
 	FString TargetText;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), TargetText, false) && !TargetText.IsEmpty())
 	{
-		FString TargetX, TargetY;
-		if (!TargetText.Split(TEXT(","), &TargetX, &TargetY)) TargetX = TargetText;
-		const float Target = FCString::Atof(*TargetX);
-		const TOptional<float> TargetYValue = TargetY.IsEmpty() ? TOptional<float>() : TOptional<float>(FCString::Atof(*TargetY));
-		FTimerHandle H;
-		GetWorldTimerManager().SetTimer(H, FTimerDelegate::CreateWeakLambda(this, [this, Target, TargetYValue]()
+		TArray<FString> Spots;
+		TargetText.ParseIntoArray(Spots, TEXT(";"));
+		TestWalkSpots.Reset();
+		for (const FString& Spot : Spots)
 		{
-			TestWalkTo = Target;
-			TestWalkToY = TargetYValue;
+			FString TargetX, TargetY;
+			if (!Spot.Split(TEXT(","), &TargetX, &TargetY)) TargetX = Spot;
+			TestWalkSpots.Add({ FCString::Atof(*TargetX), TargetY.IsEmpty() ? TOptional<float>() : TOptional<float>(FCString::Atof(*TargetY)) });
+		}
+		FTimerHandle H;
+		GetWorldTimerManager().SetTimer(H, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			if (TestWalkSpots.Num() == 0) return;
+			const TPair<float, TOptional<float>>& Spot = TestWalkSpots[FMath::Clamp(Game->WalkSpot, 0, TestWalkSpots.Num() - 1)];
+			TestWalkTo = Spot.Key;
+			TestWalkToY = Spot.Value;
 			// With -holdkeys the walk is the test's own only up to the first border: past it the keys held on the real keyboard
 			// must carry the player on (the test of keys surviving a crossing).
 			bMouseCaptured = true;
 			if (!FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) || !Game->bCrossedOnce) { TestForward = 1.f; bTestSprint = true; }
-		}), 2.f, false);
+		}), 0.05f, false);
 		FTimerHandle Where;
 		GetWorldTimerManager().SetTimer(Where, FTimerDelegate::CreateWeakLambda(this, [this]() { Game->Log(FString::Printf(TEXT("walkto: at %.1f %.1f %.1f yaw %.0f in %s"), Body.X, Body.Y, Body.Z, GetControlRotation().Yaw, *Game->Room)); }), 1.f, true);
 	}
@@ -420,6 +483,13 @@ void ACubePlayerPawn::HandleRespawn(const FCubePose& You)
 {
 	Spawn(You.X, You.Y, You.Z);
 	CaptureMouse(true);
+}
+
+void ACubePlayerPawn::HandleCorrect(const FCubePose& At)
+{
+	Body.Teleport(At.X, At.Y, At.Z);
+	// The server hears where the player stands now with the next tick's move, even if they stand still.
+	LastPose.Empty();
 }
 
 void ACubePlayerPawn::HandleHurt(const FString& InPlayerId, double, double KX, double KY, double Strength)
@@ -524,7 +594,32 @@ void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
 	const FString Pose = FString::Printf(TEXT("%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d"), Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
 	if (Pose == LastPose) return;
 	LastPose = Pose;
-	CmdMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
+	CmdMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting, Body.Peak);
+}
+
+// The controller turns the view by the mouse through this pawn's Turn and LookUp. Until the next server's ClientRestart
+// wires this pawn's input up, a moment after the pawn arrives, nothing would: the pawn turns the view by the tap's
+// movement itself, with the engine's scaling, so no turn is lost at the hand-over. Either way this frame's movement is
+// taken from the tap here, so a crossing's gap later starts from the movement that came after it.
+void ACubePlayerPawn::TakeUnreadMouse()
+{
+	const FVector2D Mouse = CubeKeys::TakeMouse();
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	const bool bWired = InputComponent && PC && PC->GetPawn() == this;
+	if (bWired && UnwiredTurnFrames > 0)
+	{
+		Game->Log(FString::Printf(TEXT("the pawn's input was wired after %d frame(s) turned by the mouse tap"), UnwiredTurnFrames));
+		UnwiredTurnFrames = 0;
+	}
+	if (bWired || !PC || !bMouseCaptured || Mouse.IsZero()) return;
+	const float Drawn = PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : Game->LastHorizontalFov;
+	const FVector2D Turn(UCubeWorldGameInstance::MouseDegrees(Mouse.X, Drawn), UCubeWorldGameInstance::MouseDegrees(Mouse.Y, Drawn));
+	FRotator View = PC->GetControlRotation();
+	View.Yaw += Turn.X;
+	View.Pitch = FMath::Clamp(FRotator::NormalizeAxis(View.Pitch) + Turn.Y, -89.9f, 89.9f);
+	PC->SetControlRotation(View);
+	Game->FrameTurn += Turn;
+	UnwiredTurnFrames++;
 }
 
 void ACubePlayerPawn::GameTick()
@@ -538,10 +633,20 @@ void ACubePlayerPawn::GameTick()
 	const bool bSteer = TestWalkTo.IsSet() && !(FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) && Game->bCrossedOnce);
 	if (bSteer) if (APlayerController* PC = Cast<APlayerController>(GetController()))
 	{
-		// Along x until there, then along y (Unreal's yaw 90 is the world's +y).
-		const bool bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
-		if (bThereX && TestWalkToY.IsSet()) PC->SetControlRotation(FRotator(0, TestWalkToY.GetValue() > Body.Y ? 90.f : -90.f, 0));
-		else PC->SetControlRotation(FRotator(0, TestWalkTo.GetValue() > Body.X ? 0.f : 180.f, 0));
+		// Along x until there, then along y (Unreal's yaw 90 is the world's +y), then on to the next spot.
+		bool bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
+		if (bThereX && (!TestWalkToY.IsSet() || FMath::Abs(TestWalkToY.GetValue() - Body.Y) < 0.5) && Game->WalkSpot + 1 < TestWalkSpots.Num())
+		{
+			const TPair<float, TOptional<float>>& Next = TestWalkSpots[++Game->WalkSpot];
+			TestWalkTo = Next.Key;
+			TestWalkToY = Next.Value;
+			bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
+			Game->Log(FString::Printf(TEXT("walkto: on to %.1f%s"), Next.Key, Next.Value.IsSet() ? *FString::Printf(TEXT(", %.1f"), Next.Value.GetValue()) : TEXT("")));
+		}
+		const float Heading = bThereX && TestWalkToY.IsSet() ? (TestWalkToY.GetValue() > Body.Y ? 90.f : -90.f) : (TestWalkTo.GetValue() > Body.X ? 0.f : 180.f);
+		// -fakemouse: the hand on the mouse turns the view, and the walk steers by the keys (below).
+		if (Game->IsFakeMouse()) Game->WalkHeading = Heading;
+		else PC->SetControlRotation(FRotator(0, Heading, 0));
 	}
 	const FRotator View = GetControlRotation();
 	const double Yaw = CubeSpec::YawFromUnreal(View.Yaw), Pitch = CubeSpec::PitchFromUnreal(View.Pitch);
@@ -557,6 +662,22 @@ void ACubePlayerPawn::GameTick()
 			Input.Forward = FMath::Clamp(AxisForward + TestForward, -1.f, 1.f);
 			Input.Strafe = -FMath::Clamp(AxisRight, -1.f, 1.f);   // Minecraft's strafe is positive to the left
 			Input.bJump = bJumpHeld; Input.bSneak = bSneakHeld; Input.bSprint = bSprintHeld || bTestSprint;
+			// -fakemouse: whichever way the hand has the view looking, the keys walk the test's way.
+			if (Game->IsFakeMouse() && Game->WalkHeading.IsSet() && Input.Forward > 0)
+			{
+				const FVector2D K = UCubeWorldGameInstance::WalkKeys(Game->WalkHeading.GetValue(), View.Yaw);
+				Input.Forward = K.X; Input.Strafe = K.Y;
+			}
+			// -fakesprint=<s>: in a C# room, more than 3 blocks inside its region, the sprint is let go and taken again every
+			// s seconds, so the zoom there must follow it; near a border, and on an Unreal server, it is held as -fakekeys
+			// holds it, so a crossing starts at a steady zoom.
+			static const float SprintEvery = [] { float S = 0; FParse::Value(FCommandLine::Get(), TEXT("-fakesprint="), S); return S; }();
+			if (SprintEvery > 0 && Game->IsViaSocket())
+			{
+				int32 X0, X1, Y0, Y1;
+				CubeSpec::RegionBounds(CubeSpec::RegionOf(Body.X, Body.Y), X0, X1, Y0, Y1);
+				if (Body.X > X0 + 3 && Body.X < X1 - 3 && Body.Y > Y0 + 3 && Body.Y < Y1 - 3) Input.bSprint = FMath::Fmod(FPlatformTime::Seconds(), 2.0 * SprintEvery) < SprintEvery;
+			}
 		}
 		Input.Yaw = Yaw;
 		TArray<FCubeOtherBody> Others;
@@ -577,10 +698,14 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	if (!bBound) Bind();
 	if (!Game || !bBound) return;
+	// An operator's notice frees the mouse while it is up, whatever captured it since (a welcome does).
+	if (Game->Notice.IsSet() && bMouseCaptured) { CaptureMouse(false); AxisForward = AxisRight = 0; bDigHeld = false; }
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { GameTick(); Accumulator -= CubeSpec::TickSeconds; }
-	// What a crossing goes on from, if the world is torn down after this frame.
+	TakeUnreadMouse();
+	// What a crossing goes on from, if the world is torn down after this frame: the body, and the view as drawn now.
 	Game->LastFullBody = Body; Game->LastAccumulator = Accumulator; Game->LastBodyTime = FPlatformTime::Seconds();
+	if (Game->LastBody.bSet) Game->NoteDrawnView(GetControlRotation());
 	const double Partial = Accumulator / CubeSpec::TickSeconds;
 
 	const FVector Feet(Body.PX + (Body.X - Body.PX) * Partial, Body.PY + (Body.Y - Body.PY) * Partial, Body.PZ + (Body.Z - Body.PZ) * Partial);
@@ -631,9 +756,9 @@ void ACubePlayerPawn::ServerHello_Implementation(const FString& Name, bool bCros
 	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnHello(this, Name, bCross, X, Y, Z);
 }
 
-void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak, int32 Seq)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(S->PlayerOf(this), X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting);
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(S->PlayerOf(this), X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, bOnGround ? TOptional<double>() : TOptional<double>(Peak), Seq);
 }
 
 void ACubePlayerPawn::ServerDig_Implementation(int32 X, int32 Y, int32 Z, bool bStart)
@@ -676,8 +801,7 @@ void ACubePlayerPawn::ClientWorldChunk_Implementation(const TArray<FCubeCellRep>
 
 void ACubePlayerPawn::ClientBombs_Implementation(const TArray<FCubeBombRep>& InBombs)
 {
-	if (!Game) return;
-	for (const FCubeBombRep& B : InBombs) Game->OnBombFrame(B);
+	if (Game) Game->OnBombListFrame(InBombs);
 }
 
 void ACubePlayerPawn::ClientInventory_Implementation(const TArray<FCubeStackRep>& Stacks)
@@ -688,6 +812,11 @@ void ACubePlayerPawn::ClientInventory_Implementation(const TArray<FCubeStackRep>
 void ACubePlayerPawn::ClientRespawn_Implementation(float X, float Y, float Z)
 {
 	if (Game) Game->OnRespawnFrame(FCubePose{ X, Y, Z, CubeSpec::MaxHealth });
+}
+
+void ACubePlayerPawn::ClientCorrect_Implementation(float X, float Y, float Z, int32 Seq)
+{
+	if (Game) Game->OnCorrectFrame(FCubePose{ X, Y, Z, Game->Health }, Seq);
 }
 
 void ACubePlayerPawn::ClientTurnedAway_Implementation(const FString& Reason)
@@ -717,6 +846,10 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 		RemoveBomb(B.Id);
 		return;
 	}
+	// A bomb only moves forward (free, held, flying): a frame that would take it back is stale, and never takes a bomb
+	// out of the hand (the web client keeps the same rule).
+	const auto Rank = [](const FString& S) { return S == TEXT("free") ? 0 : S == TEXT("held") ? 1 : 2; };
+	if (Bomb && Rank(B.State) < Rank(Bomb->State)) return;
 	if (!Bomb)
 	{
 		Bomb = GetWorld()->SpawnActor<ACubeBomb>();
@@ -749,6 +882,17 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 	Bomb->Prev = Bomb->Pos;
 	if (B.State != TEXT("held")) Bomb->SetActorLocation(Bomb->Pos * CubeSpec::BlockCm);
 	UpdateHolding();
+}
+
+// A new server's welcome lists every bomb it knows: one this client still shows and the server does not know is gone
+// (it went off or fizzled while the client was elsewhere), as the web client drops every bomb at a welcome.
+void ACubePlayerPawn::HandleBombList(const TSet<FString>& Known)
+{
+	TArray<FString> Ids;
+	Bombs.GetKeys(Ids);
+	int32 Gone = 0;
+	for (const FString& Id : Ids) if (!Known.Contains(Id)) { RemoveBomb(Id); Gone++; }
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs"))) Game->Log(FString::Printf(TEXT("bombs: the server lists %d; this pawn had %d, %d of them gone"), Known.Num(), Ids.Num(), Gone));
 }
 
 void ACubePlayerPawn::RemoveBomb(const FString& Id)
@@ -837,13 +981,15 @@ namespace
 	}
 }
 
-void ACubePlayerPawn::CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+void ACubePlayerPawn::CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, double Peak)
 {
-	if (!Game->IsViaSocket()) { ServerMove(X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting); return; }
+	if (!Game->IsViaSocket()) { ServerMove(X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, Peak, Game->MoveSeq); return; }
 	const TSharedRef<FJsonObject> F = Op(TEXT("move"));
 	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
 	F->SetNumberField(TEXT("yaw"), Yaw); F->SetNumberField(TEXT("pitch"), Pitch);
 	F->SetBoolField(TEXT("onGround"), bOnGround); F->SetBoolField(TEXT("sneaking"), bSneaking); F->SetBoolField(TEXT("sprinting"), bSprinting);
+	if (!bOnGround) F->SetNumberField(TEXT("peak"), Peak);
+	F->SetNumberField(TEXT("seq"), Game->MoveSeq);
 	Game->Send(F);
 }
 
@@ -862,7 +1008,7 @@ void ACubePlayerPawn::CmdPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, in
 	const TSharedRef<FJsonObject> F = Op(TEXT("place"));
 	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
 	F->SetNumberField(TEXT("nx"), NX); F->SetNumberField(TEXT("ny"), NY); F->SetNumberField(TEXT("nz"), NZ);
-	F->SetStringField(TEXT("kind"), Kind.ToString());
+	F->SetStringField(TEXT("kind"), CubeSpec::KindName(Kind));
 	Game->Send(F);
 }
 

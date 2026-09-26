@@ -9,6 +9,9 @@ namespace PlayServRoomsWire
 	static const TCHAR* TypeRoomPresence = TEXT("room_presence");
 	static const TCHAR* TypeTicketResult = TEXT("ticket_result");
 	static const TCHAR* TypeTicketRelease = TEXT("ticket_release");
+	static const TCHAR* TypeSubscribeData = TEXT("subscribe_data");
+	static const TCHAR* TypeUnsubscribeData = TEXT("unsubscribe_data");
+	static const TCHAR* TypeDataWrite = TEXT("data_write");
 
 	static const TCHAR* TypeHelloAck = TEXT("uplink_hello_ack");
 	static const TCHAR* TypePing = TEXT("ping");
@@ -16,6 +19,13 @@ namespace PlayServRoomsWire
 	static const TCHAR* TypeTicketOffer = TEXT("ticket_offer");
 	static const TCHAR* TypeJoinAck = TEXT("join_ack");
 	static const TCHAR* TypeFrameTooLarge = TEXT("frame_too_large");
+	static const TCHAR* TypeDataUpdate = TEXT("data_update");
+	// An operator's room actions (uplink contract §1.4, PSV-2864 / PSV-2862): sent only to a socket that declared them.
+	static const TCHAR* TypeParticipantRemove = TEXT("participant_remove");
+	static const TCHAR* TypeParticipantRemoveResult = TEXT("participant_remove_result");
+	static const TCHAR* TypeRoomClose = TEXT("room_close");
+	static const TCHAR* TypeRoomCloseResult = TEXT("room_close_result");
+	static const TCHAR* FieldRequestId = TEXT("request_id");
 
 	static const TCHAR* FieldType = TEXT("type");
 	static const TCHAR* FieldExecutorSlug = TEXT("executor_slug");
@@ -38,6 +48,24 @@ namespace PlayServRoomsWire
 	static const TCHAR* FieldReason = TEXT("reason");
 	static const TCHAR* FieldDetail = TEXT("detail");
 	static const TCHAR* FieldParams = TEXT("params");
+
+	// Data subscriptions and writes, as the C# SDK's RuntimeData speaks them. project_id and client_key are empty: the
+	// platform scopes them to the project and environment the uplink signed in to.
+	static const TCHAR* FieldProjectId = TEXT("project_id");
+	static const TCHAR* FieldClientKey = TEXT("client_key");
+	static const TCHAR* FieldEntity = TEXT("entity");
+	static const TCHAR* FieldKeyPath = TEXT("key_path");
+	static const TCHAR* FieldId = TEXT("id");
+	static const TCHAR* FieldOp = TEXT("op");
+	static const TCHAR* FieldData = TEXT("data");
+	static const TCHAR* OpUpsert = TEXT("upsert");
+	static const TCHAR* OpDelete = TEXT("delete");
+
+	// A line in the game server's function logs, as the C# SDK's Platform.Log sends it (UplinkLog): message, level
+	// (debug, info, warn, error) and optional data.
+	static const TCHAR* TypeLog = TEXT("log");
+	static const TCHAR* FieldMessage = TEXT("message");
+	static const TCHAR* FieldLevel = TEXT("level");
 
 	static const TCHAR* FieldCapacity = TEXT("capacity");
 	static const TCHAR* FieldReservationTtlSeconds = TEXT("reservation_ttl_seconds");
@@ -70,6 +98,10 @@ namespace PlayServRoomsWire
 	static const TCHAR* AdmissionConsume = TEXT("consume");
 	static const TCHAR* CapabilityAdmissionPush = TEXT("admission_push");
 	static const TCHAR* CapabilityRoomCreate = TEXT("room_create");
+	static const TCHAR* CapabilityParticipantRemove = TEXT("participant_remove");
+	static const TCHAR* CapabilityRoomClose = TEXT("room_close");
+	static const TCHAR* ReasonRemovedByOperator = TEXT("removed_by_operator");
+	static const TCHAR* ReasonRoomClosedByOperator = TEXT("room_closed_by_operator");
 	static const TCHAR* RosterCheckMismatch = TEXT("mismatch");
 	static constexpr int32 ProtocolVersion = 1;
 

@@ -9,7 +9,7 @@ A room's server runs one of two ways, and admission, presence and joining are th
 - **You run it**, on your own machines or a host you choose, and it registers its rooms with `StartHosting` and `StartRoom` (below).
 - **PlayServ hosting runs it**: a player asks for a room with `RequestNewRoom`, the platform starts one server process for that room on your room type's machine pool, and the process registers it with the single call `StartRoomPlayServHosted` ("Rooms PlayServ hosting starts").
 
-> **Not in this version:** matchmaking (there is no `JoinGame`: the platform has no matchmaking in service, so build your room browser on `Browse`) and game data over the uplink.
+> **Not in this version:** matchmaking (there is no `JoinGame`: the platform has no matchmaking in service, so build your room browser on `Browse`), and reading game data over the uplink: a hosting server reads through `PlayServ::Data`, hears other writers' changes with `SubscribeData` ("Hearing data changes" below), and can write records over the uplink with `WriteData` ("Writing data over the uplink").
 
 ## Prerequisites (hosting)
 
@@ -130,6 +130,18 @@ PlayServ::Rooms::RemovePlayer(RoomName, PlayerId);
 // The PlayServ player id behind a connection (empty for anything not admitted by ticket).
 const FString PlayerId = PlayServ::Rooms::GetPlayerId(PlayerController);
 ```
+
+**A player who comes in some other way.** The engine's login events cover Unreal network logins only. A player your server lets in through its own transport (a WebSocket door for browsers, a beacon, your own protocol) presents the same ticket, which you check with the same `VerifyTicket`; then admit them yourself, and report their leave yourself:
+
+```cpp
+const FPlayServTicketVerdict Verdict = PlayServ::Rooms::VerifyTicket(Ticket);
+if (!Verdict.bAccepted) { /* close the connection with Verdict.Reason */ return; }
+PlayServ::Rooms::AdmitVerified(Verdict);   // the platform hears the join; the player is in the roster
+// ... and when that connection closes:
+PlayServ::Rooms::RemovePlayer(Verdict.RoomName, Verdict.PlayerId);
+```
+
+Without `AdmitVerified` such a player plays, but the platform never hears of them: they are missing from the room's roster, the admin's player list and the operator's **Remove player**.
 
 `OnTicketOffer` on the module class lets you refuse a player before the platform issues the ticket: return `false` with a detail string, and the platform answers the player `403 room_refused`. That, not a refusal in `PreLogin`, is the place for "this player is banned from my server": it frees the seat before anyone travels.
 
@@ -300,9 +312,68 @@ if (PlayServ::Rooms::GetRoom(RoomName, Room))
 }
 ```
 
+## Hearing data changes
+
+A hosting server can hear every change to an entity's records as it happens, whoever makes it: another server, a cloud function, an operator in the admin. The platform sends each upsert and each delete over the uplink, as it does to the C# SDK's `Platform.RuntimeData.Subscribe`:
+
+```cpp
+UPlayServRooms* Rooms = UPlayServSubsystem::Get()->GetRooms();
+Rooms->OnDataUpdate.AddUObject(this, &AMyGameMode::HandleDataUpdate);   // bind first
+Rooms->OnDataSubscribed.AddUObject(this, &AMyGameMode::HandleDataSubscribed);
+PlayServ::Rooms::SubscribeData(TEXT("WorldCube"), TEXT("field:key"));   // the entity, and the field that keys a record
+
+void AMyGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
+{
+    // Update.Entity, Update.Id, Update.Op ("upsert" or "delete"), Update.Data (the record's fields, or null)
+    if (Update.IsDelete()) { /* the record is gone */ }
+}
+```
+
+The subscription goes out as soon as the uplink is ready and again on every new uplink socket, and `OnDataSubscribed(Entity)` fires each time it goes out. The platform does not send again what changed while no subscription was in place (before the first one, or while the uplink reconnected), so a server that must not miss a change reads the records again from `OnDataSubscribed`. `UnsubscribeData(Entity)` stops it. `Display` logs each subscription and the first change of each entity with the fields it carried.
+
+## Writing data over the uplink
+
+A hosting server can write a record over its uplink, as the C# SDK's `Platform.RuntimeData.Write` does. The platform upserts it by its business key (the value of the entity's primary field), merging the fields sent into the row, or deletes it by that key:
+
+```cpp
+TSharedRef<FJsonObject> Pose = MakeShared<FJsonObject>();
+Pose->SetStringField(TEXT("player_id"), PlayerId);
+Pose->SetNumberField(TEXT("x"), X);   // ... the row's other fields
+PlayServ::Rooms::WriteData(TEXT("WorldPresence"), PlayerId, Pose);   // {"type":"data_write","op":"upsert",...}
+PlayServ::Rooms::DeleteData(TEXT("WorldPresence"), PlayerId);        // {"type":"data_write","op":"delete","data":{}}
+```
+
+Unlike `PlayServ::Data::Save`, a write has no version to match, so two servers writing one record never refuse each other (no HTTP 412), and it costs no HTTP round trip. Nothing answers it either. Mind what the platform does with it:
+
+- every subscriber of the entity hears it except the server that wrote it;
+- the subscribers hear it before the row is stored, so a read made at once can miss it;
+- two writes of one row a moment apart can reach a subscriber in either order, so a row that changes often carries its own time, and readers keep the newer one;
+- while the uplink is not ready the call returns `false` and sends nothing: a write is not queued.
+
+`Display` logs the first write of each entity.
+
+## Logs on the platform
+
+A server on a PlayServ machine pool has no other way to show its own lines to the platform: the pool's launcher does not pass the process's output on, so `UE_LOG` alone never leaves the machine. The SDK sends lines over the uplink, as the C# SDK's `Platform.Log` does, and the platform files them in the function logs of the server's room type, beside the launcher's (`list_function_logs`, the admin's function logs):
+
+```cpp
+PlayServ::Rooms::Log(TEXT("world ready"));                                    // info
+PlayServ::Rooms::Log(TEXT("every region is held"), EPlayServLogLevel::Warn);  // debug, info, warn, error
+
+// Or send the process's own UE_LOG lines as well: the game's category from Log on, the SDK's notices, every error.
+FPlayServLogForwarding Rules;                                                 // Everything = Error by default
+Rules.Categories.Add(LogMyGame.GetCategoryName(), ELogVerbosity::Log);
+Rules.Categories.Add(TEXT("LogPlayServ"), ELogVerbosity::Display);
+PlayServ::Rooms::ForwardLogs(Rules);
+```
+
+- **Before the uplink is up.** A line logged before the uplink is ready (the start of the process, a reconnect) waits for it: the last 200, sent oldest first once it is, after a line that counts any dropped. A line the process logs before it ever signs in waits for good, so a server that cannot sign in shows nothing on the platform.
+- **ForwardLogs** catches lines on any thread and sends them from the game thread a quarter of a second later, each as `<Category>: <message>`, at most `MaxLinesPerTenSeconds` (200) in ten seconds, then a line counting the rest. A room ticket in a line (`rsv=<token>`) is blanked out. Even so, do not forward `LogNet` (see "Logging" below): it prints every login URL. `StopForwardingLogs` sends what it had caught; `StopHosting` sends what was logged up to it before it closes the uplink.
+- A line is cut at 16 KB. `Log` is for the game thread.
+
 ## Events
 
-`OnUplinkStateChanged`, `OnRoomConfigChanged`, `OnRoomPlacementChanged`, `OnRoomEnded(RoomName, Reason)` and `OnPlayerRemoved(RoomName, PlayerId, Reason)` are Blueprint-assignable on `UPlayServRooms`, alongside the state queries (`IsHosting`, `GetRoomNames`, `GetRoom`, `GetRoomPlayerCount`, …). Operations are C++ only. `Reason` values are the platform's vocabulary: `lifetime`, `idle`, `room_owned_by_other_instance`, `room_type_not_found`, `reconnect_grace_lapsed`, `removed_by_game`, `room_closed`, `reservation_expired`, and so on.
+`OnUplinkStateChanged`, `OnRoomConfigChanged`, `OnRoomPlacementChanged`, `OnRoomEnded(RoomName, Reason)` and `OnPlayerRemoved(RoomName, PlayerId, Reason)` are Blueprint-assignable on `UPlayServRooms`, alongside the state queries (`IsHosting`, `GetRoomNames`, `GetRoom`, `GetRoomPlayerCount`, …); `OnDataUpdate` and `OnDataSubscribed` ("Hearing data changes") are C++ delegates. Operations are C++ only. `Reason` values are the platform's vocabulary: `lifetime`, `idle`, `room_owned_by_other_instance`, `room_type_not_found`, `reconnect_grace_lapsed`, `removed_by_game`, `room_closed`, `reservation_expired`, and so on.
 
 ## Logging
 

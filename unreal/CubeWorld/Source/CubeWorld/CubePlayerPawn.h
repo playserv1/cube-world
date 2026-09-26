@@ -54,7 +54,10 @@ class CUBEWORLD_API ACubePlayerPawn : public APawn
 public:
 	ACubePlayerPawn();
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void Tick(float DeltaSeconds) override;
+	/** Binds to the game at once, for a pawn the client spawns itself and that must hear the very next frame. */
+	void BindNow() { Bind(); }
 	virtual void SetupPlayerInputComponent(UInputComponent* Input) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -72,7 +75,8 @@ public:
 	// ---- to the server ----------------------------------------------------------------------
 	/** Who this is, and where they were when they crossed a border (bCross), else the server's spawn. */
 	UFUNCTION(Server, Reliable) void ServerHello(const FString& Name, bool bCross, float X, float Y, float Z);
-	UFUNCTION(Server, Unreliable) void ServerMove(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	/** Seq: the last correction this client took (ClientCorrect), so the server drops the moves sent before it. */
+	UFUNCTION(Server, Unreliable) void ServerMove(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak, int32 Seq);
 	UFUNCTION(Server, Reliable) void ServerDig(int32 X, int32 Y, int32 Z, bool bStart);
 	UFUNCTION(Server, Reliable) void ServerPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, uint8 Kind);
 	UFUNCTION(Server, Reliable) void ServerAttack(const FString& Target);
@@ -80,7 +84,8 @@ public:
 	UFUNCTION(Server, Reliable) void ServerThrow(float DX, float DY, float DZ);
 
 	// ---- the same requests, by whichever door the server is behind: an RPC on an Unreal server, a JSON frame on a C# one
-	void CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	/** Peak: the body's highest point since it last stood on the ground, sent while in the air (FCubeBody::Peak). */
+	void CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, double Peak);
 	void CmdDig(int32 X, int32 Y, int32 Z, bool bStart);
 	void CmdPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind);
 	void CmdAttack(const FString& Target);
@@ -93,6 +98,8 @@ public:
 	UFUNCTION(Client, Reliable) void ClientBombs(const TArray<FCubeBombRep>& InBombs);
 	UFUNCTION(Client, Reliable) void ClientInventory(const TArray<FCubeStackRep>& Stacks);
 	UFUNCTION(Client, Reliable) void ClientRespawn(float X, float Y, float Z);
+	/** A move too far for the time it took: back to where the last good one left the player (FCubeMoveCheck). */
+	UFUNCTION(Client, Reliable) void ClientCorrect(float X, float Y, float Z, int32 Seq);
 	/** An operator closed the room or removed this player; the connection closes right after. */
 	UFUNCTION(Client, Reliable) void ClientTurnedAway(const FString& Reason);
 
@@ -103,13 +110,20 @@ private:
 	void DigTick();
 	void UpdateAim();
 	void SendMove(double Yaw, double Pitch);
+	/** Takes the mouse's movement of this frame from the tap, and turns the view by it while no input is wired to this
+	 *  pawn yet (the frames before the next server's ClientRestart). */
+	void TakeUnreadMouse();
+	/** Frames this pawn turned the view by the tap itself, before its input was wired; logged once it is. */
+	int32 UnwiredTurnFrames = 0;
 	void HandleWelcome(const FCubePose& You, bool bTeleport);
 	void HandleRespawn(const FCubePose& You);
+	void HandleCorrect(const FCubePose& At);
 	void HandleHurt(const FString& PlayerId, double Health, double KX, double KY, double Strength);
 	void HandleDeath(const FString& PlayerId, const FString& By);
 	void HandlePlayers(const TArray<FCubePresence>& Players);
 	void HandleCube(int32 X, int32 Y, int32 Z, FName Kind);
 	void HandleBomb(const FCubeBombFrame& Frame);
+	void HandleBombList(const TSet<FString>& Known);
 	void RemoveBomb(const FString& Id);
 	void TickBomb(ACubeBomb* Bomb);
 	void PlaceHeld(ACubeBomb* Bomb);
@@ -122,6 +136,7 @@ private:
 	bool bTestSprint = false;
 	void CaptureMouse(bool bCapture);
 	void ClickMenu();
+	void CloseNotice();
 	void SetupUnattended();
 	ACubeWorldActor* WorldActor() const;
 
@@ -140,6 +155,7 @@ private:
 	void OnSlotPrevious() { OnSlot((Slot() + 8) % 9); }
 	void OnConfirm();
 	void OnRelease();
+	void OnTogglePanel();
 	int32 Slot() const;
 
 	UPROPERTY() UCameraComponent* Camera = nullptr;
@@ -159,6 +175,8 @@ private:
 	FString LastPose;
 	FIntVector TestPlaced, TestDug;
 	TOptional<float> TestWalkTo, TestWalkToY;
+	/** The -walkto spots, in order; the one walked to now is the game instance's WalkSpot. */
+	TArray<TPair<float, TOptional<float>>> TestWalkSpots;
 	float Fov = 70.f;
 	bool bBound = false;
 };

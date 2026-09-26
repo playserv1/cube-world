@@ -1,6 +1,6 @@
 # Starts the three Cube World dedicated servers on this machine, one per region, as the editor run headless
 # (the Launcher's engine has no Server target; see Source/CubeWorldServer.Target.cs). Each server claims a free
-# region, registers its room with PlayServ (environment `ue`, room type `cubeworld`) under this machine's
+# region, registers its room with PlayServ (environment `dev`, room type `cubeworld-ue`) under this machine's
 # address, and listens on its own UDP port. Logs go to Saved/Logs/server-<name>.log.
 #
 #   .\Scripts\RunServers.ps1              # alpha:7777, beta:7778, gamma:7779
@@ -12,12 +12,22 @@ param(
     [int]$Count = 3,
     [int]$FirstPort = 7777,
     [string]$PublicHost = "",
-    [string]$Engine = "D:\EpicGames\UE_5.8\UE_5.8"
+    [string]$Engine = ""
 )
 $ErrorActionPreference = "Stop"
 $Project = Resolve-Path (Join-Path $PSScriptRoot "..\CubeWorld.uproject")
 $Root = Split-Path $Project
+if ($Engine -eq "") {
+    # The Launcher records where it installed each engine version.
+    $Record = "C:\ProgramData\Epic\UnrealEngineLauncher\LauncherInstalled.dat"
+    if (Test-Path $Record) {
+        $Install = (Get-Content $Record -Raw | ConvertFrom-Json).InstallationList | Where-Object { $_.AppName -eq "UE_5.8" } | Select-Object -First 1
+        if ($Install) { $Engine = $Install.InstallLocation }
+    }
+    if ($Engine -eq "") { $Engine = "D:\EpicGames\UE_5.8" }
+}
 $Editor = Join-Path $Engine "Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+if (-not (Test-Path $Editor)) { throw "No editor at $Editor; pass -Engine <the folder that holds Engine\>." }
 $Names = @("alpha", "beta", "gamma", "delta", "epsilon")
 if (-not (Test-Path (Join-Path $Root "Config\DedicatedServerGame.ini"))) {
     Write-Error "Config\DedicatedServerGame.ini is missing: copy DedicatedServerGame.example.ini and put the server key in it."

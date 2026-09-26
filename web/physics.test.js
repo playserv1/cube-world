@@ -18,6 +18,22 @@ test("a jump rises 1.2522 blocks", () => {
   assert.equal(body.y, 0);
 });
 
+test("the body keeps the highest point of a fall until it lands, the ground when it stands", () => {
+  const body = settle(createBody(5, 0, 5));
+  assert.equal(body.peak, 0);
+  let top = 0;
+  for (let i = 0; i < 6; i++) { tick(body, { ...idle, jump: i === 0 }, flat); top = Math.max(top, body.y); }
+  assert.equal(body.onGround, false);
+  assert.ok(Math.abs(body.peak - top) < 1e-9, `peak ${body.peak}, top ${top}`);
+  run(body, idle, flat, 30);
+  assert.equal(body.onGround, true);
+  assert.equal(body.peak, 0);
+  // Off a ten-block tower: the peak is the tower's top all the way down.
+  const faller = createBody(5, 10, 5);
+  run(faller, idle, flat, 10);
+  assert.ok(faller.y < 10 && faller.peak === 10, `at ${faller.y}, peak ${faller.peak}`);
+});
+
 test("holding jump waits ten ticks between jumps", () => {
   const body = settle(createBody(5, 0, 5));
   const jumps = [];

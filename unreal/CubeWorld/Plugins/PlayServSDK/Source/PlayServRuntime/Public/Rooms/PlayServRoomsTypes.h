@@ -296,6 +296,32 @@ struct FPlayServRoomFilters
 	FString Cursor;
 };
 
+/** How bad a line in a game server's logs on the platform is: the C# SDK's levels on the wire. */
+UENUM(BlueprintType)
+enum class EPlayServLogLevel : uint8
+{
+	Debug,
+	Info,
+	Warn,
+	Error
+};
+
+/**
+ * Which of this process's own UE_LOG lines ForwardLogs sends to the platform's logs. A line goes when its verbosity is
+ * at least as bad as its category's entry in Categories, or, for a category not named there, as Everything.
+ */
+struct FPlayServLogForwarding
+{
+	/** Every category's lines from this verbosity on. The default sends errors (and fatal lines) only. */
+	ELogVerbosity::Type Everything = ELogVerbosity::Error;
+
+	/** Named categories and the verbosity each one's lines go from, for example the game's own category at Log. */
+	TMap<FName, ELogVerbosity::Type> Categories;
+
+	/** At most this many lines in any ten seconds; the rest are counted, and the count goes out instead. */
+	int32 MaxLinesPerTenSeconds = 200;
+};
+
 /** Attribute keys with an agreed meaning. PlayServ reads no attribute itself; the SDK and your hosting image act on these. */
 namespace PlayServ::Rooms::Attributes
 {

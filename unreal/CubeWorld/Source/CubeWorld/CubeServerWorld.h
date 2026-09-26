@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "CubeSpec.h"
+#include "Dom/JsonObject.h"
 #include "CubeVoxelWorld.h"
 #include "UObject/StrongObjectPtr.h"
 
@@ -17,6 +18,8 @@ struct FCubeOverride
 	FName Kind;
 	FString By, On;
 	int64 At = 0;
+	/** The world's Version when this block was last set, heard or written. */
+	uint64 Version = 0;
 	TStrongObjectPtr<UWorldCube> Row;
 };
 
@@ -106,6 +109,8 @@ public:
 	/** The geometry: what is solid where. Kept in step with Overrides. */
 	FCubeVoxelWorld Voxels;
 	TMap<FIntVector, FCubeOverride> Overrides;
+	/** Counts every block set, heard or written: a read of the table knows what changed after it began. */
+	uint64 Version = 0;
 
 	/** The columns of a region: From is its first, To the next region's first. */
 	static bool Inside(int32 X, int32 Y, int32 Z) { return X >= 0 && X < CubeSpec::Width_ && Y >= 0 && Y < CubeSpec::Depth && Z >= CubeSpec::MinZ && Z < CubeSpec::MaxZ; }
@@ -122,8 +127,14 @@ public:
 	bool Apply(const FIntVector& At, FName Kind, const FString& By, const FString& On, int64 When, UWorldCube* Row);
 	/** A change of this server's own that the platform has answered: remember the row. */
 	void Remember(const FIntVector& At, UWorldCube* Row);
-	/** A row that is gone (the region was cleared). */
-	void Forget(const FIntVector& At);
+	/** A write of this block landed: it is in the table from now on. */
+	void Touch(const FIntVector& At);
+	/** A row that is gone (the world was reset): the block is the generated one again. Returns whether there was one. */
+	bool Forget(const FIntVector& At);
+	/** The blocks held here that a read of the table did not find, leaving out any set, heard or written after Version AsOf. */
+	TArray<FIntVector> Missing(const TSet<FIntVector>& Found, uint64 AsOf) const;
+	/** A row's key, x:y:z, as a block; false when it is not one. */
+	static bool ParseKey(const FString& Key, FIntVector& Out);
 
 	/**
 	 * An explosion as Minecraft's: rays go out from the centre towards every point of a 16 × 16 × 16 cube's surface,
@@ -153,6 +164,161 @@ private:
 	void Settle(int32 X, int32 Y, int32 Z, FCubeWorldUpdate& Out);
 };
 
+/** The fall a player is in, as their moves report it. */
+struct FCubePlayerFall
+{
+	bool bAirborne = false;
+	double Peak = 0;
+
+	/**
+	 * One move. In the air, the peak rises with it; on landing, the damage: ceil(peak - z - 3), never below 0, and the
+	 * fall is over. SaidPeak is the client's own highest point since the ground (FCubeBody::Peak), which carries a fall
+	 * over a border: the part of it that happened on the old server counts too. It never makes a fall shorter than the
+	 * moves themselves reached.
+	 */
+	double Step(double Z, bool bOnGround, TOptional<double> SaidPeak = TOptional<double>());
+};
+
+enum class ECubeMoveVerdict : uint8 { Accepted, Stale, Refused };
+
+/**
+ * How far a player's moves may take them (CubeSpec::MoveSpeed). MoveCheck on the C# side. A move past the allowance is
+ * refused, and the player is put back where the last accepted move left them: the server sends a correction numbered
+ * Seq, and a client that took it says so in its moves, so the moves it sent before it heard of it are dropped rather
+ * than refused again. A client that never numbers its moves cannot take a correction (a browser or Windows build from
+ * before 2026-10-02): refused for UnnumberedGiveUpMs on end, it is taken where it says, so a player is never held in one
+ * place for good. Drop that once every client numbers its moves.
+ */
+struct FCubeMoveCheck
+{
+	static constexpr int64 UnnumberedGiveUpMs = 1000;
+	double X = 0, Y = 0, Z = 0;
+	int32 Seq = 0;
+
+	/** The server put the player here: they came back from the dead. */
+	void Reset(double InX, double InY, double InZ, int64 Now);
+	/**
+	 * The player joined, or walked in over a border, and the server guessed they stand at (X, Y, Z): where the last server
+	 * saw them, or the region's spawn when it saw them too long ago or too far off. A client that crossed plays on where
+	 * it stands, which can be well past that guess, so the first move is taken as it comes when it is in this region or
+	 * just past its border; only a first move from anywhere else is put back to the guess. Anchored on the guess, a
+	 * player who crossed was snapped to a region's middle, and from there over and over between two rooms.
+	 */
+	void Arrive(double InX, double InY, double InZ, int32 Region, int64 Now);
+	/** A hit threw the player: they may fly further than they walk. */
+	void Knocked(double Strength) { Allowance += FMath::Max(0.0, Strength) * CubeSpec::KnockbackReach; }
+	ECubeMoveVerdict Check(double InX, double InY, double InZ, TOptional<int32> SaidSeq, int64 Now);
+
+private:
+	int64 At = 0, RefusedSince = -1;
+	double Allowance = 0;
+	int32 ArrivedIn = -1;
+};
+
+/**
+ * Whether (X, Y) is in Region or within Slack of its border: a server digs and places only for players who stand in its
+ * region, and one who walks over a border plays on with the old server for the moment the crossing takes. World.Near on
+ * the C# side.
+ */
+inline bool CubeNear(int32 Region, double X, double Y, double Slack)
+{
+	if (Region < 0) return false;
+	int32 X0, X1, Y0, Y1;
+	CubeSpec::RegionBounds(Region, X0, X1, Y0, Y1);
+	return X >= X0 - Slack && X <= X1 + Slack && Y >= Y0 - Slack && Y <= Y1 + Slack;
+}
+
+/**
+ * Whether the server of Region changes the world for a player at (X, Y) who has been outside its region for OutsideMs:
+ * digs, placements, bombs picked up and thrown. In its region, yes. Just past its border, in a region another live server
+ * holds (HeldElsewhere), only for the moment a crossing takes. Anywhere else no: a player who stays with the old server
+ * because the next room did not let them in, or who walked into a region no live server holds, can only walk there.
+ * World.Serves on the C# side.
+ */
+inline bool CubeServes(int32 Region, double X, double Y, int64 OutsideMs, const TArray<int32>& HeldElsewhere)
+{
+	return CubeNear(Region, X, Y, 0)
+		|| (CubeNear(Region, X, Y, CubeSpec::BorderSlack) && OutsideMs <= CubeSpec::CrossingMs && HeldElsewhere.Contains(CubeSpec::RegionOf(X, Y)));
+}
+
+/**
+ * Whether the server of Region may change the block at (X, Y): one of its own region, or of a region another live server
+ * holds. A region no live server holds keeps its blocks until a server claims it. World.ServesBlock on the C# side.
+ */
+inline bool CubeServesBlock(int32 Region, int32 X, int32 Y, const TArray<int32>& HeldElsewhere)
+{
+	const int32 There = CubeSpec::RegionOf(X + 0.5, Y + 0.5);
+	return (Region >= 0 && There == Region) || HeldElsewhere.Contains(There);
+}
+
+/** A player another server saw is the one walking in over the border when it saw them in the last 5 s, alive (World.Arriving on the C# side). */
+inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now - SeenAt < 5000 && Health > 0; }
+
+/** How long a pose another server wrote counts: the player is shown, hit and blasted for 5 s after it (Others on the C# side). */
+constexpr int64 CubePresenceTtlMs = 5000;
+
+/**
+ * How often a server writes the presence row of a player of its own whose pose changed: 20 times a second, as the C#
+ * servers do (ShareMovesAsync). At 5 a second a player hosted here moved in jerks for everyone elsewhere: other rooms saw
+ * about 4 positions a second, against 7-9 for a player on a C# server (PSV-3015). Every room still sends the poses to its
+ * own clients 10 times a second.
+ */
+constexpr float CubePresenceWriteSeconds = 0.05f;
+
+/**
+ * How long a server keeps the presence row of a player who left before it deletes it. One who crossed is written by the
+ * next server well within it; a row deleted at once left nobody in the table until then, so every server lost the
+ * player for up to a second and the next one put them at its spawn with full health (PSV-3018). WorldPresence.LeaveGraceMs
+ * on the C# side.
+ */
+constexpr int64 CubeLeaveGraceMs = 2000;
+
+/** How long a hit another server wrote can still land (HearHit on the C# side). */
+constexpr int64 CubeHitTtlMs = 5000;
+
+/** A hit written at At lands now only within CubeHitTtlMs of being written; one with no time never does. */
+inline bool CubeHitIsFresh(int64 At, int64 Now) { return At > 0 && Now - At < CubeHitTtlMs; }
+
+/**
+ * How recently a bomb may have been dropped and still have no row in a read of the bomb table: its first rows may be
+ * written while the read runs, or pushed before they are stored. Older, a bomb with no row is long over (PSV-2977).
+ */
+constexpr int64 CubeBombNoRowGraceMs = 10000;
+
+/**
+ * How long a bomb in play must have no row in every read of the bomb table before it goes out of play: the table is read
+ * again this long after a read that found such bombs, to be sure (PSV-2977).
+ */
+constexpr int64 CubeBombRecheckMs = 5000;
+
+/** How far outside a region the last server may have seen a player who walked in over its border, in blocks. */
+constexpr double CubeCrossingBand = 4.0;
+
+/**
+ * Whether a player another server just saw at (X, Y) walked into Region over its border: they were seen in it or within
+ * CubeCrossingBand of it. Then X and Y are moved inside the region, where they stand. Seen farther away, they jumped to
+ * this room from the server list, and start at its spawn. World.Arriving on the C# side.
+ */
+inline bool CubeCrossedInto(int32 Region, double& X, double& Y)
+{
+	int32 X0, X1, Y0, Y1;
+	CubeSpec::RegionBounds(Region, X0, X1, Y0, Y1);
+	if (X < X0 - CubeCrossingBand || X > X1 + CubeCrossingBand || Y < Y0 - CubeCrossingBand || Y > Y1 + CubeCrossingBand) return false;
+	X = FMath::Clamp(X, X0 + CubeSpec::Width / 2, X1 - CubeSpec::Width / 2);
+	Y = FMath::Clamp(Y, Y0 + CubeSpec::Width / 2, Y1 - CubeSpec::Width / 2);
+	return true;
+}
+
+/**
+ * The second of two poses heard of a player another server hosts shows them hurt: less health than a pose heard within
+ * the last 5 s, and alive (an older pose may predate a stay on this very server, where they could have healed and been
+ * hurt again). WorldPresence.WasHurt on the C# side.
+ */
+inline bool CubeWasHurt(double HealthBefore, int64 SeenBefore, double HealthNow, int64 SeenNow)
+{
+	return HealthNow < HealthBefore && HealthNow > 0 && SeenNow - SeenBefore >= 0 && SeenNow - SeenBefore < 5000;
+}
+
 /** What a player carries, per block kind. */
 struct FCubeInventory
 {
@@ -166,4 +332,29 @@ struct FCubeInventory
 	bool Take(FName Kind);
 	/** Adds one item; a full stack (64) takes no more, as in Minecraft. */
 	bool Give(FName Kind);
+	/** The same count of every kind (a kind not listed counts 0). */
+	bool Same(const FCubeInventory& Other) const;
+};
+
+/**
+ * One player's inventory row as this server knows it, for merging the other writers' rows into the inventory it holds:
+ * the old server's last write after a crossing, the refill function's top-up. A row heard is either this server's own
+ * write coming back (one of the rows it wrote and has not heard yet) or someone else's: then what that writer changed
+ * since the row this server last knew is added to what the player did here, kind by kind. InventorySync on the C# side.
+ */
+struct FCubeInventorySync
+{
+	/** A write of ours not heard back after this long is taken to be in the row (an uplink that sends a server none of its own). */
+	static constexpr int64 EchoMs = 3000;
+
+	/** The row as this server last knew it: read at the join, or heard since. */
+	FCubeInventory Base;
+	/** This server's writes not heard back yet, oldest first, and when each went out. */
+	TArray<TPair<FCubeInventory, int64>> Written;
+
+	void Wrote(const FCubeInventory& Stacks, int64 Now);
+	/** A row was heard. False when it is this server's own write (nothing changes); else Merged is the inventory to hold now. */
+	bool Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, int64 Now, FCubeInventory& Merged);
+	/** Ours plus what Theirs changed since Base, each kind kept within 0 and a stack. */
+	static FCubeInventory Merge(const FCubeInventory& Ours, const FCubeInventory& InBase, const FCubeInventory& Theirs);
 };

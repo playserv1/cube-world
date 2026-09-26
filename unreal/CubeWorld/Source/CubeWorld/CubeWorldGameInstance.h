@@ -13,10 +13,17 @@
 #include "CubeBombs.h"
 #include "CubeWorldState.h"
 #include "Engine/EngineTypes.h"
+#include "InputCoreTypes.h"
 #include "CubeWorldGameInstance.generated.h"
 
 class FCubeSocket;
+class FViewport;
+class APlayerCameraManager;
+struct FCubeSocketFrame;
 class FJsonObject;
+class ACubeAvatar;
+class ACubeBomb;
+class ACubeTombstone;
 
 struct FCubePresence
 {
@@ -48,6 +55,25 @@ struct FCubeCrossing
 	float Forward = 0, Strafe = 0;
 };
 
+/**
+ * What a room said when it turned the player away: the server closed the connection with a reason, or the platform
+ * refused the join with a code. The same rules and words as web/rooms.js. An operator's close is followed by the room
+ * opening again fresh within a minute or two. An operator's removal holds until the room is closed: a Delete room lets
+ * the player back in at once, under the same room name, and the browse names no registration time to see that by, so a
+ * removed player knocks again on the short delay (a 409 removed_from_room is cheap).
+ */
+struct FCubeRefusal
+{
+	/** Seconds before the room is tried again. */
+	double Wait = 3;
+	/** The notice over the game: its title and its message. Empty for a refusal that is no operator's doing. */
+	FString Title, Message;
+	/** The line over the game while the player stands in the region of a room that holds them out. */
+	FString Barred;
+	bool IsSet() const { return !Message.IsEmpty(); }
+	static FCubeRefusal Of(const FString& ReasonOrCode);
+};
+
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnWelcome, const FCubePose& /*You*/, bool /*bTeleport*/);
 DECLARE_MULTICAST_DELEGATE_FourParams(FCubeOnCube, int32, int32, int32, FName /*Kind, None = generated*/);
 /** After one batch of changes, every block it changed: rebuild each chunk once. */
@@ -58,8 +84,12 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnPlayers, const TArray<FCubePresence>&
 DECLARE_MULTICAST_DELEGATE_FiveParams(FCubeOnHurt, const FString& /*PlayerId*/, double /*Health*/, double /*KX*/, double /*KY*/, double /*Strength*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnDeath, const FString& /*PlayerId*/, const FString& /*By*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnRespawn, const FCubePose&);
+/** The server refused a move too far for the time it took: the player goes back to where its last good one left them. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnCorrect, const FCubePose&);
 DECLARE_MULTICAST_DELEGATE(FCubeOnInventory);
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnBomb, const FCubeBombFrame&);
+/** A server handed its whole list of bombs (its welcome): the ids it knows, every other bomb on this client is gone. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnBombList, const TSet<FString>&);
 
 UCLASS()
 class CUBEWORLD_API UCubeWorldGameInstance : public UGameInstance
@@ -81,13 +111,31 @@ public:
 	void Log(const FString& Text);
 	/** The pawn of the next server is placed: the view is its own again. */
 	void EndCrossingView();
+	/** The view as drawn this frame, from the pawn: a crossing's gap starts from it, not from the last game tick's (taken
+	 *  20 times a second, up to 50 ms behind the view while the player turns: the view snapped back, PSV-3027). */
+	void NoteDrawnView(const FRotator& View);
+	/** The view a crossing pose looks with, in Unreal's degrees. */
+	static FRotator LookOf(const FCubeCrossing& Pose);
+	/** How far a mouse movement of Pixels turns the view while HorizontalFov is drawn, as the engine turns the pawn by it:
+	 *  0.15 degrees a pixel, scaled with the field of view when the input settings say so (bEnableFOVScaling). */
+	static float MouseDegrees(float Pixels, float HorizontalFov);
+	/** Draws a camera manager's own view at HorizontalFov without locking its field of view. A lock (SetFOV) is kept by
+	 *  the camera manager whatever its view target's camera says: left on a controller that went on into a C# room, the
+	 *  sprint's zoom never showed there, and showed all at once at the next crossing (PSV-3027). */
+	static void HoldFov(APlayerCameraManager* Cam, float HorizontalFov);
 
 	/** True once this server's welcome arrived and until the connection goes. */
 	bool IsConnected() const { return bWelcomed; }
 	/** In the game for the player: connected, or walking over a border into the next server. The HUD shows through a crossing. */
 	bool IsInPlay() const { return bWelcomed || Crossing.bSet; }
+	/** How much of a fresh join's world has arrived since the welcome, 0 to 1. */
+	float WorldLoaded() const { return ChunksExpected > 0 ? FMath::Clamp(float(ChunksReceived) / ChunksExpected, 0.f, 1.f) : 0.f; }
 	/** The field of view the pawn draws with (horizontal degrees), for the view held through a crossing. */
 	float LastHorizontalFov = 0, LastFov = 0;
+	/** -logcrossing: what turned the view in the frame being drawn, for its frame line. The mouse as it reached the
+	 *  viewport (the engine's MouseX and MouseY) and as the gap took it from the tap, in pixels; the turn the pawn's Turn
+	 *  and LookUp axes applied, in degrees (after the engine's FOV scaling). */
+	FVector2D FrameMouse = FVector2D::ZeroVector, FrameTapMouse = FVector2D::ZeroVector, FrameTurn = FVector2D::ZeroVector;
 	/** True while the server is a C# one, reached over the JSON socket; false on an Unreal server, reached over Iris. */
 	bool IsViaSocket() const { return bViaSocket; }
 	/** A JSON frame to the C# server (nothing while on an Unreal server). */
@@ -101,12 +149,17 @@ public:
 	void OnWorldChunk(const TArray<FCubeCellRep>& Cells, bool bLast);
 	void ApplyCubes(const TArray<FCubeChangeRep>& Changes, const TArray<FCubeFallRep>& Falls, bool bRemote);
 	void SetInventory(const TArray<FCubeStackRep>& Stacks);
+	/** Reads a socket frame on the worker that parsed it: a welcome's blocks into a cell map, then out of the frame's JSON. */
+	static void DecodeSocketFrame(FCubeSocketFrame& Parsed);
 	void SetPlayers(const TArray<FCubePresenceRep>& InPlayers);
 	void SetRegions(const TArray<FCubeRegionRep>& InRegions);
 	void OnHurtFrame(const FString& PlayerId, double InHealth, double KX, double KY, double Strength);
 	void OnDeathFrame(const FString& PlayerId, const FString& By);
 	void OnRespawnFrame(const FCubePose& You);
+	void OnCorrectFrame(const FCubePose& At, int32 Seq);
 	void OnBombFrame(const FCubeBombRep& Bomb);
+	/** A server's whole list of bombs, as its welcome hands it: the bombs it does not list are taken away, as the web client does. */
+	void OnBombListFrame(const TArray<FCubeBombRep>& Bombs);
 	/** The server turned this player away (an operator's close or removal): note it and say so. */
 	void TurnedAwayBy(const FString& Reason);
 
@@ -121,12 +174,33 @@ public:
 	double Health = 20;
 	bool bDead = false;
 	bool bPlaced = false;
+	/** The last correction the server sent (OnCorrectFrame); every move says it. Each server numbers its own from 0. */
+	int32 MoveSeq = 0;
+	/** From Play, or a jump from the server list, until the player stands where the server put them the view is curtained:
+	 *  the world is never shown from the wrong place first (the web client draws the same curtain). */
+	bool bEntering = false;
+	/** The curtain lifts a moment after the player is placed, once the world is drawn around them. */
+	double CurtainUntil = 0;
+	/** How far the curtain is down, 0 to 1: kept here, as the HUD is made again with every map. */
+	float Curtain = 0.f;
+	/** The console key (` / ~) hides the HUD's panel of servers and players and shows it again, as on the web. */
+	bool bPanelHidden = false;
 	/** Set once a border has been crossed in this run (the -holdkeys test walks by itself only up to the first one). */
 	bool bCrossedOnce = false;
+	/** The -walkto spot the test walks to now, kept through crossings (each server's pawn is a new one). */
+	int32 WalkSpot = 0;
 	/** The bomb in the player's hand, if any: right click throws it instead of placing a block. */
 	FString Holding;
 	FString Status = TEXT("Press Enter to play");
 	TArray<FString> LogLines;
+	/** An operator's close or removal, told over the game until the player clicks OK or presses Enter or Esc (as #notice on the web). */
+	FCubeRefusal Notice;
+	void ShowNotice(const FCubeRefusal& Turned) { Notice = Turned; }
+	void CloseNotice() { Notice = FCubeRefusal(); }
+	/** Rooms that hold the player out, by name: what each said, until it lets them in again. */
+	TMap<FString, FCubeRefusal> Barred;
+	/** The line over the game while the player stands in the region of a room that holds them out; empty otherwise. */
+	FString BarredLine() const;
 	TArray<FCubePresence> Players;
 	/** Where the body is, written by the pawn every tick; the position a crossing keeps. */
 	FCubeCrossing LastBody;
@@ -147,6 +221,30 @@ public:
 	/** Steps the carried body up to now and aims the view at its eyes. */
 	void StepGap();
 
+	// ---- -fakemouse: a hand on the mouse for unattended runs ----------------------------------------
+	/** -fakemouse=<deg/s>: nobody's hand swings the mouse right and left at that rate, 30° each way (and up and down at
+	 *  a fifth of it, 10° each way). Its movement goes in where a real mouse's does: to the viewport, whose controller
+	 *  turns the view by it (the pawn's Turn and LookUp, with the engine's FOV scaling), and to the crossing gap's tap.
+	 *  With -walkto the hand also turns the swing's centre towards the walk's heading, and the walk steers by the keys,
+	 *  never by setting the view. */
+	float FakeMouseRate = 0;
+	bool IsFakeMouse() const { return FakeMouseRate > 0; }
+	/** The way the -walkto test goes now (Unreal yaw degrees), kept through crossings; unset until it has a spot. */
+	TOptional<float> WalkHeading;
+	/** What the hand turned the view by in the frame being drawn, in degrees, for the frame line. */
+	FVector2D FakeTurn = FVector2D::ZeroVector;
+	/** The hand's swing at a moment: a triangle from 0 to +Amplitude, to -Amplitude and back, at Rate degrees a second. */
+	static double SwingAt(double Seconds, double Rate, double Amplitude);
+	/** The keys that walk the Heading's way while the view looks ViewYaw's way (Unreal yaw degrees): forward, and the
+	 *  strafe to the left as Minecraft's is. */
+	static FVector2D WalkKeys(float Heading, float ViewYaw);
+
+	// ---- the client's own actors, from one pawn to the next across a crossing that keeps the world (UCubeGameEngine) ----
+	void CarryOver(TMap<FString, ACubeAvatar*>& InAvatars, TMap<FString, ACubeBomb*>& InBombs, ACubeTombstone*& InTomb);
+	void TakeCarried(TMap<FString, ACubeAvatar*>& OutAvatars, TMap<FString, ACubeBomb*>& OutBombs, ACubeTombstone*& OutTomb);
+	/** What no pawn took: destroyed (a fresh join starts from the next server's lists). */
+	void DropCarried();
+
 	FCubeVoxelWorld World;
 	FCubeTextures Textures;
 
@@ -159,11 +257,18 @@ public:
 	FCubeOnHurt OnHurt;
 	FCubeOnDeath OnDeath;
 	FCubeOnRespawn OnRespawn;
+	FCubeOnCorrect OnCorrect;
 	FCubeOnInventory OnInventory;
 	FCubeOnCubes OnCubes;
 	FCubeOnBomb OnBomb;
+	FCubeOnBombList OnBombList;
 
 private:
+	/** A guest is kept per name on this machine (Saved/Guests), as the browser keeps one per name: signing in again under
+	 * the same name resumes the same player instead of making a new one every launch. */
+	void SignInAsNewGuest();
+	void KeepGuest(const FString& RefreshToken);
+	UFUNCTION() void HandleSessionLost();
 	void Browse();
 	/** Every room type answered: pick a room and enter it. */
 	void Browsed();
@@ -171,14 +276,28 @@ private:
 	void TravelToUnrealServer(const FString& RoomName, const FString& Url, bool bTeleport);
 	void ConnectSocket(const FString& RoomName, const FString& Host, int32 Port, bool bSecure, const FString& ReservationToken, bool bTeleport);
 	void OnSocketFrame(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport);
-	void OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport);
+	/** PreRead: the welcome's blocks, read where the frame was parsed (FCubeSocket::Decode). */
+	void OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport, TOptional<TMap<FIntVector, FName>> PreRead = {});
 	void CloseSockets();
 	bool IsInNetworkedWorld() const;
 	void HandleNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
 	void HandlePostLoadMap(UWorld* LoadedWorld);
+	/** From the moment the old server's pawn is gone until the next one's is placed: the view held at the player's eyes,
+	 * the body carried by the client (both crossings, the one that reloads the map and the one that keeps it). */
+	void BeginCrossingGap(UWorld* InWorld);
+	/** UCubeGameEngine: the next Unreal server's connection took over this world (bConnected), or it has no server now. */
+	void HandleServerSwitched(UWorld* InWorld, bool bConnected);
+	void HandleSeamlessTravelFailed(const FString& Why);
+	/** Leaves the Unreal server for the C# one whose welcome just came over the socket, keeping the world. */
+	void LeaveUnrealServerKeepWorld();
+	/** True between a seamless ClientTravel and the world changing hands (or the handshake failing). */
+	bool bSeamlessCrossing = false;
+	TMap<FString, TWeakObjectPtr<ACubeAvatar>> CarriedAvatars;
+	TMap<FString, TWeakObjectPtr<ACubeBomb>> CarriedBombs;
+	TWeakObjectPtr<ACubeTombstone> CarriedTomb;
 	FString RoomOfRegion(int32 InRegion) const;
-	/** Notes an operator's close or removal of RoomName; returns the message for the player, empty for anything else. */
-	FString TurnedAway(const FString& RoomName, const FString& ReasonOrCode);
+	/** Notes an operator's close or removal of RoomName (when it is not tried again, and that it holds the player out); unset for anything else. */
+	FCubeRefusal TurnedAway(const FString& RoomName, const FString& ReasonOrCode);
 	/** Whether RoomName may be tried now. */
 	bool MayTry(const FString& RoomName) const { return FPlatformTime::Seconds() >= NotBefore.FindRef(RoomName); }
 	void Disconnected(const FString& Why);
@@ -208,12 +327,29 @@ private:
 	FVector CrossingEye = FVector::ZeroVector;
 	FRotator CrossingLook = FRotator::ZeroRotator;
 	/** -logcrossing: what every frame around a crossing is drawn from, for finding a wrong frame. */
+	void LogFramesFor(double Seconds);
 	void LogDrawnFrame();
 	void LogEndOfFrame();
 	FDelegateHandle EndFrameLogHandle;
 	uint64 LastDrawnFrame = 0;
 	FDelegateHandle DrawLogHandle;
 	double DrawLogUntil = 0;
+	/** -logcrossing, for the whole run: the mouse that reaches the viewport (FrameMouse), and the field-of-view check. */
+	void WatchFrames();
+	void HandleInputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad);
+	FDelegateHandle InputAxisHandle;
+	/** Every frame the player's own pawn is the view, its field of view is the one drawn; a frame that is not (a locked
+	 *  camera manager draws its lock) is logged, once per stretch. */
+	void CheckDrawnFov();
+	FDelegateHandle FovCheckHandle;
+	/** -fakemouse: the hand's movement for the frame that begins. */
+	void TickFakeMouse();
+	FDelegateHandle FakeMouseHandle;
+	double FakeMouseClock = 0, FakeMouseLastTime = 0;
+	/** The swing the hand has put in so far, off the centre it swings around (yaw, pitch). */
+	FVector2D FakeSwing = FVector2D::ZeroVector;
+	int32 FovOffFrames = 0;
+	float FovOffWorst = 0;
 	bool bSnapshotDiff = false;
 	TMap<FIntVector, FName> Snapshot;
 	void ApplySnapshot();
@@ -223,6 +359,8 @@ private:
 	double CrossAfter = 0;
 	/** A room that turned the player away (an operator closed it, or removed them) is not tried again before this time. */
 	TMap<FString, double> NotBefore;
+	/** The first operator's refusal met while Play goes through the rooms; told once every room has held the player out. */
+	FCubeRefusal FirstRefusal;
 	TArray<FString> Candidates;
 	/** The room type each known room is registered under (the C# servers' or the Unreal servers'), from the browse and the regions. */
 	TMap<FString, FString> RoomSlugs;

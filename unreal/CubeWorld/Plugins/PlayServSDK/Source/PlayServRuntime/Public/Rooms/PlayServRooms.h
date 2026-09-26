@@ -46,6 +46,27 @@ DECLARE_DELEGATE_ThreeParams(FPlayServJoinCallback, bool /*bSuccess*/, const FPl
 /** The end of RequestNewRoom: the room, registered and empty — or the platform's typed refusal. */
 DECLARE_DELEGATE_ThreeParams(FPlayServRequestNewRoomCallback, bool /*bSuccess*/, const FPlayServRoomListing& /*Room*/, const FPlayServError& /*Error*/);
 
+/** One change to a record of an entity this server subscribed to with SubscribeData, as the platform sends it. */
+struct FPlayServDataUpdate
+{
+	/** The entity (table) the record belongs to. */
+	FString Entity;
+	/** The record's id, as the platform names it. */
+	FString Id;
+	/** `upsert` or `delete`. */
+	FString Op;
+	/** The record's fields: as written for an upsert, as they were for a delete. Null when the platform sent none. */
+	TSharedPtr<FJsonObject> Data;
+
+	bool IsDelete() const { return Op == TEXT("delete"); }
+};
+
+/** A record of an entity this server subscribed to changed: another server, a function or an operator wrote or deleted it. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FPlayServOnDataUpdate, const FPlayServDataUpdate& /*Update*/);
+
+/** An entity's data subscription went out on the uplink. Changes made while it was not in place are not sent again. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FPlayServOnDataSubscribed, const FString& /*Entity*/);
+
 /**
  * The Rooms module.
  *
@@ -174,6 +195,15 @@ public:
 	 */
 	FString GetPlayerId(const APlayerController* Player) const;
 
+	/**
+	 * Admit a player whose ticket VerifyTicket accepted, on a connection the engine does not log in: a WebSocket door,
+	 * a beacon, the game's own transport. It does for that player what the engine's PostLogin does for a network login:
+	 * the ticket leaves the verified list and the platform hears the join with its reservation token, so the player is
+	 * in the room's roster. RemovePlayer is their leave. False when the verdict was a refusal or a development fail-open
+	 * admission, when its ticket was never verified here or was admitted already, or when its room is gone.
+	 */
+	bool AdmitVerified(const FPlayServTicketVerdict& Verdict);
+
 	/** Remove a player by the game's own decision, such as a kick: reported at once, with no reconnect grace. False when the player is not in that room. */
 	bool RemovePlayer(const FString& RoomName, const FString& PlayerId);
 
@@ -184,6 +214,65 @@ public:
 
 	/** Bind to veto a ticket the platform offers for one of this server's rooms. Unbound accepts every offer. */
 	FPlayServTicketOfferDecision OnTicketOffer;
+
+	// ---- Hosting: data ----------------------------------------------------------------------
+
+	/**
+	 * Hear every change to an entity's records over the uplink, whoever makes it: another server, a cloud function, an
+	 * operator. Each upsert and each delete arrives in OnDataUpdate. KeyPath is how the platform keys a record,
+	 * `field:<name>` for the field that holds its key. The subscription goes out at once when the uplink is ready,
+	 * else when it becomes ready, and again on every new uplink socket; OnDataSubscribed fires each time it goes out.
+	 * The platform does not send again what changed while no subscription was in place, so a game that must not miss
+	 * a change reads the records again from OnDataSubscribed. A second call for the same entity replaces its key path.
+	 */
+	void SubscribeData(const FString& Entity, const FString& KeyPath);
+
+	/** Stop hearing an entity's changes. */
+	void UnsubscribeData(const FString& Entity);
+
+	/** A record of a subscribed entity changed. Bind before SubscribeData. */
+	FPlayServOnDataUpdate OnDataUpdate;
+
+	/** A data subscription went out on the uplink: at SubscribeData on a ready uplink, and on every new uplink socket. */
+	FPlayServOnDataSubscribed OnDataSubscribed;
+
+	/**
+	 * Write a record over the uplink, as the C# SDK's RuntimeData.Write does: the platform upserts it by its business key
+	 * Id (the value of the entity's primary field), Data's fields merged into the row, a new row if none has that key.
+	 * There is no version to match (no ETag, no 412 from another writer) and no HTTP round trip; nothing answers. The
+	 * platform tells every subscriber of the entity but this server, and tells them before it stores the row, so a read
+	 * made at once can still miss it; and two writes a moment apart can reach a subscriber in either order. False, and
+	 * nothing sent, while the uplink is not ready: a write is not queued, so a game writes a row it keeps current again.
+	 */
+	bool WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data);
+
+	/** Delete a record over the uplink by its business key, as RuntimeData.Delete does. False while the uplink is not ready. */
+	bool DeleteData(const FString& Entity, const FString& Id);
+
+	// ---- Hosting: logs ----------------------------------------------------------------------
+
+	/**
+	 * A line in this game server's logs on the platform: the function logs of its game server, where the C# SDK's
+	 * Platform.Log lines go (list_function_logs). It goes over the uplink as the C# SDK's `log` frame. A line logged
+	 * while the uplink is not ready waits for it, as the C# SDK keeps them on a pool server: the last
+	 * MaxPendingLogLines, sent oldest first once it is, after a line counting any dropped. A message longer than
+	 * MaxLogMessageChars is cut there. Call on the game thread.
+	 */
+	void Log(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data = nullptr);
+
+	/**
+	 * Send this process's own UE_LOG lines to the platform's logs as well, by the given rules: which categories, from
+	 * which verbosity, and how many lines at most. Lines may be logged on any thread; they go out on the game thread a
+	 * moment later, through Log. A second call replaces the rules. The pool launcher does not forward a server's own
+	 * output, so on a pool machine this is how UE_LOG reaches the platform at all.
+	 */
+	void ForwardLogs(const FPlayServLogForwarding& Rules);
+
+	/** Stop ForwardLogs, sending what it had caught. */
+	void StopForwardingLogs();
+
+	static constexpr int32 MaxPendingLogLines = 200;
+	static constexpr int32 MaxLogMessageChars = 16 * 1024;
 
 	// ---- Joining: client --------------------------------------------------------------------
 
@@ -284,6 +373,17 @@ private:
 	void HandleUplinkRefused(const FString& Reason, bool bPermanent);
 	void HandleTicketOffer(const TSharedPtr<FJsonObject>& Frame);
 	void HandleJoinAck(const TSharedPtr<FJsonObject>& Frame);
+	/** An operator removed a player from a room (participant_remove) or closed a room (room_close): OnPlayerRemoved or
+	 *  OnRoomEnded with the operator's reason, and the answer the platform waits for. */
+	void HandleOperatorRoomAction(const FString& Type, const TSharedPtr<FJsonObject>& Frame);
+	void HandleDataUpdate(const TSharedPtr<FJsonObject>& Frame);
+	/** Sends one data subscription on the ready uplink and reports it through OnDataSubscribed. */
+	bool SendDataSubscription(const FString& Entity, const FString& KeyPath);
+	/** Sends one data_write frame (WriteData, DeleteData) on the ready uplink. */
+	bool SendDataWrite(const FString& Entity, const FString& Id, const TCHAR* Op, const TSharedRef<FJsonObject>& Data);
+	/** Sends the log lines waiting for the uplink, oldest first, while it is ready. */
+	void FlushPendingLogs();
+	bool TickLogForwarding(float DeltaTime);
 	void ApplyRoomConfig(const FPlayServRoomConfig& Config, const TCHAR* Source);
 
 	bool TickMaintenance(float DeltaTime);
@@ -363,6 +463,22 @@ private:
 	TMap<FString, FVerifiedTicket> Verified;
 
 	TMap<TWeakObjectPtr<const APlayerController>, FString> AdmittedPlayers;
+
+	/** The entities SubscribeData asked for, and each one's key path; sent again on every new uplink socket. */
+	TMap<FString, FString> DataSubscriptions;
+	/** The entities a data_update has arrived for, so the first one of each is logged. */
+	TSet<FString> DataHeard;
+	/** The entities a write has gone out for, so the first one of each is logged. */
+	TSet<FString> DataWritten;
+	/** The uplink frame types this module does not serve that have arrived, so the first of each is logged. */
+	TSet<FString> UnknownFrames;
+
+	/** Log frames waiting for the uplink to be ready, oldest first, and how many were dropped from the front. */
+	TArray<TSharedPtr<FJsonObject>> PendingLogs;
+	int32 DroppedLogLines = 0;
+	/** The device that catches UE_LOG lines for ForwardLogs, and the ticker that sends what it caught. */
+	TSharedPtr<class FPlayServLogForwarder> LogForwarder;
+	FTSTicker::FDelegateHandle LogForwardingTickerHandle;
 
 	TMap<int32, TSharedPtr<FPlayServJoinRound>> Joins;
 	int32 NextJoinId = 1;

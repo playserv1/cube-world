@@ -6,6 +6,7 @@
 #include "Core/PlayServSettings.h"
 #include "Core/PlayServSubsystem.h"
 #include "Rooms/PlayServAdmissionTable.h"
+#include "Rooms/PlayServLogForwarder.h"
 #include "Rooms/PlayServRoomRuntime.h"
 #include "Rooms/PlayServRoomsPaths.h"
 #include "Rooms/PlayServRoomsValidation.h"
@@ -77,6 +78,7 @@ void UPlayServRooms::Init(TSharedPtr<FPlayServHttp> InHttp)
 
 void UPlayServRooms::Shutdown()
 {
+	StopForwardingLogs();
 	Joins.Reset();
 	if (MaintenanceTickerHandle.IsValid())
 	{
@@ -290,6 +292,10 @@ void UPlayServRooms::OpenUplink()
 	// for a room); without it the machine stays "ready" and is replaced after the start timeout. A server that opens
 	// its rooms itself declares it too; a room request it does not serve is answered by the platform's own timeout.
 	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityRoomCreate);
+	// An operator's Remove player and Delete room reach this server only when it says it carries them out; without
+	// these the platform tells the operator not_supported and the player plays on (uplink contract §1.4).
+	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityParticipantRemove);
+	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityRoomClose);
 	const FString Credential = ResolveCredential(UPlayServSettings::GetDeploymentToken(), UPlayServSettings::GetServerKey());
 	Uplink->Start(PlayServRoomsPaths::UplinkUrl(UPlayServSettings::GetBaseURL()), Credential, Hello);
 }
@@ -310,6 +316,12 @@ void UPlayServRooms::StopHosting()
 		CloseRoom(RoomName, FPlayServSimpleCallback());
 	}
 
+	// The last lines (the room closing, why the process ends) go out while there is still an uplink to carry them.
+	if (LogForwarder.IsValid())
+	{
+		TickLogForwarding(0.f);
+	}
+	FlushPendingLogs();
 	if (Uplink.IsValid())
 	{
 		Uplink->Stop();
@@ -324,6 +336,9 @@ void UPlayServRooms::StopHosting()
 		*Tickets = FPlayServAdmissionTable();
 	}
 	Verified.Reset();
+	DataSubscriptions.Reset();
+	DataHeard.Reset();
+	UnknownFrames.Reset();
 	AdmissionMode = EPlayServAdmissionMode::None;
 	bHasRoomConfig = false;
 	UplinkGeneration = 0;
@@ -428,7 +443,16 @@ void UPlayServRooms::HandleUplinkReady(const FPlayServUplinkAck& Ack, int32 Gene
 				SendRosterRepair(*Pair.Value);
 			}
 		}
+		// The platform keeps a data subscription for the socket it came on: a new socket needs every one again. A copy,
+		// since an OnDataSubscribed handler may subscribe or unsubscribe.
+		const TArray<TPair<FString, FString>> Subscriptions = DataSubscriptions.Array();
+		for (const TPair<FString, FString>& Subscription : Subscriptions)
+		{
+			SendDataSubscription(Subscription.Key, Subscription.Value);
+		}
 	}
+	// What was logged while there was no uplink: from the start of the process, or a reconnect.
+	FlushPendingLogs();
 
 	if (bHasRoomConfig)
 	{
@@ -460,6 +484,29 @@ void UPlayServRooms::HandleUplinkFrame(const FString& Type, const TSharedPtr<FJs
 	if (Type == PlayServRoomsWire::TypeJoinAck)
 	{
 		HandleJoinAck(Frame);
+		return;
+	}
+	if (Type == PlayServRoomsWire::TypeDataUpdate)
+	{
+		HandleDataUpdate(Frame);
+		return;
+	}
+	if (Type == PlayServRoomsWire::TypeParticipantRemove || Type == PlayServRoomsWire::TypeRoomClose)
+	{
+		HandleOperatorRoomAction(Type, Frame);
+		return;
+	}
+	// The first frame of a type this module does not serve is logged with the reason it gives: a platform that cannot
+	// serve what this server asked for (a data subscription, say) shows here.
+	if (!UnknownFrames.Contains(Type))
+	{
+		UnknownFrames.Add(Type);
+		FString Reason;
+		if (!Frame->TryGetStringField(PlayServRoomsWire::FieldReason, Reason))
+		{
+			Frame->TryGetStringField(TEXT("message"), Reason);
+		}
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: frame '%s' ignored%s%s"), *Type, Reason.IsEmpty() ? TEXT("") : TEXT(": "), *TruncateDetail(Reason));
 		return;
 	}
 	UE_LOG(LogPlayServ, Verbose, TEXT("PlayServ rooms: frame '%s' ignored"), *Type);
@@ -527,6 +574,51 @@ void UPlayServRooms::HandleTicketOffer(const TSharedPtr<FJsonObject>& Frame)
 	}
 }
 
+void UPlayServRooms::HandleOperatorRoomAction(const FString& Type, const TSharedPtr<FJsonObject>& Frame)
+{
+	FString RequestId, RoomName, PlayerId;
+	Frame->TryGetStringField(PlayServRoomsWire::FieldRequestId, RequestId);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldRoomName, RoomName);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldPlayerId, PlayerId);
+	const bool bRemove = Type == PlayServRoomsWire::TypeParticipantRemove;
+	if (RequestId.IsEmpty() || RoomName.IsEmpty() || (bRemove && PlayerId.IsEmpty()))
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: %s without request_id, room_name or player_id ignored"), *Type);
+		return;
+	}
+
+	// The answer is about the outcome: the player is not in that room here any more, or the room is gone, including
+	// when this server never held them. The game is told first, and it is the game that disconnects them.
+	if (bRemove)
+	{
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: an operator removed %s from %s"), *PlayerId, *RoomName);
+		ReportPlayerLeft(RoomName, PlayerId);
+		for (TMap<TWeakObjectPtr<const APlayerController>, FString>::TIterator It(AdmittedPlayers); It; ++It)
+		{
+			if (It.Value() == PlayerId)
+			{
+				It.RemoveCurrent();
+			}
+		}
+		// Told even for a player the roster no longer holds: the game may still have them connected.
+		OnPlayerRemoved.Broadcast(RoomName, PlayerId, PlayServRoomsWire::ReasonRemovedByOperator);
+	}
+	else if (Rooms.Contains(RoomName))
+	{
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: an operator closed %s"), *RoomName);
+		EndRoom(RoomName, PlayServRoomsWire::ReasonRoomClosedByOperator, false);
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(PlayServRoomsWire::FieldType, bRemove ? PlayServRoomsWire::TypeParticipantRemoveResult : PlayServRoomsWire::TypeRoomCloseResult);
+	Result->SetStringField(PlayServRoomsWire::FieldRequestId, RequestId);
+	Result->SetBoolField(PlayServRoomsWire::FieldOk, true);
+	if (Uplink.IsValid())
+	{
+		Uplink->SendFrame(Result);
+	}
+}
+
 void UPlayServRooms::HandleJoinAck(const TSharedPtr<FJsonObject>& Frame)
 {
 	bool bOk = false;
@@ -554,6 +646,242 @@ void UPlayServRooms::HandleJoinAck(const TSharedPtr<FJsonObject>& Frame)
 		}
 	}
 	OnPlayerRemoved.Broadcast(RoomName, PlayerId, Reason.IsEmpty() ? FString(PlayServRoomsWire::ReasonReservationInvalid) : Reason);
+}
+
+void UPlayServRooms::SubscribeData(const FString& Entity, const FString& KeyPath)
+{
+	if (Entity.IsEmpty())
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: SubscribeData needs an entity"));
+		return;
+	}
+	DataSubscriptions.Add(Entity, KeyPath);
+	if (!SendDataSubscription(Entity, KeyPath))
+	{
+		UE_LOG(LogPlayServ, Verbose, TEXT("PlayServ rooms: the subscription to %s goes out once the uplink is ready"), *Entity);
+	}
+}
+
+void UPlayServRooms::UnsubscribeData(const FString& Entity)
+{
+	if (DataSubscriptions.Remove(Entity) == 0 || !Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready)
+	{
+		return;
+	}
+	TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+	Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeUnsubscribeData);
+	Frame->SetStringField(PlayServRoomsWire::FieldProjectId, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldClientKey, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldEntity, Entity);
+	Uplink->SendFrame(Frame);
+}
+
+bool UPlayServRooms::WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data)
+{
+	return SendDataWrite(Entity, Id, PlayServRoomsWire::OpUpsert, Data);
+}
+
+bool UPlayServRooms::DeleteData(const FString& Entity, const FString& Id)
+{
+	// The platform reads no data for a delete; the frame carries an empty object, as the platform's contract shows it.
+	// (The C# SDK's delete never left the server: it sent no data at all, which its JSON writer could not serialize.)
+	return SendDataWrite(Entity, Id, PlayServRoomsWire::OpDelete, MakeShared<FJsonObject>());
+}
+
+bool UPlayServRooms::SendDataWrite(const FString& Entity, const FString& Id, const TCHAR* Op, const TSharedRef<FJsonObject>& Data)
+{
+	if (Entity.IsEmpty() || Id.IsEmpty())
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: a data write needs an entity and an id (%s %s '%s')"), Op, *Entity, *Id);
+		return false;
+	}
+	if (!Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready)
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+	Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeDataWrite);
+	Frame->SetStringField(PlayServRoomsWire::FieldProjectId, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldEntity, Entity);
+	Frame->SetStringField(PlayServRoomsWire::FieldOp, Op);
+	Frame->SetStringField(PlayServRoomsWire::FieldId, Id);
+	Frame->SetObjectField(PlayServRoomsWire::FieldData, Data);
+	if (!Uplink->SendFrame(Frame))
+	{
+		return false;
+	}
+	if (!DataWritten.Contains(Entity))
+	{
+		DataWritten.Add(Entity);
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: the first %s write went out over the uplink (%s %s)"), *Entity, Op, *Id);
+	}
+	return true;
+}
+
+bool UPlayServRooms::SendDataSubscription(const FString& Entity, const FString& KeyPath)
+{
+	if (!Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready)
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+	Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeSubscribeData);
+	Frame->SetStringField(PlayServRoomsWire::FieldProjectId, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldClientKey, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldEntity, Entity);
+	Frame->SetStringField(PlayServRoomsWire::FieldKeyPath, KeyPath);
+	if (!Uplink->SendFrame(Frame))
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: the subscription to %s was not sent; it goes out again on the next uplink socket"), *Entity);
+		return false;
+	}
+	UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: subscribed to %s changes over the uplink (%s)"), *Entity, *KeyPath);
+	OnDataSubscribed.Broadcast(Entity);
+	return true;
+}
+
+namespace
+{
+	/** The C# SDK's names for the levels (HttpPlatformClient.WireLevel). */
+	const TCHAR* WireLogLevel(EPlayServLogLevel Level)
+	{
+		switch (Level)
+		{
+		case EPlayServLogLevel::Debug: return TEXT("debug");
+		case EPlayServLogLevel::Warn: return TEXT("warn");
+		case EPlayServLogLevel::Error: return TEXT("error");
+		default: return TEXT("info");
+		}
+	}
+
+	TSharedPtr<FJsonObject> LogFrame(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data)
+	{
+		TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+		Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeLog);
+		Frame->SetStringField(PlayServRoomsWire::FieldMessage, Message.Len() > UPlayServRooms::MaxLogMessageChars
+			? Message.Left(UPlayServRooms::MaxLogMessageChars) + TEXT("...") : Message);
+		Frame->SetStringField(PlayServRoomsWire::FieldLevel, WireLogLevel(Level));
+		if (Data.IsValid())
+		{
+			Frame->SetObjectField(PlayServRoomsWire::FieldData, Data);
+		}
+		return Frame;
+	}
+}
+
+void UPlayServRooms::Log(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data)
+{
+	PendingLogs.Add(LogFrame(Message, Level, Data));
+	if (PendingLogs.Num() > MaxPendingLogLines)
+	{
+		const int32 Over = PendingLogs.Num() - MaxPendingLogLines;
+		PendingLogs.RemoveAt(0, Over);
+		DroppedLogLines += Over;
+	}
+	FlushPendingLogs();
+}
+
+void UPlayServRooms::FlushPendingLogs()
+{
+	if (!Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready || (PendingLogs.Num() == 0 && DroppedLogLines == 0))
+	{
+		return;
+	}
+	if (DroppedLogLines > 0)
+	{
+		const FString Notice = FString::Printf(TEXT("PlayServ: %d log line(s) not sent: more than %d waited for the uplink"), DroppedLogLines, MaxPendingLogLines);
+		if (!Uplink->SendFrame(LogFrame(Notice, EPlayServLogLevel::Warn, nullptr)))
+		{
+			return;
+		}
+		DroppedLogLines = 0;
+	}
+	int32 Sent = 0;
+	while (Sent < PendingLogs.Num() && Uplink->SendFrame(PendingLogs[Sent]))
+	{
+		Sent++;
+	}
+	PendingLogs.RemoveAt(0, Sent);
+}
+
+void UPlayServRooms::ForwardLogs(const FPlayServLogForwarding& Rules)
+{
+	if (LogForwarder.IsValid())
+	{
+		LogForwarder->SetRules(Rules);
+		return;
+	}
+	if (!GLog)
+	{
+		return;
+	}
+	LogForwarder = MakeShared<FPlayServLogForwarder>(Rules, []() { return FPlatformTime::Seconds(); });
+	GLog->AddOutputDevice(LogForwarder.Get());
+	LogForwardingTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UPlayServRooms::TickLogForwarding), 0.25f);
+}
+
+void UPlayServRooms::StopForwardingLogs()
+{
+	if (LogForwardingTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(LogForwardingTickerHandle);
+		LogForwardingTickerHandle.Reset();
+	}
+	if (!LogForwarder.IsValid())
+	{
+		return;
+	}
+	if (GLog)
+	{
+		GLog->RemoveOutputDevice(LogForwarder.Get());
+	}
+	TickLogForwarding(0.f);
+	LogForwarder.Reset();
+}
+
+bool UPlayServRooms::TickLogForwarding(float)
+{
+	if (LogForwarder.IsValid())
+	{
+		LogForwarder->Drain([this](const FString& Text, EPlayServLogLevel Level) { Log(Text, Level); });
+	}
+	return true;
+}
+
+void UPlayServRooms::HandleDataUpdate(const TSharedPtr<FJsonObject>& Frame)
+{
+	FPlayServDataUpdate Update;
+	Frame->TryGetStringField(PlayServRoomsWire::FieldEntity, Update.Entity);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldId, Update.Id);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldOp, Update.Op);
+	const TSharedPtr<FJsonObject>* Data = nullptr;
+	if (Frame->TryGetObjectField(PlayServRoomsWire::FieldData, Data))
+	{
+		Update.Data = *Data;
+	}
+	if (Update.Entity.IsEmpty())
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: data_update without an entity ignored"));
+		return;
+	}
+	// The first change of each entity is logged with what it carries: the platform's side of SubscribeData, seen once.
+	if (!DataHeard.Contains(Update.Entity))
+	{
+		DataHeard.Add(Update.Entity);
+		TArray<FString> Fields;
+		if (Update.Data.IsValid())
+		{
+			for (const auto& Field : Update.Data->Values)
+			{
+				Fields.Add(FString(*Field.Key));
+			}
+		}
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: the first %s change arrived over the uplink (op=%s, id=%s, fields: %s)"),
+			*Update.Entity, *Update.Op, *Update.Id, Fields.Num() > 0 ? *FString::Join(Fields, TEXT(", ")) : TEXT("none"));
+	}
+	UE_LOG(LogPlayServ, Verbose, TEXT("PlayServ rooms: data_update %s %s %s"), *Update.Entity, *Update.Op, *Update.Id);
+	OnDataUpdate.Broadcast(Update);
 }
 
 void UPlayServRooms::ApplyRoomConfig(const FPlayServRoomConfig& Config, const TCHAR* Source)
@@ -1045,6 +1373,46 @@ bool UPlayServRooms::ReportPlayerLeft(const FString& RoomName, const FString& Pl
 		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: %s left %s — reported to the platform"), *PlayerId, *RoomName);
 	}
 	return bWasMember;
+}
+
+bool UPlayServRooms::AdmitVerified(const FPlayServTicketVerdict& Verdict)
+{
+	if (!bHosting || !Verdict.bAccepted || Verdict.ReservationToken.IsEmpty() || Verdict.PlayerId.IsEmpty())
+	{
+		// A development fail-open admission carries no ticket: like its engine login, it is not reported.
+		return false;
+	}
+	const FVerifiedTicket* Ticket = FindVerified(Verdict.ReservationToken);
+	if (Ticket == nullptr)
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: AdmitVerified for a ticket this server never verified, or admitted already — %s is NOT reported to the platform again"), *Verdict.PlayerId);
+		return false;
+	}
+	const FString PlayerId = Ticket->PlayerId;
+	const FString RoomName = Ticket->RoomName;
+	const bool bResume = Ticket->bResume;
+	Verified.Remove(Verdict.ReservationToken);
+	TSharedPtr<FPlayServRoomRuntime>* Room = Rooms.Find(RoomName);
+	if (Room == nullptr || (*Room)->bClosing)
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: %s was admitted to %s, which is gone or closing — not reported to the platform"), *PlayerId, *RoomName);
+		return false;
+	}
+	if (bResume)
+	{
+		if (!(*Room)->Roster.Contains(PlayerId))
+		{
+			UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: %s came back to %s after their seat was released — this player is NOT in the platform's roster"), *PlayerId, *RoomName);
+			return false;
+		}
+		(*Room)->Parked.Remove(PlayerId);
+		(*Room)->IdleSince = 0.0;
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: %s resumed their seat in %s (admitted by the game)"), *PlayerId, *RoomName);
+		return true;
+	}
+	AdmitToRoom(RoomName, PlayerId, Verdict.ReservationToken);
+	UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: %s joined %s (admitted by the game)"), *PlayerId, *RoomName);
+	return true;
 }
 
 bool UPlayServRooms::RemovePlayer(const FString& RoomName, const FString& PlayerId)

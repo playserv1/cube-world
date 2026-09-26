@@ -23,7 +23,17 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private readonly World _world = new();
     private readonly ConcurrentDictionary<string, Player> _players = new();
     private readonly ConcurrentDictionary<string, WorldPresence> _elsewhere = new();
+    /// <summary>Players whose inventory row is being read as they join, with the newest row heard for them meanwhile.</summary>
+    private readonly ConcurrentDictionary<string, CubeInventory?> _loading = new();
     private readonly Dictionary<string, LiveBomb> _bombs = new();
+    private readonly FinishedBombs _finished = new();
+    private long _cubesReadAt;
+    private int _reconciling;
+    private bool _bombsLoaded;
+    private long _bombsReadAt;
+    private int _readingBombs;
+    /// <summary>The bombs in play here that the last read of the bomb table had no row of, and since when (<see cref="Bomb.GoneFromTable"/>).</summary>
+    private readonly Dictionary<string, long> _bombsMissingSince = new();
     private readonly List<Change> _heard = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));
@@ -51,7 +61,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private async Task RunAsync()
     {
         await LoadWorldAndClaimRegion();    // tries again every 5 s until the tables answer and a region is free
-        StartTicking();                     // the game 20 times a second, player positions 5 times a second
+        StartTicking();                     // the game 20 times a second, player positions 20 times a second when they change
         OpenRoom();
         await KeepRoomOpen();               // until the operator closes the room
         await Restart();
@@ -66,6 +76,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
                 // Subscribe before loading: a change written while the world loads arrives as an update
                 // instead of being missed (applying one that the load already holds changes nothing).
                 Subscribe();
+                _cubesReadAt = Now;
                 _world.Load(await LoadCubesAsync());
                 await LoadBombs();
                 _region = await ClaimRegionAsync();
@@ -74,7 +85,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
                     break;
                 }
             }
-            catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5 s: {e.Message}"); }
+            catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5s: {e.Message}"); }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
         await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, {_bombs.Count} bombs, world ready");
@@ -138,10 +149,27 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     protected override async Task OnPlayerConnected(PlayerSession session)
     {
         var name = session.DisplayName ?? session.Id;
-        var inventory = await LoadInventory(session.Id);
-        var player = new Player(session, inventory, WorldPresence.Arriving(Spawn(session.Id, name), _elsewhere.GetValueOrDefault(session.Id), Now));
+        var helloAt = Now;
+        _loading[session.Id] = null;
+        (Inventory inventory, bool isNew) loaded;
+        try { loaded = await LoadInventory(session.Id); }
+        catch { _loading.TryRemove(session.Id, out _); throw; }
+        var (inventory, isNew) = loaded;
+        var spawn = Spawn(session.Id, name);
+        var pose = WorldPresence.Arriving(spawn, _elsewhere.GetValueOrDefault(session.Id), Now);
+        var player = new Player(session, inventory, pose)
+        {
+            Guess = (pose.x, pose.y, pose.z), GuessFrom = pose.x == spawn.x && pose.y == spawn.y ? "the spawn" : "presence", ArrivedAt = helloAt,
+        };
+        // A crossing takes the hand's charge with it, so a player cannot cross for a full-strength hit.
+        if (!ReferenceEquals(player.Pose, spawn)) player.LastAttackTick = _tick;
+        player.Moves.Arrive(player.Pose.x, player.Pose.y, player.Pose.z, _region, Now);
+        NoteWhere(player);
 
         _players[session.Id] = player;
+        // A row heard while the read was out is newer than what the read returned; one heard from now on finds the player.
+        if (_loading.TryRemove(session.Id, out var newer) && newer is not null) HearInventory(newer);
+        else if (isNew) lock (_world) WriteInventory(player);
         InRoom(room => room.AddPlayer(new WorldPlayer { Id = session.Id, DisplayName = name }));
         SendWelcome(player);
     }
@@ -168,10 +196,29 @@ public sealed partial class CubeWorldServer : PlatformGameServer
 
     protected override Task OnPlayerDisconnected(PlayerSession session, DisconnectReason reason)
     {
-        if (_players.TryRemove(session.Id, out var player)) lock (_world) StopDig(player);
-        Platform.RuntimeData.Delete(Uplink, "WorldPresence", session.Id);
+        if (_players.TryRemove(session.Id, out var player))
+        {
+            lock (_world) StopDig(player);
+            // They may be crossing, and the next server's first pose is a moment away: until it comes they stand where this
+            // server last saw them, for its players and for the next server, which keeps their position and health. Their
+            // row goes later, if nobody has taken them over by then (PSV-3018).
+            if (!WorldPresence.TakenOver(_elsewhere.GetValueOrDefault(session.Id), player.Pose))
+            {
+                _elsewhere[session.Id] = player.Pose;
+                _ = ForgetUnlessTakenOverAsync(session.Id, player.Pose);
+            }
+        }
         InRoom(room => room.RemovePlayer(session.Id));
         return Task.CompletedTask;
+    }
+
+    /// <summary>A player who left is forgotten a moment later, row and all, unless they came back or another server wrote them.</summary>
+    private async Task ForgetUnlessTakenOverAsync(string id, WorldPresence last)
+    {
+        await Task.Delay(WorldPresence.LeaveGraceMs);
+        if (_players.ContainsKey(id) || WorldPresence.TakenOver(_elsewhere.GetValueOrDefault(id), last)) return;
+        _elsewhere.TryRemove(id, out _);
+        Platform.RuntimeData.Delete(Uplink, "WorldPresence", id);
     }
 
     // ── what the other servers and the functions changed ────────────────────────────────────────────
@@ -183,8 +230,8 @@ public sealed partial class CubeWorldServer : PlatformGameServer
             case "WorldCube" when update.Data.Deserialize<WorldCube>() is { } cube:
                 HearCube(update.Op, cube);
                 break;
-            case "CubeInventory" when update.Data.Deserialize<CubeInventory>() is { } refill:
-                HearRefill(refill);
+            case "CubeInventory" when !update.IsDelete && update.Data.Deserialize<CubeInventory>() is { } row:
+                HearInventory(row);
                 break;
             case "WorldPresence" when update.Data.Deserialize<WorldPresence>() is { } pose:
                 HearPresence(pose, update.IsDelete);
@@ -228,8 +275,10 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private static string ServerName(string? machineId) =>
         string.IsNullOrEmpty(machineId) ? "local" : machineId[^5..].ToLowerInvariant();
 
+    /// <param name="peak">In the air, the client's highest point since it last stood on the ground (PlayerFall.Step).</param>
+    /// <param name="seq">The last correction the client took (MoveCheck), from a client that numbers its moves.</param>
     private sealed record Command(string op, double x, double y, double z, double yaw, double pitch, int nx, int ny, int nz,
-        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting)
+        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting, double? peak = null, int? seq = null)
     {
         /// <summary>The block the command points at.</summary>
         public (int x, int y, int z) Block => ((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z));

@@ -362,10 +362,68 @@ FString PlayServ::Rooms::GetPlayerId(const APlayerController* Player)
 	return Rooms != nullptr ? Rooms->GetPlayerId(Player) : FString();
 }
 
+bool PlayServ::Rooms::AdmitVerified(const FPlayServTicketVerdict& Verdict)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	return PS != nullptr && PS->GetRooms()->AdmitVerified(Verdict);
+}
+
 bool PlayServ::Rooms::RemovePlayer(const FString& RoomName, const FString& PlayerId)
 {
 	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
 	return PS != nullptr && PS->GetRooms()->RemovePlayer(RoomName, PlayerId);
+}
+
+void PlayServ::Rooms::SubscribeData(const FString& Entity, const FString& KeyPath)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->SubscribeData(Entity, KeyPath);
+	}
+}
+
+void PlayServ::Rooms::UnsubscribeData(const FString& Entity)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->UnsubscribeData(Entity);
+	}
+}
+
+bool PlayServ::Rooms::WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	return PS != nullptr && PS->GetRooms()->WriteData(Entity, Id, Data);
+}
+
+bool PlayServ::Rooms::DeleteData(const FString& Entity, const FString& Id)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	return PS != nullptr && PS->GetRooms()->DeleteData(Entity, Id);
+}
+
+void PlayServ::Rooms::Log(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->Log(Message, Level, Data);
+	}
+}
+
+void PlayServ::Rooms::ForwardLogs(const FPlayServLogForwarding& Rules)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->ForwardLogs(Rules);
+	}
+}
+
+void PlayServ::Rooms::StopForwardingLogs()
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->StopForwardingLogs();
+	}
 }
 
 void PlayServ::Rooms::Browse(const FString& Slug, const FPlayServRoomFilters& Filters, FPlayServBrowseCallback Callback)

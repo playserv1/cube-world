@@ -7,12 +7,25 @@ public sealed partial class CubeWorldServer
 {
     // ── joining ─────────────────────────────────────────────────────────────────────────────────────
 
-    private async Task<Inventory> LoadInventory(string playerId)
+    /// <summary>
+    /// The inventory is theirs from wherever they last played; a first-timer gets a full stack of everything. The row is
+    /// only read: writing it straight back raced the old server's last write after a crossing and could undo it.
+    /// </summary>
+    private async Task<(Inventory Inventory, bool New)> LoadInventory(string playerId)
     {
-        var saved = await Platform.Table<CubeInventory>().FindByAsync(i => i.player_id, playerId);
-        var inventory = saved?.Fields is { } record ? Inventory.Parse(record.stacks) : Inventory.Starting();
-        Platform.RuntimeData.Write(Uplink, "CubeInventory", playerId, inventory.ToRecord(playerId));
-        return inventory;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                var saved = await Platform.Table<CubeInventory>().FindByAsync(i => i.player_id, playerId);
+                return saved?.Fields is { } record ? (Inventory.Parse(record.stacks), false) : (Inventory.Starting(), true);
+            }
+            catch (Exception e) when (attempt < 2)
+            {
+                _ = Platform.Log($"inventory of {playerId} not read, again in 2 s: {e.Message}");
+                await Task.Delay(TimeSpan.FromSeconds(2));
+            }
+        }
     }
 
     private WorldPresence Spawn(string id, string name) => new()
@@ -21,25 +34,28 @@ public sealed partial class CubeWorldServer
         x = World.Centre(_region).X, y = World.Centre(_region).Y, z = 0, health = Spec.MaxHealth,
     };
 
-    /// <summary>Everything the client needs to draw the world: the rules, the changed blocks, the bombs, the inventory.</summary>
+    /// <summary>
+    /// Everything the client needs to draw the world: the rules, the changed blocks, the bombs, the inventory. It goes out
+    /// under the world's lock, as it was read: a bomb or block change made while it was written went out ahead of it, and a
+    /// client drops what comes before its welcome, so the welcome showed the world from before that change. A bomb handed
+    /// to a player crossing in, in that moment, lay on the ground for them, could not be taken, and came to their hand only
+    /// on the next server.
+    /// </summary>
     private void SendWelcome(Player player)
     {
-        WorldCube[] world;
-        object[] bombs;
         lock (_world)
         {
-            world = _world.Overrides.ToArray();
             player.Bomb = _bombs.Values.FirstOrDefault(b => b.Record.state == Bomb.Held && b.Record.holder == player.Pose.player_id)?.Record.bomb_id;
-            bombs = _bombs.Values.Select(b => BombFrame(b.Record, b)).ToArray();
+            Send(player.Session, new
+            {
+                type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = player.Pose,
+                width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
+                layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
+                blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
+                hotbar = Spec.Placeable, world = _world.Overrides.ToArray(), inventory = player.Inventory.Stacks, tick = _tick,
+                bombs = _bombs.Values.Select(b => BombFrame(b.Record, b)).ToArray(),
+            });
         }
-        Send(player.Session, new
-        {
-            type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = player.Pose,
-            width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
-            layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
-            blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
-            hotbar = Spec.Placeable, world, inventory = player.Inventory.Stacks, tick = _tick, bombs,
-        });
     }
 
     // ── moving ──────────────────────────────────────────────────────────────────────────────────────
@@ -47,31 +63,47 @@ public sealed partial class CubeWorldServer
     private void Move(Player player, Command command)
     {
         if (player.Dead) return;
+        double x = Math.Clamp(command.x, 0, World.Width), y = Math.Clamp(command.y, 0, World.Depth), z = Math.Clamp(command.z, World.MinZ, World.MaxZ + 8);
+        var verdict = player.Moves.Check(x, y, z, command.seq, Now);
+        // The first move after a join or a crossing is where the client really is: how far off the guess was, and whether
+        // it was taken, is the hand-over as this server saw it (a refused one puts the player back). The Unreal servers
+        // log the same line.
+        if (!player.FirstMoveLogged && verdict != MoveVerdict.Stale)
+        {
+            player.FirstMoveLogged = true;
+            var (gx, gy, gz) = player.Guess;
+            var off = Math.Sqrt((x - gx) * (x - gx) + (y - gy) * (y - gy) + (z - gz) * (z - gz));
+            _ = Platform.Log($"{RoomName}: first move of {player.Pose.name}: {(verdict == MoveVerdict.Accepted ? "accepted" : "refused")}, {off:0.0} blocks from the guess ({player.GuessFrom}), {Now - player.ArrivedAt} ms after the hello");
+        }
+        switch (verdict)
+        {
+            case MoveVerdict.Stale: return;
+            case MoveVerdict.Refused: Correct(player, x, y, z); return;
+        }
         var pose = player.Pose;
-        pose.x = Math.Clamp(command.x, 0, World.Width);
-        pose.y = Math.Clamp(command.y, 0, World.Depth);
-        pose.z = Math.Clamp(command.z, World.MinZ, World.MaxZ + 8);
+        (pose.x, pose.y, pose.z) = (x, y, z);
         pose.yaw = command.yaw;
         pose.pitch = command.pitch;
         pose.sneaking = command.sneaking ? 1 : 0;
         pose.sprinting = command.sprinting ? 1 : 0;
         player.Moved = true;
+        NoteWhere(player);
 
-        // Fall damage, from the height reached since the player last stood on the ground.
-        if (command.onGround)
-        {
-            if (player.Airborne)
-            {
-                var damage = Math.Ceiling(player.Peak - pose.z - Spec.SafeFallDistance);
-                if (damage > 0) Hurt(player, damage, null, 0, null);
-            }
-            player.Airborne = false;
-        }
-        else
-        {
-            player.Peak = player.Airborne ? Math.Max(player.Peak, pose.z) : pose.z;
-            player.Airborne = true;
-        }
+        // Fall damage, from the height reached since the player last stood on the ground (on this server or, over a
+        // border, the one before: the client says its own peak).
+        var damage = player.Fall.Step(pose.z, command.onGround, command.peak);
+        if (damage > 0) Hurt(player, damage, null, 0, null);
+    }
+
+    /// <summary>A move too far for the time it took: the player is put back where their last good move left them.</summary>
+    private void Correct(Player player, double x, double y, double z)
+    {
+        var moves = player.Moves;
+        Send(player.Session, new { type = "correct", seq = moves.Seq, x = moves.X, y = moves.Y, z = moves.Z });
+        if (Now - player.CorrectionLoggedAt < 5000) return;
+        player.CorrectionLoggedAt = Now;
+        var distance = Math.Sqrt((x - moves.X) * (x - moves.X) + (y - moves.Y) * (y - moves.Y)) + Math.Max(0, z - moves.Z);
+        _ = Platform.Log($"{RoomName}: {player.Pose.name} moved {distance:0.0} blocks too fast, put back (correction {moves.Seq})");
     }
 
     // ── digging ─────────────────────────────────────────────────────────────────────────────────────
@@ -83,7 +115,8 @@ public sealed partial class CubeWorldServer
 
         var (x, y, z) = command.Block;
         var block = _world.BlockAt(x, y, z);
-        if (!World.Inside(x, y, z) || !block.Solid || !block.Breakable || !CanReach(player, x, y, z)) return;
+        if (!World.Inside(x, y, z) || !block.Solid || !block.Breakable || !CanReach(player, x, y, z) || !InThisRegion(player)
+            || !ServesBlock(x, y)) return;
 
         player.Dig = new DigState(x, y, z, _tick, block.BreakTicks);
         ShowCrack(player, player.Dig, stage: 0);
@@ -95,7 +128,7 @@ public sealed partial class CubeWorldServer
         lock (_world)
         {
             if (player.Dig is not { } dig) return;
-            if (player.Dead || !CanReach(player, dig.X, dig.Y, dig.Z))
+            if (player.Dead || !CanReach(player, dig.X, dig.Y, dig.Z) || !InThisRegion(player))
             {
                 StopDig(player);
                 return;
@@ -135,8 +168,9 @@ public sealed partial class CubeWorldServer
     {
         if (player.Dead) return;
         var (x, y, z) = command.Block;
-        var kind = command.kind ?? "";
-        var update = CanReach(player, x, y, z) && player.Inventory.Count(kind) > 0
+        // The Unreal client names stone "Stone" (its FName): every kind goes on under its own name.
+        var kind = Spec.Canonical(command.kind ?? "");
+        var update = CanReach(player, x, y, z) && InThisRegion(player) && ServesBlock(x + command.nx, y + command.ny) && player.Inventory.Count(kind) > 0
             ? _world.Place(x, y, z, command.nx, command.ny, command.nz, kind, player.Pose.player_id, _server, EveryoneAlive().Select(HitboxOf))
             : null;
 
@@ -152,19 +186,37 @@ public sealed partial class CubeWorldServer
 
     private void ShareInventory(Player player)
     {
-        Platform.RuntimeData.Write(Uplink, "CubeInventory", player.Pose.player_id, player.Inventory.ToRecord(player.Pose.player_id));
+        WriteInventory(player);
         Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
     }
 
-    /// <summary>The refill function topped the inventory up: the player gets the new blocks, never loses any.</summary>
-    private void HearRefill(CubeInventory refill)
+    private void WriteInventory(Player player)
     {
-        if (!_players.TryGetValue(refill.player_id, out var player)) return;
-        var stacks = Inventory.Parse(refill.stacks).Stacks;
+        player.Sync.Wrote(player.Inventory.Stacks, Now);
+        Platform.RuntimeData.Write(Uplink, "CubeInventory", player.Pose.player_id, player.Inventory.ToRecord(player.Pose.player_id));
+    }
+
+    /// <summary>
+    /// A player's row came over the uplink: this server's own write coming back, or another writer's (the old server's
+    /// last write after a crossing, the refill function's top-up), whose change is merged into what the player holds
+    /// here. A row for a player whose own is still being read waits for that read (it is the newer).
+    /// </summary>
+    private void HearInventory(CubeInventory row)
+    {
+        // Only a whole row is a row to merge: one without its stacks would read as the starting stacks.
+        if (string.IsNullOrEmpty(row.stacks)) return;
+        if (_loading.TryGetValue(row.player_id, out var waiting) && _loading.TryUpdate(row.player_id, row, waiting)) return;
+        if (!_players.TryGetValue(row.player_id, out var player)) return;
+        var theirs = Inventory.Parse(row.stacks).Stacks;
         lock (_world)
-            foreach (var kind in Spec.Placeable)
-                while (player.Inventory.Count(kind) < Math.Min(Spec.StackSize, stacks.GetValueOrDefault(kind)) && player.Inventory.Give(kind)) { }
-        Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
+        {
+            if (player.Sync.Heard(player.Inventory.Stacks, theirs, Now) is not { } merged) return;
+            var changedHere = !InventorySync.Same(merged, player.Inventory.Stacks);
+            player.Inventory.Set(merged);
+            // The row lacks what the player did here (another writer's row came after this server's): it is written again.
+            if (!InventorySync.Same(merged, theirs)) WriteInventory(player);
+            if (changedHere) Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
+        }
     }
 
     // ── fighting ────────────────────────────────────────────────────────────────────────────────────
@@ -208,7 +260,7 @@ public sealed partial class CubeWorldServer
     /// <summary>Another server's player hit one of ours: this server applies it and deletes the hit.</summary>
     private void HearHit(WorldHit hit)
     {
-        if (Now - hit.at >= 5000 || !_players.TryGetValue(hit.victim, out var victim)) return;
+        if (hit.at is not { } at || Now - at >= 5000 || !_players.TryGetValue(hit.victim, out var victim)) return;
         lock (_world) Hurt(victim, hit.damage, (hit.kx, hit.ky), hit.strength, hit.attacker);
         Platform.RuntimeData.Delete(Uplink, "WorldHit", hit.hit_id);
     }
@@ -217,6 +269,7 @@ public sealed partial class CubeWorldServer
     {
         if (victim.Dead || _tick - victim.LastHurtTick < Spec.InvulnerabilityTicks) return;
         victim.LastHurtTick = _tick;
+        if (direction is not null) victim.Moves.Knocked(strength);
         victim.Pose.health = Math.Max(0, victim.Pose.health - damage);
         victim.Moved = true;
         Broadcast(new
@@ -245,7 +298,8 @@ public sealed partial class CubeWorldServer
         player.Pose.x = spawn.x; player.Pose.y = spawn.y; player.Pose.z = spawn.z;
         player.Pose.health = Spec.MaxHealth;
         player.Dead = false;
-        player.Airborne = false;
+        player.Fall = new PlayerFall();
+        player.Moves.Reset(spawn.x, spawn.y, spawn.z, Now);
         player.Moved = true;
         Send(player.Session, new { type = "respawn", you = player.Pose });
     }
@@ -276,6 +330,28 @@ public sealed partial class CubeWorldServer
         return World.DistanceToHitbox(ex, ey, ez, HitboxOf(other)) <= Spec.EntityReach + Spec.ReachTolerance;
     }
 
+    /// <summary>
+    /// This server digs, places and hands out bombs for the player only while they stand in its region, or have just
+    /// stepped over its border into a live server's region (World.Serves). A player who stays with this server in a
+    /// region whose room did not let them in, or that no live server holds, can only walk there.
+    /// </summary>
+    private bool InThisRegion(Player player) =>
+        World.Serves(_region, player.Pose.x, player.Pose.y, player.OutsideSince is { } since ? Now - since : 0, HeldElsewhere());
+
+    /// <summary>The block is in this server's region or in another live server's (World.ServesBlock).</summary>
+    private bool ServesBlock(int x, int y) => World.ServesBlock(_region, x, y, HeldElsewhere());
+
+    /// <summary>The regions other live servers hold now.</summary>
+    private int[] HeldElsewhere() =>
+        _regions.Select(r => int.TryParse(r.region, out var n) ? n : -1).Where(n => n >= 0 && n != _region).ToArray();
+
+    /// <summary>When the player stepped out of this server's region; null while they stand in it.</summary>
+    private void NoteWhere(Player player)
+    {
+        if (World.Near(_region, player.Pose.x, player.Pose.y, 0)) player.OutsideSince = null;
+        else player.OutsideSince ??= Now;
+    }
+
     private static (double x, double y, double z) Eye(Player player) => (player.Pose.x, player.Pose.y, player.Pose.z + EyeHeightOf(player.Pose));
 
     private static double EyeHeightOf(WorldPresence pose) => pose.sneaking == 1 ? Spec.SneakEyeHeight : Spec.EyeHeight;
@@ -287,13 +363,22 @@ public sealed partial class CubeWorldServer
 
     private sealed record Player(PlayerSession Session, Inventory Inventory, WorldPresence Pose)
     {
+        public InventorySync Sync { get; init; } = new(Inventory.Stacks);
         public bool Moved { get; set; }
         public bool Dead { get; set; }
-        public bool Airborne { get; set; }
-        public double Peak { get; set; }
+        public PlayerFall Fall { get; set; } = new();
+        public MoveCheck Moves { get; } = new();
+        public long CorrectionLoggedAt { get; set; }
+        /// <summary>Where the server guessed the player stands when they came in, from what, and when their hello came.</summary>
+        public (double x, double y, double z) Guess { get; init; }
+        public string GuessFrom { get; init; } = "the spawn";
+        public long ArrivedAt { get; init; }
+        public bool FirstMoveLogged { get; set; }
         public long LastAttackTick { get; set; } = long.MinValue / 2;
         public long LastHurtTick { get; set; } = long.MinValue / 2;
         public DigState? Dig { get; set; }
+        /// <summary>When the player stepped out of this server's region (ms); null while they stand in it.</summary>
+        public long? OutsideSince { get; set; }
         /// <summary>The bomb in the player's hand. A player holds one at a time and can only throw it.</summary>
         public string? Bomb { get; set; }
     }

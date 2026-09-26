@@ -133,6 +133,16 @@ public:
 	/** The record id the platform minted for this entity, or empty before its first Save. */
 	static FString GetRecordId(const UObject* Object);
 
+	/**
+	 * The body of one page of a read of every matching record (GetAll, LoadAll): BaseBody's filters and limit, sorted by
+	 * record id, and only the records after AfterId, the last one of the page before (empty for the first page). A read
+	 * pages by record id, not by the platform's cursor: with no sort the platform orders by updated_at, newest first, and
+	 * its cursor skips a count of rows, so a row written or deleted while the read ran moved others between pages, and
+	 * they were never returned (Cube World, PSV-3014). The record id never changes, and the platform filters and sorts it
+	 * with the same collation, so a page boundary stays where it was.
+	 */
+	static TSharedPtr<FJsonObject> KeysetPageBody(const TSharedPtr<FJsonObject>& BaseBody, const FString& AfterId);
+
 private:
 	friend class UPlayServSubsystem;
 	void Init(TSharedPtr<class FPlayServHttp> InHttp);
@@ -195,7 +205,8 @@ private:
 	static FString ETagForUpdatedAt(const FString& UpdatedAt);
 	bool RememberVersionOf(const FString& RecordId, const TSharedPtr<FJsonObject>& Record);
 
-	void QueryAllPages(const FString& EntId, const TSharedPtr<FJsonObject>& BaseBody, TSharedPtr<FJsonObject> Accumulator, FPlayServJsonCallback Callback);
+	/** Reads every page of BaseBody's query into Accumulator's items, page by page after the last record id (KeysetPageBody). */
+	void QueryAllPages(const FString& EntId, const TSharedPtr<FJsonObject>& BaseBody, TSharedPtr<FJsonObject> Accumulator, FPlayServJsonCallback Callback, const FString& AfterId = FString());
 
 	void QueryRecordsByIds(const FString& EntId, const TArray<FString>& Ids, const TSharedPtr<FJsonObject>& Body, FPlayServJsonCallback Callback);
 

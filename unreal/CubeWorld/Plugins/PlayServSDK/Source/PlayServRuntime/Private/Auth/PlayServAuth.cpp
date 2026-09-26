@@ -363,6 +363,20 @@ bool UPlayServAuth::IsTerminalRefreshFailure(const FPlayServError& Error)
 	case EPlayServErrorCode::NetworkUnreachable:
 		return false;
 	default:
+		break;
+	}
+	// The platform's front end answered for an app that was not there to take the request (a restart, a deploy) or asked
+	// the client to slow down: the refresh was not processed, and the token is still the live one. Taken as terminal, one
+	// such answer ended the session, so the game lost its crossings and the next launch made a new guest (Cube World, bug
+	// hunt B16; the dev platform answered 5xx through its restarts on 2026-10-02). A 500 comes from the app itself.
+	switch (Error.HttpStatus)
+	{
+	case 429:
+	case 502:
+	case 503:
+	case 504:
+		return false;
+	default:
 		return true;
 	}
 }
@@ -447,7 +461,7 @@ void UPlayServAuth::ExchangeRefreshToken(const FString& TokenToPresent, ERefresh
 				if (!UPlayServAuth::IsTerminalRefreshFailure(Error))
 				{
 					UE_LOG(LogPlayServ, Warning,
-						TEXT("PlayServ: token refresh did not reach the platform (%s) — session kept, will retry"), *Error.Message);
+						TEXT("PlayServ: token refresh not taken by the platform (%s) — session kept, will retry"), *Error.Message);
 					Self->StartRefreshRetryTimer();
 					return;
 				}

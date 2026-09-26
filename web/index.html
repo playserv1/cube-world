@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cube World</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="style.css">
   <script type="importmap">
     { "imports": {
@@ -13,16 +14,15 @@
   </script>
 </head>
 <body>
-  <aside>
-    <h1>Cube World</h1>
+  <!-- The panel over the game, top left, as the Unreal client draws it (CubeHUD::DrawPanel); the console key hides it. -->
+  <aside id="panel">
+    <section id="you">
+      <h2>You</h2>
+      <form id="join"><input id="name" placeholder="your name" maxlength="20" required><button>Play</button></form>
+    </section>
     <section>
       <h2>Servers</h2>
       <ul id="servers"></ul>
-    </section>
-    <section>
-      <h2>You</h2>
-      <form id="join"><input id="name" placeholder="your name" maxlength="20" required><button>Play</button></form>
-      <p id="me"></p>
     </section>
     <section>
       <h2>Players</h2>
@@ -31,13 +31,14 @@
     <p class="hint">Click the world to play. WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak.<br>
       Hold left click to break, right click places, 1–9 or the wheel picks a block, Esc opens the menu.<br>
       Left click a player to hit them.<br>
-      Bombs come down on parachutes: walk into one to pick it up, right click throws it.</p>
+      Bombs come down on parachutes: walk into one to pick it up, right click throws it.<br>
+      The ` key hides this panel and shows it again.</p>
   </aside>
   <main>
     <div id="view"></div>
     <div id="hurt"></div>
-    <div id="banner"></div>
     <div id="crosshair"></div>
+    <div id="barred" hidden></div>
     <div id="hud">
       <div id="hearts"></div>
       <div id="hotbar"></div>
@@ -54,10 +55,17 @@
       </div>
       <img id="carry" alt="" hidden>
     </div>
+    <div id="curtain"><h2>Cube World</h2><p id="curtain-status"></p></div>
     <div id="menu" hidden>
       <h2>Game menu</h2>
       <button id="resume">Resume</button>
       <button id="exit">Exit</button>
+    </div>
+    <!-- An operator's close or removal, told over the game until the player clicks it away (rooms.js). -->
+    <div id="notice" hidden>
+      <h2 id="notice-title"></h2>
+      <p id="notice-text"></p>
+      <button id="notice-ok">OK</button>
     </div>
     <div id="death" hidden>
       <h2>You died!</h2>

@@ -28,7 +28,8 @@ PlayServ::Data::LoadPlayerOwned<UPlayerProfile>(PlayerController,
     });
 
 // Load a collection by filter (Filters.md). Field names are your UPROPERTY identifiers, case-sensitive.
-// Results are complete: the SDK follows the platform's pages until every match is returned.
+// Results are complete: the SDK follows the platform's pages until every match is returned. It pages by record id,
+// in record-id order, so a record written or deleted while the read runs does not push another one past a page.
 PlayServ::Data::LoadAll<UMyPlayer>(
     FPlayServFilter::Where(TEXT("Level")).GreaterThan(10),
     [](bool bOk, TArray<UMyPlayer*> Players, const FPlayServError& Err) { ... });

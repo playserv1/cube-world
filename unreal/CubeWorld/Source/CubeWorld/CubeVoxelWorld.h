@@ -41,12 +41,12 @@ public:
 	void Clear() { Overrides.Empty(); Hidden.Empty(); }
 	const TMap<FIntVector, FName>& GetOverrides() const { return Overrides; }
 	/** Replaces every changed block at once and returns the blocks that differ: a snapshot applied without a rebuild of all. */
-	TArray<FIntVector> ReplaceOverrides(const TMap<FIntVector, FName>& Next)
+	TArray<FIntVector> ReplaceOverrides(TMap<FIntVector, FName> Next)
 	{
 		TArray<FIntVector> Changed;
 		for (const auto& P : Overrides) { const FName* N = Next.Find(P.Key); if (!N || *N != P.Value) Changed.Add(P.Key); }
 		for (const auto& P : Next) if (!Overrides.Contains(P.Key)) Changed.Add(P.Key);
-		Overrides = Next;
+		Overrides = MoveTemp(Next);
 		return Changed;
 	}
 

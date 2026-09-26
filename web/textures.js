@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { TEXTURE_SIZE as T } from "./spec.js";
 
 // Grass is tinted per region, as Minecraft tints it per biome: the server's colour names the tint.
-export const GRASS_TINTS = { green: [93, 160, 60], red: [200, 118, 48], blue: [58, 150, 150], yellow: [196, 186, 64], purple: [140, 95, 170], pink: [210, 120, 160] };
+export const GRASS_TINTS = { green: [93, 160, 60], red: [190, 42, 38], blue: [58, 150, 150], yellow: [196, 186, 64], purple: [140, 95, 170], pink: [210, 120, 160] };
 
 export function grassFaces(color) {
   const tint = GRASS_TINTS[color] ? color : "green";
@@ -160,6 +160,7 @@ export function buildAtlas() {
 // The hotbar icon: the block drawn as Minecraft draws items, an isometric cube lit from the top.
 export function blockIcon(atlas, kind, size = 40) {
   const faces = FACES[kind];
+  if (!faces) return null;
   const c = document.createElement("canvas"); c.width = size; c.height = size;
   const g = c.getContext("2d");
   g.imageSmoothingEnabled = false;

@@ -13,10 +13,13 @@ struct FCubeBody
 	double VX = 0, VY = 0, VZ = 0;
 	bool bOnGround = false, bSneaking = false, bSprinting = false, bHorizontalCollision = false;
 	int32 JumpDelay = 0;
+	/** The highest the feet were since the body last stood on the ground: what a fall counts from. Moves say it, so a
+	 * fall that began on one server hurts on the next (web/physics.js keeps the same as peak). */
+	double Peak = 0;
 
 	double Height() const { return bSneaking ? CubeSpec::SneakHeight : CubeSpec::Height; }
 	double EyeHeight() const { return bSneaking ? CubeSpec::SneakEyeHeight : CubeSpec::EyeHeight; }
-	void Teleport(double InX, double InY, double InZ) { X = PX = InX; Y = PY = InY; Z = PZ = InZ; VX = VY = VZ = 0; bOnGround = false; }
+	void Teleport(double InX, double InY, double InZ) { X = PX = InX; Y = PY = InY; Z = PZ = Peak = InZ; VX = VY = VZ = 0; bOnGround = false; }
 };
 
 /** Yaw is Minecraft's, in radians: 0 faces +y, forward is (-sin yaw, cos yaw). */

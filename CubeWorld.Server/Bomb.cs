@@ -4,7 +4,7 @@ namespace CubeWorld.Server;
 
 /// <summary>
 /// A bomb. The drop function writes it "free" high above the world; it comes down under a parachute, a player picks
-/// it up ("held"), throws it ("flying") and it explodes where it lands ("exploded"). When a sixth bomb is dropped
+/// it up ("held"), throws it ("flying") and it explodes where it lands ("exploded"). When a fourth bomb is dropped
 /// the oldest free one goes up in a puff of smoke ("fizzled"). A bomb only ever moves forward through these states,
 /// so a server applies an update only when it moves the bomb on (<see cref="Bomb.Rank"/>).
 /// </summary>
@@ -62,6 +62,50 @@ public static class Bomb
         return world.IsSolid(bx, by, below) || below < World.MinZ ? below + 1 : next;
     }
 
+    /// <summary>
+    /// A record heard live of a bomb this server does not follow, still in play though it was dropped long ago: a
+    /// server that missed its end handed it out again (an Unreal server's ghost of a fizzled bomb). Every server hears a
+    /// bomb from its drop on, so a live bomb is known; one loaded from the tables at start-up does not come this way.
+    /// </summary>
+    public static bool IsGhost(WorldBomb bomb, bool known, long now) =>
+        !known && !Over(bomb.state) && now - bomb.dropped_at > FinishedBombs.KeepMs;
+
+    /// <summary>
+    /// How recently a bomb may have been dropped and still have no row in a read of the bomb table: its first rows may be
+    /// written while the read runs, or pushed before they are stored. Older, a bomb with no row is long over (PSV-2977).
+    /// </summary>
+    public const long NoRowGraceMs = 10_000;
+
+    /// <summary>How long a bomb in play must have no row in every read of the bomb table before it goes out of play.</summary>
+    public const long RecheckMs = 5_000;
+
+    /// <summary>
+    /// The bombs a read of the bomb table takes out of play (PSV-2977): in play here, dropped more than
+    /// <see cref="NoRowGraceMs"/> ago, and with no row in any read for <see cref="RecheckMs"/>. A bomb's rows go two
+    /// minutes after it went off or fizzled (the drop function's sweep), so such a bomb is long over and this server
+    /// missed its end. One read is not enough: a read of more than one page can skip a row that another write moved
+    /// (PSV-3014). <paramref name="missingSince"/> holds when each bomb was first found with no row, and keeps that for
+    /// the bombs this read did not take out. ACubeWorldGameMode::BombsGoneFromTable on the Unreal side.
+    /// </summary>
+    public static List<string> GoneFromTable(IReadOnlyDictionary<string, long> droppedAt, IReadOnlySet<string> inTable,
+        Dictionary<string, long> missingSince, long now)
+    {
+        var gone = new List<string>();
+        var stillMissing = new Dictionary<string, long>();
+        // A read that found no row at all says nothing of any bomb: while a room is up, the table holds the bombs in play.
+        if (inTable.Count > 0)
+            foreach (var (id, dropped) in droppedAt)
+            {
+                if (inTable.Contains(id) || now - dropped <= NoRowGraceMs) continue;
+                var known = missingSince.TryGetValue(id, out var since);
+                if (known && now - since >= RecheckMs) gone.Add(id);
+                else stillMissing[id] = known ? since : now;
+            }
+        missingSince.Clear();
+        foreach (var (id, since) in stillMissing) missingSince[id] = since;
+        return gone;
+    }
+
     /// <summary>The bombs still in play over <paramref name="region"/>: when its room closes they go up in smoke.</summary>
     public static IEnumerable<WorldBomb> InRegion(IEnumerable<WorldBomb> bombs, int region) =>
         bombs.Where(b => !Over(b.state) && World.RegionOf(b.x, b.y) == region);
@@ -101,5 +145,29 @@ public static class Bomb
     {
         var half = Spec.PlayerWidth / 2;
         return Math.Abs(x - b.X) <= half && Math.Abs(y - b.Y) <= half && z >= b.Z && z <= b.Z + b.Height;
+    }
+}
+
+/// <summary>
+/// The bombs that went off or fizzled, kept for as long as the drop function keeps their rows: any later record of
+/// one is stale (a server that missed the end) and must not bring it back into play.
+/// </summary>
+public sealed class FinishedBombs
+{
+    public const long KeepMs = 15 * 60_000;
+
+    private readonly Dictionary<string, long> _over = new();
+
+    public void Remember(string bombId, long at)
+    {
+        _over[bombId] = Math.Max(at, _over.GetValueOrDefault(bombId));
+        if (_over.Count > 512) Forget(at);
+    }
+
+    public bool Has(string bombId, long now) => _over.TryGetValue(bombId, out var at) && now - at < KeepMs;
+
+    private void Forget(long now)
+    {
+        foreach (var id in _over.Where(p => now - p.Value >= KeepMs).Select(p => p.Key).ToArray()) _over.Remove(id);
     }
 }

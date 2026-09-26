@@ -203,6 +203,15 @@ public:
 	 */
 	void SetRefreshTokenChangedHandler(FPlayServRefreshTokenChanged Handler);
 
+	/**
+	 * Whether a failed refresh means the token is spent, so the session is over and a stored copy should go. Not
+	 * terminal: no answer (NetworkUnreachable, Timeout), and an answer from the platform's front end for an app that was
+	 * not there to take the request or asked the client to slow down (HTTP 429, 502, 503, 504). The token is then still
+	 * the live one: keep it and present it again later. Any other answer is terminal, a 500 among them: the app answered,
+	 * and may have spent the token.
+	 */
+	static bool IsTerminalRefreshFailure(const FPlayServError& Error);
+
 private:
 	friend class UPlayServSubsystem;
 
@@ -232,8 +241,6 @@ private:
 	void ExchangeRefreshToken(const FString& TokenToPresent, ERefreshExchange Mode, FPlayServAuthCallback Callback);
 
 	void RefreshSession();
-
-	static bool IsTerminalRefreshFailure(const FPlayServError& Error);
 
 	void StartRefreshRetryTimer();
 

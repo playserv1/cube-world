@@ -16,7 +16,8 @@ public sealed class WorldCube
     public string placed_by { get; set; } = "";
     public string placed_on { get; set; } = "";
     /// <summary>When it was written (unix ms): the Unreal servers hear blocks written after the last one they saw.</summary>
-    public long at { get; set; }
+    [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)]
+    public double? at { get; set; }
 }
 
 [EntityName("CubeInventory")]
@@ -45,18 +46,177 @@ public sealed class WorldPresence
     public long seen_at { get; set; }
 
     /// <summary>
-    /// Where a player who joins this server stands. One who walked over a border from another server is still
-    /// where that server last saw them, with the health they had; only a player nobody has seen in the last 5 s
-    /// starts at <paramref name="spawn"/>. The pose keeps the time it was heard, so this server does not announce it
-    /// again as new: a player who is walking is announced with their first move here, not a step behind.
+    /// The second of two poses heard of one player shows them hurt: less health than a pose heard within the last 5 s
+    /// (an older one may predate a stay on this very server, where they could have healed and been hurt again).
     /// </summary>
-    public static WorldPresence Arriving(WorldPresence spawn, WorldPresence? heard, long now) =>
-        heard is null || now - heard.seen_at >= 5000 || heard.health <= 0 ? spawn : new()
+    public static bool WasHurt(WorldPresence? before, WorldPresence now) =>
+        before is not null && now.health < before.health && now.health > 0 && now.seen_at - before.seen_at is >= 0 and < 5000;
+
+    /// <summary>
+    /// How long a server keeps the row of a player who left before it deletes it. One who crossed is written by the next
+    /// server well within it; a row deleted at once left nobody in the table until then, so every server lost the player
+    /// for up to a second and the next one put them at its spawn with full health (PSV-3018). CubeLeaveGraceMs on the
+    /// Unreal side.
+    /// </summary>
+    public const int LeaveGraceMs = 2000;
+
+    /// <summary>
+    /// The newest pose heard of a player who left this server is another server's, written after this server's last
+    /// one: they crossed, and that server holds them now. A pose another server wrote before they came here does not count.
+    /// </summary>
+    public static bool TakenOver(WorldPresence? heard, WorldPresence ours) =>
+        heard is not null && heard.server != ours.server && heard.seen_at >= ours.seen_at;
+
+    /// <summary>
+    /// A presence row was deleted: it takes the player out unless the pose known of them came from another server than
+    /// the one whose row went (a row left over from an older race, while the server that holds them goes on writing).
+    /// ACubeWorldGameMode::DeleteTakesOut on the Unreal side.
+    /// </summary>
+    public static bool DeleteTakesOut(WorldPresence? known, WorldPresence deleted) =>
+        known is not null && (string.IsNullOrEmpty(deleted.server) || known.server == deleted.server);
+
+    /// <summary>How far outside a region the last server may have seen a player who walked in over its border, in blocks.</summary>
+    public const double CrossingBand = 4;
+
+    /// <summary>
+    /// Where a player who joins this server stands. One another server saw in the last 5 s, alive, comes with the
+    /// health they had. Seen in this server's region or within <see cref="CrossingBand"/> of it, they walked over the
+    /// border: they stand where that server last saw them, moved inside the region. Seen farther away, they jumped here
+    /// from the server list, and start at <paramref name="spawn"/>: a jump moves them, it does not heal them. A player
+    /// nobody has seen in the last 5 s starts at the spawn, whole. A crossing pose keeps the time it was heard, so this
+    /// server does not announce it again as new: a player who is walking is announced with their first move here, not a
+    /// step behind. FCubeServerWorld's CubeCrossedInto on the Unreal side.
+    /// </summary>
+    public static WorldPresence Arriving(WorldPresence spawn, WorldPresence? heard, long now)
+    {
+        if (heard is null || now - heard.seen_at >= 5000 || heard.health <= 0) return spawn;
+        // The spawn is the region's middle, so it names the region.
+        var (x0, x1, y0, y1) = World.Bounds(World.RegionOf(spawn.x, spawn.y));
+        var crossed = heard.x >= x0 - CrossingBand && heard.x <= x1 + CrossingBand && heard.y >= y0 - CrossingBand && heard.y <= y1 + CrossingBand;
+        if (!crossed) return new()
         {
             player_id = spawn.player_id, name = spawn.name, server = spawn.server, color = spawn.color,
-            x = heard.x, y = heard.y, z = heard.z, yaw = heard.yaw, pitch = heard.pitch, health = heard.health,
+            x = spawn.x, y = spawn.y, z = spawn.z, health = heard.health,
+        };
+        const double half = Spec.PlayerWidth / 2;
+        return new()
+        {
+            player_id = spawn.player_id, name = spawn.name, server = spawn.server, color = spawn.color,
+            x = Math.Clamp(heard.x, x0 + half, x1 - half), y = Math.Clamp(heard.y, y0 + half, y1 - half), z = heard.z,
+            yaw = heard.yaw, pitch = heard.pitch, health = heard.health,
             sneaking = heard.sneaking, sprinting = heard.sprinting, seen_at = heard.seen_at,
         };
+    }
+}
+
+/// <summary>The fall a player is in, as their moves report it. FCubePlayerFall on the Unreal side.</summary>
+public sealed class PlayerFall
+{
+    public bool Airborne { get; private set; }
+    public double Peak { get; private set; }
+
+    /// <summary>
+    /// One move. In the air, the peak rises with it; on landing, the damage: ceil(peak - z - 3), never below 0, and the
+    /// fall is over. <paramref name="saidPeak"/> is the client's own highest point since the ground, which carries a
+    /// fall over a border: the part of it that happened on the old server counts too. It never makes a fall shorter
+    /// than the moves themselves reached.
+    /// </summary>
+    public double Step(double z, bool onGround, double? saidPeak = null)
+    {
+        if (onGround)
+        {
+            var damage = Airborne ? Math.Max(0, Math.Ceiling(Peak - z - Spec.SafeFallDistance)) : 0;
+            Airborne = false;
+            return damage;
+        }
+        Peak = Airborne ? Math.Max(Peak, z) : z;
+        if (saidPeak is { } said) Peak = Math.Max(Peak, Math.Min(said, World.MaxZ + 8));
+        Airborne = true;
+        return 0;
+    }
+}
+
+public enum MoveVerdict { Accepted, Stale, Refused }
+
+/// <summary>
+/// How far a player's moves may take them (Spec.MoveSpeed). FCubeMoveCheck on the Unreal side. A move past the
+/// allowance is refused, and the player is put back where the last accepted move left them: the server sends a
+/// correction numbered <see cref="Seq"/>, and a client that took it says so in its moves, so the moves it sent before
+/// it heard of it are dropped rather than refused again. A client that never numbers its moves cannot take a correction
+/// (a Windows build from before 2026-10-02): refused for <see cref="UnnumberedGiveUpMs"/> on end, it is taken where it
+/// says, so a player is never held in one place for good. Drop that once every client numbers its moves.
+/// </summary>
+public sealed class MoveCheck
+{
+    public const long UnnumberedGiveUpMs = 1000;
+
+    private long _at, _refusedSince = -1;
+    private double _allowance;
+    private int _arrivedIn = -1;
+
+    public double X { get; private set; }
+    public double Y { get; private set; }
+    public double Z { get; private set; }
+    public int Seq { get; private set; }
+
+    /// <summary>The server put the player here: they came back from the dead.</summary>
+    public void Reset(double x, double y, double z, long now)
+    {
+        (X, Y, Z, _at, _allowance, _refusedSince, _arrivedIn) = (x, y, z, now, Spec.MoveBurst, -1, -1);
+    }
+
+    /// <summary>
+    /// The player joined, or walked in over a border, and the server guessed they stand at (x, y, z): where the last
+    /// server saw them, or the region's spawn when it saw them too long ago or too far off. A client that crossed plays on
+    /// where it stands, which can be well past that guess, so the first move is taken as it comes when it is in this
+    /// region or just past its border; only a first move from anywhere else is put back to the guess. Anchored on the
+    /// guess, a player who crossed was snapped to a region's middle, and from there over and over between two rooms.
+    /// </summary>
+    public void Arrive(double x, double y, double z, int region, long now)
+    {
+        Reset(x, y, z, now);
+        _arrivedIn = region;
+    }
+
+    /// <summary>A hit threw the player: they may fly further than they walk.</summary>
+    public void Knocked(double strength) => _allowance += Math.Max(0, strength) * Spec.KnockbackReach;
+
+    public MoveVerdict Check(double x, double y, double z, int? seq, long now)
+    {
+        if (seq is { } said && said < Seq) return MoveVerdict.Stale;
+        if (_arrivedIn >= 0)
+        {
+            var near = World.Near(_arrivedIn, x, y, Spec.BorderSlack);
+            _arrivedIn = -1;
+            if (near)
+            {
+                Reset(x, y, z, now);
+                return MoveVerdict.Accepted;
+            }
+            if (seq is null) _refusedSince = now;
+            Seq++;
+            return MoveVerdict.Refused;
+        }
+
+        // The allowance fills with time up to the burst; a knockback's extra stays until it is spent.
+        _allowance = Math.Min(_allowance + Spec.MoveSpeed * Math.Max(0, now - _at) / 1000.0, Math.Max(_allowance, Spec.MoveBurst));
+        _at = now;
+        var distance = Math.Sqrt((x - X) * (x - X) + (y - Y) * (y - Y)) + Math.Max(0, z - Z);
+        if (distance > _allowance + Spec.MoveSlack)
+        {
+            if (seq is null && _refusedSince >= 0 && now - _refusedSince >= UnnumberedGiveUpMs)
+            {
+                Reset(x, y, z, now);
+                return MoveVerdict.Accepted;
+            }
+            if (_refusedSince < 0) _refusedSince = now;
+            Seq++;
+            return MoveVerdict.Refused;
+        }
+        _allowance = Math.Max(0, _allowance - distance);
+        (X, Y, Z, _refusedSince) = (x, y, z, -1);
+        return MoveVerdict.Accepted;
+    }
 }
 
 /// <summary>A hit on a player another server hosts: written by the attacker's server, applied by the victim's.</summary>
@@ -70,7 +230,7 @@ public sealed class WorldHit
     public double kx { get; set; }
     public double ky { get; set; }
     public double strength { get; set; }
-    public long at { get; set; }
+    public double? at { get; set; }
 }
 
 [EntityName("WorldRegion")]
@@ -112,6 +272,12 @@ public sealed class World
 
     private readonly Dictionary<string, WorldCube> _overrides = new();
 
+    /// <summary>When each block last changed here, in <see cref="Version"/>s: a read of the table begun before that is behind it.</summary>
+    private readonly Dictionary<string, long> _changedAt = new();
+
+    /// <summary>Counts every change of a block on this server, from here or heard from elsewhere.</summary>
+    public long Version { get; private set; }
+
     public IEnumerable<WorldCube> Overrides => _overrides.Values;
 
     /// <summary>The region a spot belongs to: region r is column r % <see cref="Columns"/> of row r / <see cref="Columns"/>.</summary>
@@ -120,6 +286,39 @@ public sealed class World
     /// <summary>The blocks of <paramref name="region"/>: x in [X0, X1), y in [Y0, Y1).</summary>
     public static (int X0, int X1, int Y0, int Y1) Bounds(int region) =>
         (region % Columns * RegionSize, (region % Columns + 1) * RegionSize, region / Columns * RegionSize, (region / Columns + 1) * RegionSize);
+
+    /// <summary>
+    /// A spot inside <paramref name="region"/> or within <paramref name="slack"/> blocks of it. A server edits the world
+    /// only for players who stand in its region: one standing anywhere else edits through that region's server (a
+    /// player who walks over a border plays on with the old server for the moment the crossing takes, hence the slack).
+    /// </summary>
+    public static bool Near(int region, double x, double y, double slack)
+    {
+        if (region < 0) return false;
+        var (x0, x1, y0, y1) = Bounds(region);
+        return x >= x0 - slack && x <= x1 + slack && y >= y0 - slack && y <= y1 + slack;
+    }
+
+    /// <summary>
+    /// Whether the server of <paramref name="region"/> changes the world for a player standing at x, y, who has been
+    /// outside its region for <paramref name="outsideMs"/>: digs, placements, bombs picked up and thrown. In its region,
+    /// yes. Just past its border, in a region another live server holds (<paramref name="heldElsewhere"/>), only for the
+    /// moment a crossing takes. Anywhere else no: a player who stays with the old server because the next room did not
+    /// let them in, or who walked into a region no live server holds, can only walk there.
+    /// </summary>
+    public static bool Serves(int region, double x, double y, long outsideMs, IReadOnlyCollection<int> heldElsewhere) =>
+        Near(region, x, y, 0)
+        || (Near(region, x, y, Spec.BorderSlack) && outsideMs <= Spec.CrossingMs && heldElsewhere.Contains(RegionOf(x, y)));
+
+    /// <summary>
+    /// Whether the server of <paramref name="region"/> may change the block at x, y: one of its own region, or of a region
+    /// another live server holds. A region no live server holds keeps its blocks until a server claims it.
+    /// </summary>
+    public static bool ServesBlock(int region, int x, int y, IReadOnlyCollection<int> heldElsewhere)
+    {
+        var there = RegionOf(x + 0.5, y + 0.5);
+        return (region >= 0 && there == region) || heldElsewhere.Contains(there);
+    }
 
     /// <summary>Where a region's players spawn: its middle.</summary>
     public static (double X, double Y) Centre(int region) => ((region % Columns + 0.5) * RegionSize, (region / Columns + 0.5) * RegionSize);
@@ -167,15 +366,62 @@ public sealed class World
     /// <summary>A change another server wrote. Returns whether it changed anything here.</summary>
     public bool Apply(string op, WorldCube cube)
     {
-        if (op == "delete") return _overrides.Remove(cube.key);
+        if (op == "delete")
+        {
+            if (!_overrides.Remove(cube.key)) return false;
+            _changedAt[cube.key] = ++Version;
+            return true;
+        }
+        cube.kind = Spec.Canonical(cube.kind);
         if (!Inside(cube.x, cube.y, cube.z) || _overrides.TryGetValue(cube.key, out var known) && known.kind == cube.kind) return false;
         _overrides[cube.key] = cube;
+        _changedAt[cube.key] = ++Version;
         return true;
+    }
+
+    /// <summary>Whether the block changed here after <paramref name="asOf"/>: a read begun before then is behind it.</summary>
+    public bool ChangedSince(string key, long asOf) => _changedAt.GetValueOrDefault(key) > asOf;
+
+    /// <summary>
+    /// The whole table, read from <paramref name="asOf"/> on: every block this server holds whose row is not in it goes
+    /// back to the terrain, and is returned. A delete pushed while the uplink was down is never sent again (on dev on
+    /// 2026-10-03 yellow kept seven blocks of a world reset that every other server had dropped). A block that changed
+    /// here after the read began is newer than the read, and this server's own write of the last minute may not be in
+    /// the table yet: both stay.
+    /// </summary>
+    public List<WorldCube> Forget(IReadOnlySet<string> found, long asOf, string self, long now)
+    {
+        var gone = _overrides.Values.Where(cube => !found.Contains(cube.key)
+            && !ChangedSince(cube.key, asOf)
+            && !(cube.placed_on == self && cube.at is { } at && now - at < 60_000)).ToList();
+        foreach (var cube in gone) Apply("delete", cube);
+        return gone;
+    }
+
+    /// <summary>
+    /// A row read back from the table: applied only when it is newer than what this server holds, so a read that
+    /// crossed one of this server's own writes does not undo it. Returns whether it changed anything here.
+    /// </summary>
+    public bool Reconcile(WorldCube cube, string self, long now)
+    {
+        if (cube.at is not { } at) return false;
+        if (_overrides.TryGetValue(cube.key, out var known))
+        {
+            if (known.at is { } knownAt && knownAt >= at) return false;
+            // This server's own write of the last minute may not be in the table yet, and a writer whose clock runs
+            // ahead could have stamped the older row later: the live updates settle such a block, the read-back does not.
+            if (known.placed_on == self && known.at is { } ownAt && now - ownAt < 60_000) return false;
+        }
+        return Apply("upsert", cube);
     }
 
     public void Load(IEnumerable<WorldCube> cubes)
     {
-        foreach (var cube in cubes) _overrides[cube.key] = cube;
+        foreach (var cube in cubes)
+        {
+            cube.kind = Spec.Canonical(cube.kind);
+            _overrides[cube.key] = cube;
+        }
     }
 
     /// <summary>
@@ -298,6 +544,7 @@ public sealed class World
     {
         var cube = new WorldCube { key = Key(x, y, z), x = x, y = y, z = z, kind = kind, placed_by = by, placed_on = on, at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
         _overrides[cube.key] = cube;
+        _changedAt[cube.key] = ++Version;
         update.Changes.Add(new Change("upsert", cube));
     }
 
@@ -336,17 +583,34 @@ public sealed class Inventory
         try
         {
             var parsed = string.IsNullOrEmpty(stacks) ? null : JsonSerializer.Deserialize<Dictionary<string, int>>(stacks);
-            return parsed is null ? Starting() : new Inventory(parsed);
+            return parsed is null ? Starting() : new Inventory(Canonical(parsed));
         }
         catch (JsonException) { return Starting(); }
     }
 
+    /// <summary>
+    /// The stacks under the kinds' own names. A row an Unreal server wrote says "Stone", and the refill function then
+    /// added a "stone" beside it: the two are one kind, and the larger count is the player's (the refill's top-up only
+    /// started from nothing because it did not know the other spelling).
+    /// </summary>
+    public static Dictionary<string, int> Canonical(IReadOnlyDictionary<string, int> stacks)
+    {
+        var merged = new Dictionary<string, int>();
+        foreach (var (kind, count) in stacks)
+        {
+            var name = Spec.Canonical(kind);
+            merged[name] = Math.Max(merged.GetValueOrDefault(name), count);
+        }
+        return merged;
+    }
+
     public IReadOnlyDictionary<string, int> Stacks => _stacks;
 
-    public int Count(string kind) => _stacks.GetValueOrDefault(kind);
+    public int Count(string kind) => _stacks.GetValueOrDefault(Spec.Canonical(kind));
 
     public bool Take(string kind)
     {
+        kind = Spec.Canonical(kind);
         if (Count(kind) <= 0) return false;
         _stacks[kind]--;
         return true;
@@ -355,6 +619,7 @@ public sealed class Inventory
     /// <summary>Adds one item; a full stack (64) takes no more, as in Minecraft.</summary>
     public bool Give(string kind)
     {
+        kind = Spec.Canonical(kind);
         if (!Spec.Of(kind).Placeable || Count(kind) >= Spec.StackSize) return false;
         _stacks[kind] = Count(kind) + 1;
         return true;
@@ -364,4 +629,69 @@ public sealed class Inventory
     {
         player_id = playerId, cubes = _stacks.Values.Sum(), stacks = JsonSerializer.Serialize(_stacks),
     };
+
+    /// <summary>Holds these stacks from now on (a merge of another writer's row).</summary>
+    public void Set(IReadOnlyDictionary<string, int> stacks)
+    {
+        _stacks.Clear();
+        foreach (var (kind, count) in stacks) _stacks[kind] = count;
+    }
+}
+
+/// <summary>
+/// One player's inventory row as this server knows it, for merging the other writers' rows into the inventory it holds:
+/// the old server's last write after a crossing, the refill function's top-up. A row heard is either this server's own
+/// write coming back (one of the rows it wrote and has not heard yet) or someone else's: then what that writer changed
+/// since the row this server last knew is added to what the player did here, kind by kind. FCubeInventorySync on the
+/// Unreal side.
+/// </summary>
+public sealed class InventorySync(IReadOnlyDictionary<string, int> read)
+{
+    /// <summary>
+    /// A write of ours not heard back after this long is taken to be in the row: should the uplink not send a server its
+    /// own writes, another writer's change would otherwise be counted from a row older than them.
+    /// </summary>
+    public const long EchoMs = 3000;
+
+    private readonly List<(Dictionary<string, int> Stacks, long At)> _written = [];
+
+    /// <summary>The row as this server last knew it: read at the join, or heard since.</summary>
+    public IReadOnlyDictionary<string, int> Base { get; private set; } = new Dictionary<string, int>(read);
+
+    public void Wrote(IReadOnlyDictionary<string, int> stacks, long now)
+    {
+        _written.Add((new Dictionary<string, int>(stacks), now));
+        if (_written.Count > 32) _written.RemoveAt(0);
+    }
+
+    /// <summary>A row was heard. Null when it is this server's own write (nothing changes); else the inventory to hold now.</summary>
+    public Dictionary<string, int>? Heard(IReadOnlyDictionary<string, int> ours, IReadOnlyDictionary<string, int> theirs, long now)
+    {
+        // The platform keeps one write of a row at a time and sends the latest: a later write of ours heard means the
+        // earlier ones are behind us too.
+        var own = _written.FindIndex(w => Same(w.Stacks, theirs));
+        if (own >= 0)
+        {
+            _written.RemoveRange(0, own + 1);
+            Base = new Dictionary<string, int>(theirs);
+            return null;
+        }
+        var landed = _written.FindLastIndex(w => now - w.At >= EchoMs);
+        if (landed >= 0)
+        {
+            Base = _written[landed].Stacks;
+            _written.RemoveRange(0, landed + 1);
+        }
+        var merged = Merge(ours, Base, theirs);
+        Base = new Dictionary<string, int>(theirs);
+        return merged;
+    }
+
+    /// <summary>Ours plus what theirs changed since the base, each kind kept within 0 and a stack.</summary>
+    public static Dictionary<string, int> Merge(IReadOnlyDictionary<string, int> ours, IReadOnlyDictionary<string, int> @base, IReadOnlyDictionary<string, int> theirs) =>
+        ours.Keys.Union(@base.Keys).Union(theirs.Keys).ToDictionary(kind => kind,
+            kind => Math.Clamp(ours.GetValueOrDefault(kind) + theirs.GetValueOrDefault(kind) - @base.GetValueOrDefault(kind), 0, Spec.StackSize));
+
+    public static bool Same(IReadOnlyDictionary<string, int> a, IReadOnlyDictionary<string, int> b) =>
+        a.Keys.Union(b.Keys).All(kind => a.GetValueOrDefault(kind) == b.GetValueOrDefault(kind));
 }

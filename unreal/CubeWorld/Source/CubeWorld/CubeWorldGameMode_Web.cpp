@@ -53,17 +53,8 @@ namespace
 		return F;
 	}
 
-	TSharedRef<FJsonObject> PoseJson(const FCubePresenceRep& P, int64 SeenAt)
-	{
-		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("player_id"), P.Id); J->SetStringField(TEXT("name"), P.Name);
-		J->SetStringField(TEXT("server"), P.Server); J->SetStringField(TEXT("color"), P.Color);
-		J->SetNumberField(TEXT("x"), P.X); J->SetNumberField(TEXT("y"), P.Y); J->SetNumberField(TEXT("z"), P.Z);
-		J->SetNumberField(TEXT("yaw"), P.Yaw); J->SetNumberField(TEXT("pitch"), P.Pitch); J->SetNumberField(TEXT("health"), P.Health);
-		J->SetNumberField(TEXT("sneaking"), P.bSneaking ? 1 : 0); J->SetNumberField(TEXT("sprinting"), P.bSprinting ? 1 : 0);
-		J->SetNumberField(TEXT("seen_at"), (double)SeenAt);
-		return J;
-	}
+	/** A pose as a browser client reads it: the fields of a WorldPresence row. */
+	TSharedRef<FJsonObject> PoseJson(const FCubePresenceRep& P, int64 SeenAt) { return ACubeWorldGameMode::PresenceJson(P, SeenAt); }
 
 	TSharedRef<FJsonObject> BombJson(const FCubeBombRep& B)
 	{
@@ -83,14 +74,14 @@ namespace
 		TSharedRef<FJsonObject> C = MakeShared<FJsonObject>();
 		C->SetStringField(TEXT("key"), FCubeServerWorld::Key(At.X, At.Y, At.Z));
 		C->SetNumberField(TEXT("x"), At.X); C->SetNumberField(TEXT("y"), At.Y); C->SetNumberField(TEXT("z"), At.Z);
-		C->SetStringField(TEXT("kind"), Kind.ToString()); C->SetStringField(TEXT("placed_by"), By); C->SetStringField(TEXT("placed_on"), On);
+		C->SetStringField(TEXT("kind"), CubeSpec::KindName(Kind)); C->SetStringField(TEXT("placed_by"), By); C->SetStringField(TEXT("placed_on"), On);
 		return C;
 	}
 
 	TSharedRef<FJsonObject> InventoryJson(const FCubeInventory& Inventory)
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		for (const auto& Pair : Inventory.Stacks) J->SetNumberField(Pair.Key.ToString(), Pair.Value);
+		for (const auto& Pair : Inventory.Stacks) J->SetNumberField(CubeSpec::KindName(Pair.Key), Pair.Value);
 		return J;
 	}
 }
@@ -171,13 +162,16 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 	if (!P)
 	{
 		if (!bServing || bClosing) { Web->Close(Client, 1008, TEXT("server_not_ready")); return; }
-		const FString Ticket = Str(Json, TEXT("reservationToken"));
-		const FPlayServTicketVerdict Verdict = PlayServ::Rooms::VerifyTicket(Ticket);
-		if (!Verdict.bAccepted)
+		FPlayServTicketVerdict Verdict;
+		if (!bOffline)   // nobody hands out tickets offline
 		{
-			ServerLog(FString::Printf(TEXT("a browser client's ticket was refused: %s"), *Verdict.Reason));
-			Web->Close(Client, 1008, Verdict.Reason.IsEmpty() ? TEXT("reservation_invalid") : Verdict.Reason);
-			return;
+			Verdict = PlayServ::Rooms::VerifyTicket(Str(Json, TEXT("reservationToken")));
+			if (!Verdict.bAccepted)
+			{
+				ServerLog(FString::Printf(TEXT("a browser client's ticket was refused: %s"), *Verdict.Reason));
+				Web->Close(Client, 1008, Verdict.Reason.IsEmpty() ? TEXT("reservation_invalid") : Verdict.Reason);
+				return;
+			}
 		}
 		FString Id = Verdict.PlayerId;
 		if (Id.IsEmpty()) Id = Str(Json, TEXT("playerId"));
@@ -191,15 +185,28 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 		Player->Name = Name.IsEmpty() ? Id : Name.Left(32);
 		// A browser client says "bombs" once it can show them; until then it is handed none.
 		Player->bThrows = false;
-		Spawn(*Player);
+		// A browser's hello names no position: a player walking in over a border stands where their server last saw them.
+		Arrive(*Player, nullptr);
 		Players.Add(Id, Player);
+		// The other servers hear where they stand now, not on the next presence tick after the welcome.
+		WritePresence(*Player);
+		// The door is not an Unreal login, so the engine's PostLogin never tells the SDK: the player is admitted here,
+		// and so is in the room's roster, the admin's player list and within an operator's reach.
+		if (!bOffline) PlayServ::Rooms::AdmitVerified(Verdict);
 		ServerLog(FString::Printf(TEXT("%s joined through the browser door"), *Player->Name));
 		LoadInventoryAndWelcome(Id);
 		return;
 	}
 
 	const FString Op = Str(Json, TEXT("op"));
-	if (Op == TEXT("move")) OnMove(P, Num(Json, TEXT("x")), Num(Json, TEXT("y")), Num(Json, TEXT("z")), Num(Json, TEXT("yaw")), Num(Json, TEXT("pitch")), Flag(Json, TEXT("onGround")), Flag(Json, TEXT("sneaking")), Flag(Json, TEXT("sprinting")));
+	if (Op == TEXT("move"))
+	{
+		double Peak;
+		const TOptional<double> SaidPeak = Json->TryGetNumberField(TEXT("peak"), Peak) ? TOptional<double>(Peak) : TOptional<double>();
+		int32 Seq;
+		const TOptional<int32> SaidSeq = Json->TryGetNumberField(TEXT("seq"), Seq) ? TOptional<int32>(Seq) : TOptional<int32>();
+		OnMove(P, Num(Json, TEXT("x")), Num(Json, TEXT("y")), Num(Json, TEXT("z")), Num(Json, TEXT("yaw")), Num(Json, TEXT("pitch")), Flag(Json, TEXT("onGround")), Flag(Json, TEXT("sneaking")), Flag(Json, TEXT("sprinting")), SaidPeak, SaidSeq);
+	}
 	else if (Op == TEXT("dig")) OnDig(P, FMath::FloorToInt32(Num(Json, TEXT("x"))), FMath::FloorToInt32(Num(Json, TEXT("y"))), FMath::FloorToInt32(Num(Json, TEXT("z"))), Str(Json, TEXT("state")) == TEXT("start"));
 	else if (Op == TEXT("place")) OnPlace(P, FMath::FloorToInt32(Num(Json, TEXT("x"))), FMath::FloorToInt32(Num(Json, TEXT("y"))), FMath::FloorToInt32(Num(Json, TEXT("z"))), (int32)Num(Json, TEXT("nx")), (int32)Num(Json, TEXT("ny")), (int32)Num(Json, TEXT("nz")), FName(*Str(Json, TEXT("kind"))));
 	else if (Op == TEXT("attack")) OnAttack(P, Str(Json, TEXT("target")));
@@ -213,7 +220,10 @@ void ACubeWorldGameMode::OnWebClosed(int32 Client)
 	if (FCubeServerPlayer* P = PlayerOfWeb(Client)) RemovePlayer(P->Id);
 }
 
-/** A player left, through either door: their dig stops, their presence row goes, the others hear it. */
+/**
+ * A player left, through either door: their dig stops, and their presence row goes once no other server has taken them
+ * over (DeletePresence). Until the next server's first pose they stand where this server last saw them (KeepLastPose).
+ */
 void ACubeWorldGameMode::RemovePlayer(const FString& Id)
 {
 	const TSharedPtr<FCubeServerPlayer>* Found = Players.Find(Id);
@@ -221,10 +231,15 @@ void ACubeWorldGameMode::RemovePlayer(const FString& Id)
 	TSharedPtr<FCubeServerPlayer> Player = *Found;
 	StopDig(*Player);
 	ServerLog(FString::Printf(TEXT("%s left"), *Player->Name));
-	UWorldPresence* Row = Player->PresenceRow.Get();
-	TStrongObjectPtr<UWorldPresence> Keep(Row);
+	// A browser's leave is the game's to report, as its join was (an Unreal client's goes through the engine's logout).
+	if (Player->WebClient && !bOffline) PlayServ::Rooms::RemovePlayer(RoomName(), Id);
+	// Their last pose here, which DeletePresence holds against what the other servers write of them meanwhile.
+	FCubeElsewhere Last;
+	Last.Pose = PoseOf(*Player);
+	Last.SeenAt = Now();
+	KeepLastPose(*Player);
 	Players.Remove(Id);
-	if (Row) DeletePresence(Id, Row);
+	DeletePresence(Id, Last);
 	PublishPlayers();
 }
 
@@ -248,7 +263,7 @@ void ACubeWorldGameMode::WebWelcome(FCubeServerPlayer& P)
 	W->SetNumberField(TEXT("width"), CubeSpec::Width_); W->SetNumberField(TEXT("depth"), CubeSpec::Depth); W->SetNumberField(TEXT("regionSize"), CubeSpec::RegionSize);
 	W->SetNumberField(TEXT("minZ"), CubeSpec::MinZ); W->SetNumberField(TEXT("maxZ"), CubeSpec::MaxZ);
 	TArray<TSharedPtr<FJsonValue>> LayersJson;
-	for (const auto& Pair : CubeSpec::Layers()) { TSharedRef<FJsonObject> L = MakeShared<FJsonObject>(); L->SetNumberField(TEXT("z"), Pair.Key); L->SetStringField(TEXT("kind"), Pair.Value.ToString()); LayersJson.Add(MakeShared<FJsonValueObject>(L)); }
+	for (const auto& Pair : CubeSpec::Layers()) { TSharedRef<FJsonObject> L = MakeShared<FJsonObject>(); L->SetNumberField(TEXT("z"), Pair.Key); L->SetStringField(TEXT("kind"), CubeSpec::KindName(Pair.Value)); LayersJson.Add(MakeShared<FJsonValueObject>(L)); }
 	W->SetArrayField(TEXT("layers"), LayersJson);
 	TArray<TSharedPtr<FJsonValue>> Trees;
 	for (const FIntPoint& T : CubeTreeSpots()) { TSharedRef<FJsonObject> J = MakeShared<FJsonObject>(); J->SetNumberField(TEXT("x"), T.X); J->SetNumberField(TEXT("y"), T.Y); Trees.Add(MakeShared<FJsonValueObject>(J)); }
@@ -257,15 +272,15 @@ void ACubeWorldGameMode::WebWelcome(FCubeServerPlayer& P)
 	for (const FBlockDef& B : CubeSpec::Blocks())
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("kind"), B.Kind.ToString()); J->SetNumberField(TEXT("Hardness"), B.Hardness); J->SetBoolField(TEXT("NeedsTool"), B.bNeedsTool);
+		J->SetStringField(TEXT("kind"), B.Name); J->SetNumberField(TEXT("Hardness"), B.Hardness); J->SetBoolField(TEXT("NeedsTool"), B.bNeedsTool);
 		J->SetBoolField(TEXT("Transparent"), B.bTransparent); J->SetBoolField(TEXT("Gravity"), B.bGravity);
-		if (B.Drop != NAME_None) J->SetStringField(TEXT("Drop"), B.Drop.ToString()); else J->SetField(TEXT("Drop"), MakeShared<FJsonValueNull>());
+		if (B.Drop != NAME_None) J->SetStringField(TEXT("Drop"), CubeSpec::KindName(B.Drop)); else J->SetField(TEXT("Drop"), MakeShared<FJsonValueNull>());
 		J->SetNumberField(TEXT("breakTicks"), B.BreakTicks);
 		Blocks.Add(MakeShared<FJsonValueObject>(J));
 	}
 	W->SetArrayField(TEXT("blocks"), Blocks);
 	TArray<TSharedPtr<FJsonValue>> Hotbar;
-	for (const FName& K : CubeSpec::Hotbar()) Hotbar.Add(MakeShared<FJsonValueString>(K.ToString()));
+	for (const FName& K : CubeSpec::Hotbar()) Hotbar.Add(MakeShared<FJsonValueString>(CubeSpec::KindName(K)));
 	W->SetArrayField(TEXT("hotbar"), Hotbar);
 	TArray<TSharedPtr<FJsonValue>> WorldJson;
 	for (const auto& Pair : World.Overrides) WorldJson.Add(MakeShared<FJsonValueObject>(CubeJson(Pair.Key, Pair.Value.Kind, Pair.Value.By, Pair.Value.On)));
@@ -311,6 +326,23 @@ void ACubeWorldGameMode::SendRespawn(FCubeServerPlayer& P)
 		return;
 	}
 	if (ACubePlayerPawn* Pawn = P.Pawn.Get()) Pawn->ClientRespawn(P.X, P.Y, P.Z);
+}
+
+void ACubeWorldGameMode::Correct(FCubeServerPlayer& P, double X, double Y, double Z)
+{
+	const FCubeMoveCheck& Moves = P.Moves;
+	if (P.WebClient)
+	{
+		TSharedRef<FJsonObject> F = Frame(TEXT("correct"));
+		F->SetNumberField(TEXT("seq"), Moves.Seq);
+		F->SetNumberField(TEXT("x"), Moves.X); F->SetNumberField(TEXT("y"), Moves.Y); F->SetNumberField(TEXT("z"), Moves.Z);
+		WebSend(P, F);
+	}
+	else if (ACubePlayerPawn* Pawn = P.Pawn.Get()) Pawn->ClientCorrect(Moves.X, Moves.Y, Moves.Z, Moves.Seq);
+	if (Now() - P.CorrectionLoggedAt < 5000) return;
+	P.CorrectionLoggedAt = Now();
+	const double Distance = FMath::Sqrt((X - Moves.X) * (X - Moves.X) + (Y - Moves.Y) * (Y - Moves.Y)) + FMath::Max(0.0, Z - Moves.Z);
+	ServerLog(FString::Printf(TEXT("%s moved %.1f blocks too fast, put back (correction %d)"), *P.Name, Distance, Moves.Seq));
 }
 
 // ── what everyone gets ───────────────────────────────────────────────────────────────────────────
@@ -361,16 +393,18 @@ void ACubeWorldGameMode::WebBroadcastCubes(const TArray<FCubeChange>& Changes, c
 	for (const FCubeFall& Fall : Falls)
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("kind"), Fall.Kind.ToString()); J->SetNumberField(TEXT("x"), Fall.X); J->SetNumberField(TEXT("y"), Fall.Y); J->SetNumberField(TEXT("fromZ"), Fall.FromZ); J->SetNumberField(TEXT("toZ"), Fall.ToZ);
+		J->SetStringField(TEXT("kind"), CubeSpec::KindName(Fall.Kind)); J->SetNumberField(TEXT("x"), Fall.X); J->SetNumberField(TEXT("y"), Fall.Y); J->SetNumberField(TEXT("fromZ"), Fall.FromZ); J->SetNumberField(TEXT("toZ"), Fall.ToZ);
 		FallsJson.Add(MakeShared<FJsonValueObject>(J));
 	}
 	F->SetArrayField(TEXT("falls"), FallsJson);
 	TArray<TSharedPtr<FJsonValue>> ChangesJson;
 	for (const FCubeChange& C : Changes)
 	{
+		// A block back to the terrain (its row was deleted) is a delete, as the C# server passes one on.
+		const bool bGenerated = C.Kind == NAME_None;
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("op"), TEXT("upsert"));
-		J->SetObjectField(TEXT("cube"), CubeJson(C.At, C.Kind, C.By, C.On));
+		J->SetStringField(TEXT("op"), bGenerated ? TEXT("delete") : TEXT("upsert"));
+		J->SetObjectField(TEXT("cube"), CubeJson(C.At, bGenerated ? World.Voxels.Generated(C.At.X, C.At.Y, C.At.Z) : C.Kind, C.By, C.On));
 		ChangesJson.Add(MakeShared<FJsonValueObject>(J));
 	}
 	F->SetArrayField(TEXT("changes"), ChangesJson);

@@ -255,11 +255,46 @@ void UPlayServData::ResolveEntityId(const FString& EntityType, TFunction<void(co
 		}));
 }
 
-void UPlayServData::QueryAllPages(const FString& EntId, const TSharedPtr<FJsonObject>& BaseBody, TSharedPtr<FJsonObject> Accumulator, FPlayServJsonCallback Callback)
+TSharedPtr<FJsonObject> UPlayServData::KeysetPageBody(const TSharedPtr<FJsonObject>& BaseBody, const FString& AfterId)
+{
+	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
+	if (BaseBody.IsValid())
+	{
+		Body->Values = BaseBody->Values;
+	}
+	Body->RemoveField(TEXT("cursor"));
+
+	TSharedPtr<FJsonObject> ById = MakeShared<FJsonObject>();
+	ById->SetStringField(TEXT("field"), TEXT("id"));
+	ById->SetStringField(TEXT("dir"), TEXT("asc"));
+	TArray<TSharedPtr<FJsonValue>> Sort;
+	Sort.Add(MakeShared<FJsonValueObject>(ById));
+	Body->SetArrayField(TEXT("sort"), Sort);
+
+	if (!AfterId.IsEmpty())
+	{
+		// A new array: the base body's filters are shared with every page and stay as they were.
+		TArray<TSharedPtr<FJsonValue>> Filters;
+		const TArray<TSharedPtr<FJsonValue>>* BaseFilters;
+		if (Body->TryGetArrayField(TEXT("filters"), BaseFilters))
+		{
+			Filters = *BaseFilters;
+		}
+		TSharedPtr<FJsonObject> After = MakeShared<FJsonObject>();
+		After->SetStringField(TEXT("field"), TEXT("id"));
+		After->SetStringField(TEXT("op"), TEXT("gt"));
+		After->SetStringField(TEXT("value"), AfterId);
+		Filters.Add(MakeShared<FJsonValueObject>(After));
+		Body->SetArrayField(TEXT("filters"), Filters);
+	}
+	return Body;
+}
+
+void UPlayServData::QueryAllPages(const FString& EntId, const TSharedPtr<FJsonObject>& BaseBody, TSharedPtr<FJsonObject> Accumulator, FPlayServJsonCallback Callback, const FString& AfterId)
 {
 	TWeakObjectPtr<UPlayServData> WeakThis(this);
-	Http->Request(EPlayServHttpVerb::Post, FString::Printf(TEXT("/data/tables/%s/records:query"), *EntId), BaseBody, FPlayServV2Callback::CreateLambda(
-		[WeakThis, EntId, BaseBody, Accumulator, Callback](bool bSuccess, const FPlayServHttpResponse& Response, const FPlayServError& Error)
+	Http->Request(EPlayServHttpVerb::Post, FString::Printf(TEXT("/data/tables/%s/records:query"), *EntId), KeysetPageBody(BaseBody, AfterId), FPlayServV2Callback::CreateLambda(
+		[WeakThis, EntId, BaseBody, Accumulator, Callback, AfterId](bool bSuccess, const FPlayServHttpResponse& Response, const FPlayServError& Error)
 		{
 			UPlayServData* Self = WeakThis.Get();
 			if (!Self)
@@ -277,27 +312,36 @@ void UPlayServData::QueryAllPages(const FString& EntId, const TSharedPtr<FJsonOb
 				? Accumulator->GetArrayField(TEXT("items"))
 				: TArray<TSharedPtr<FJsonValue>>();
 			const TArray<TSharedPtr<FJsonValue>>* Page;
+			FString LastId;
 			if (Response.Json->TryGetArrayField(TEXT("data"), Page))
 			{
 				Items.Append(*Page);
+				const TSharedPtr<FJsonObject>* Last;
+				if (Page->Num() > 0 && Page->Last().IsValid() && Page->Last()->TryGetObject(Last))
+				{
+					(*Last)->TryGetStringField(TEXT("id"), LastId);
+				}
 			}
 			Accumulator->SetArrayField(TEXT("items"), Items);
 
 			const TSharedPtr<FJsonObject>* PageInfo;
 			bool bHasMore = false;
-			FString CursorNext;
 			if (Response.Json->TryGetObjectField(TEXT("page"), PageInfo))
 			{
 				(*PageInfo)->TryGetBoolField(TEXT("has_more"), bHasMore);
-				(*PageInfo)->TryGetStringField(TEXT("cursor_next"), CursorNext);
 			}
 
-			if (bHasMore && !CursorNext.IsEmpty())
+			if (bHasMore)
 			{
-				TSharedPtr<FJsonObject> NextBody = MakeShared<FJsonObject>();
-				NextBody->Values = BaseBody->Values;
-				NextBody->SetStringField(TEXT("cursor"), CursorNext);
-				Self->QueryAllPages(EntId, NextBody, Accumulator, Callback);
+				// A page that names no last record, or the one the page before ended on, cannot be followed. The read fails
+				// rather than come back short: a caller takes a short read for the whole table.
+				if (LastId.IsEmpty() || LastId == AfterId)
+				{
+					Callback.ExecuteIfBound(false, nullptr, FPlayServError::Make(EPlayServErrorCode::Unknown,
+						FString::Printf(TEXT("Reading table '%s' stopped: a page said more records follow, but it did not end on a new record id"), *EntId)));
+					return;
+				}
+				Self->QueryAllPages(EntId, BaseBody, Accumulator, Callback, LastId);
 				return;
 			}
 

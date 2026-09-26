@@ -1,10 +1,14 @@
 * { box-sizing: border-box; }
-body { margin: 0; display: flex; height: 100vh; font: 14px/1.4 system-ui, sans-serif; background: #0f1720; color: #e5e7eb; }
-aside { width: 280px; padding: 16px; overflow-y: auto; background: #111c28; border-right: 1px solid #1f2d3d; }
-main { flex: 1; position: relative; overflow: hidden; }
+body { margin: 0; height: 100vh; overflow: hidden; font: 14px/1.4 system-ui, sans-serif; background: #0f1720; color: #e5e7eb; }
+/* The panel floats over the game, which fills the whole window as in the Unreal client: see-through, only as tall as
+   what it holds. */
+aside { position: absolute; top: 12px; left: 12px; z-index: 4; width: 220px; max-height: calc(100vh - 24px); overflow-y: auto;
+  padding: 8px 10px 10px; border-radius: 8px; background: rgba(8, 12, 18, .55); backdrop-filter: blur(3px); }
+aside[hidden] { display: none; }
+aside section:first-child h2 { margin-top: 0; }
+main { position: absolute; inset: 0; overflow: hidden; }
 #view { position: absolute; inset: 0; }
 #view canvas { display: block; image-rendering: pixelated; }
-#banner { position: absolute; top: 12px; left: 12px; padding: 6px 12px; border-radius: 6px; background: rgba(0,0,0,.45); font-weight: 600; }
 #crosshair { position: absolute; top: 50%; left: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); pointer-events: none; mix-blend-mode: difference; }
 #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; }
 #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
@@ -46,21 +50,48 @@ main { flex: 1; position: relative; overflow: hidden; }
 #menu h2 { font-size: 28px; margin: 0 0 8px; color: #fff; text-transform: none; letter-spacing: 0; text-shadow: 2px 2px 0 #000; }
 #menu button { width: 240px; font-size: 18px; padding: 8px 0; background: #595960; border: 2px solid #1a1a1a; border-radius: 0; color: #fff; }
 #menu button:hover { background: #7380bf; color: #ffffa0; }
+#barred { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); max-width: 80%; padding: 6px 14px; background: rgba(120,20,20,.8);
+  border: 2px solid #1a1a1a; color: #fff; font-size: 16px; font-weight: 600; text-align: center; text-shadow: 1px 1px 0 #000; pointer-events: none; }
+#barred[hidden] { display: none; }
+#servers li small.barred { color: #fca5a5; }
+#notice { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(0,0,0,.65); }
+#notice[hidden] { display: none; }
+#notice h2 { font-size: 32px; margin: 0; color: #fff; text-transform: none; letter-spacing: 0; text-shadow: 2px 2px 0 #000; }
+#notice p { margin: 0 0 8px; max-width: 560px; text-align: center; font-size: 18px; font-weight: 600; color: #cfd8e3; }
+#notice button { width: 240px; font-size: 18px; padding: 8px 0; background: #595960; border: 2px solid #1a1a1a; border-radius: 0; color: #fff; }
+#notice button:hover { background: #7380bf; color: #ffffa0; }
 #death { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: rgba(120,0,0,.55); }
 #death[hidden] { display: none; }
 #death h2 { font-size: 36px; margin: 0; color: #fff; text-shadow: 2px 2px 0 #000; }
 #death button { font-size: 18px; padding: 8px 32px; background: #6b6b6b; border: 2px solid #000; color: #fff; }
 h1 { margin: 0 0 12px; font-size: 20px; }
-h2 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8aa0b6; }
+h2 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8aa0b6; }
 ul { list-style: none; margin: 0; padding: 0; }
-#servers li { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; margin-bottom: 4px; border-radius: 6px; background: #172433; border-left: 6px solid var(--c, #555); }
-#servers li.current { outline: 2px solid #fff; }
+#servers li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 3px 8px; margin-bottom: 3px; border-radius: 4px; background: rgba(23, 36, 51, .6); border-left: 5px solid var(--c, #555); }
+#servers li small { display: block; font-size: 11px; color: #cbd5e1; }
+#servers li b { font-weight: 600; }
+/* Here and Enter are one size, whichever a room shows. */
+/* Before signing in there is nothing to list yet. */
+#servers:empty::before, #players:empty::before { content: "Not connected"; color: #8aa0b6; font-size: 13px; }
+#servers li.none { justify-content: flex-start; color: #8aa0b6; background: none; border-left: 0; padding-left: 0; }
 button { font: inherit; color: inherit; background: #1e3a52; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button:hover { background: #26506f; }
 #players li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
-#players span { margin-left: auto; font-size: 12px; color: #8aa0b6; }
-#players em { font-style: normal; font-size: 12px; }
-.hint { color: #8aa0b6; font-size: 12px; margin-top: 16px; }
+/* A long name is cut short with an ellipsis rather than run into the health, as in the Unreal panel. */
+#players .who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+#players .you { flex-shrink: 0; margin-left: -4px; font-style: normal; }
+#players span { margin-left: auto; font-size: 12px; color: #8aa0b6; white-space: nowrap; }
+#players em { font-style: normal; font-size: 12px; white-space: nowrap; }
+.hint { color: #8aa0b6; font-size: 11px; margin: 10px 0 0; }
+.hint[hidden], #you[hidden] { display: none; }
 #join { display: flex; gap: 6px; }
 #join input { flex: 1; min-width: 0; font: inherit; color: inherit; background: #0f1720; border: 1px solid #26506f; border-radius: 6px; padding: 4px 8px; }
 #join[hidden] { display: none; }
+/* From Play until the player stands where the server put them the view is curtained, then it fades in: the world is never
+   shown from the wrong place first (the Unreal client draws the same curtain). */
+#curtain { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: #000; opacity: 0; pointer-events: none; transition: opacity .3s ease; }
+#curtain.shown { opacity: 1; pointer-events: auto; }
+#curtain.lifting { transition-duration: .5s; }
+#curtain h2 { margin: 0; font-size: 44px; color: #fff; text-transform: none; letter-spacing: 0; }
+#curtain p { margin: 0; font-size: 18px; font-weight: 600; color: #cfd8e3; }

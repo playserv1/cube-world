@@ -35,10 +35,11 @@ bool FCubeServerWorld::Apply(const FIntVector& At, FName Kind, const FString& By
 		// The same block, seen again: only take the row so the next write of it is an update, not a duplicate.
 		if (Row && !Known->Row.IsValid()) Known->Row.Reset(Row);
 		if (When > Known->At) Known->At = When;
+		Known->Version = ++Version;
 		return false;
 	}
 	FCubeOverride& O = Overrides.FindOrAdd(At);
-	O.Kind = Kind; O.By = By; O.On = On; O.At = When;
+	O.Kind = Kind; O.By = By; O.On = On; O.At = When; O.Version = ++Version;
 	if (Row) O.Row.Reset(Row);
 	Voxels.Set(At.X, At.Y, At.Z, Kind);
 	return true;
@@ -49,10 +50,33 @@ void FCubeServerWorld::Remember(const FIntVector& At, UWorldCube* Row)
 	if (FCubeOverride* O = Overrides.Find(At)) O->Row.Reset(Row);
 }
 
-void FCubeServerWorld::Forget(const FIntVector& At)
+void FCubeServerWorld::Touch(const FIntVector& At)
 {
-	Overrides.Remove(At);
+	if (FCubeOverride* O = Overrides.Find(At)) O->Version = ++Version;
+}
+
+bool FCubeServerWorld::Forget(const FIntVector& At)
+{
+	if (Overrides.Remove(At) == 0) return false;
 	Voxels.Set(At.X, At.Y, At.Z, NAME_None);
+	++Version;
+	return true;
+}
+
+TArray<FIntVector> FCubeServerWorld::Missing(const TSet<FIntVector>& Found, uint64 AsOf) const
+{
+	TArray<FIntVector> Out;
+	for (const auto& Pair : Overrides) if (Pair.Value.Version <= AsOf && !Found.Contains(Pair.Key)) Out.Add(Pair.Key);
+	return Out;
+}
+
+bool FCubeServerWorld::ParseKey(const FString& Key, FIntVector& Out)
+{
+	TArray<FString> Parts;
+	if (Key.ParseIntoArray(Parts, TEXT(":"), false) != 3) return false;
+	for (const FString& Part : Parts) if (Part.IsEmpty() || !Part.IsNumeric()) return false;
+	Out = FIntVector(FCString::Atoi(*Parts[0]), FCString::Atoi(*Parts[1]), FCString::Atoi(*Parts[2]));
+	return true;
 }
 
 void FCubeServerWorld::Explode(double Cx, double Cy, double Cz, double Power, int32 Seed, const FString& By, const FString& On, int32 OnlyRegion, FCubeWorldUpdate& Out)
@@ -160,13 +184,14 @@ double FCubeServerWorld::DistanceToHitbox(double Px, double Py, double Pz, const
 	return FMath::Sqrt(Dx * Dx + Dy * Dy + Dz * Dz);
 }
 
-// Every change is an upsert, even "air" where the terrain is air: the other servers hear an upsert the moment it is
-// written, while a deleted record does not reach them. So a broken block is written as air.
+// Every change is an upsert, even "air" where the terrain is air, as the C# servers write it: the other Unreal
+// servers' windows on `at` see upserts alone, and a delete reaches a server only over its uplink subscription. So a
+// broken block is written as air.
 void FCubeServerWorld::Set(int32 X, int32 Y, int32 Z, FName Kind, const FString& By, const FString& On, FCubeWorldUpdate& Out)
 {
 	const FIntVector At(X, Y, Z);
 	FCubeOverride& O = Overrides.FindOrAdd(At);
-	O.Kind = Kind; O.By = By; O.On = On;
+	O.Kind = Kind; O.By = By; O.On = On; O.Version = ++Version;
 	Voxels.Set(X, Y, Z, Kind);
 	Out.Changes.Add({ At, Kind, By, On });
 }
@@ -189,7 +214,71 @@ void FCubeServerWorld::Settle(int32 X, int32 Y, int32 Z, FCubeWorldUpdate& Out)
 	}
 }
 
+// ── moves ────────────────────────────────────────────────────────────────────────────────────────
+
+void FCubeMoveCheck::Reset(double InX, double InY, double InZ, int64 Now)
+{
+	X = InX; Y = InY; Z = InZ; At = Now; Allowance = CubeSpec::MoveBurst; RefusedSince = -1; ArrivedIn = -1;
+}
+
+void FCubeMoveCheck::Arrive(double InX, double InY, double InZ, int32 Region, int64 Now)
+{
+	Reset(InX, InY, InZ, Now);
+	ArrivedIn = Region;
+}
+
+ECubeMoveVerdict FCubeMoveCheck::Check(double InX, double InY, double InZ, TOptional<int32> SaidSeq, int64 Now)
+{
+	if (SaidSeq.IsSet() && SaidSeq.GetValue() < Seq) return ECubeMoveVerdict::Stale;
+	if (ArrivedIn >= 0)
+	{
+		const bool bNear = CubeNear(ArrivedIn, InX, InY, CubeSpec::BorderSlack);
+		ArrivedIn = -1;
+		if (bNear)
+		{
+			Reset(InX, InY, InZ, Now);
+			return ECubeMoveVerdict::Accepted;
+		}
+		if (!SaidSeq.IsSet()) RefusedSince = Now;
+		Seq++;
+		return ECubeMoveVerdict::Refused;
+	}
+
+	// The allowance fills with time up to the burst; a knockback's extra stays until it is spent.
+	Allowance = FMath::Min(Allowance + CubeSpec::MoveSpeed * FMath::Max<int64>(0, Now - At) / 1000.0, FMath::Max(Allowance, CubeSpec::MoveBurst));
+	At = Now;
+	const double Distance = FMath::Sqrt((InX - X) * (InX - X) + (InY - Y) * (InY - Y)) + FMath::Max(0.0, InZ - Z);
+	if (Distance > Allowance + CubeSpec::MoveSlack)
+	{
+		if (!SaidSeq.IsSet() && RefusedSince >= 0 && Now - RefusedSince >= UnnumberedGiveUpMs)
+		{
+			Reset(InX, InY, InZ, Now);
+			return ECubeMoveVerdict::Accepted;
+		}
+		if (RefusedSince < 0) RefusedSince = Now;
+		Seq++;
+		return ECubeMoveVerdict::Refused;
+	}
+	Allowance = FMath::Max(0.0, Allowance - Distance);
+	X = InX; Y = InY; Z = InZ; RefusedSince = -1;
+	return ECubeMoveVerdict::Accepted;
+}
+
 // ── the inventory ────────────────────────────────────────────────────────────────────────────────
+
+double FCubePlayerFall::Step(double Z, bool bOnGround, TOptional<double> SaidPeak)
+{
+	if (bOnGround)
+	{
+		const double Damage = bAirborne ? FMath::Max(0.0, FMath::CeilToDouble(Peak - Z - CubeSpec::SafeFallDistance)) : 0.0;
+		bAirborne = false;
+		return Damage;
+	}
+	Peak = bAirborne ? FMath::Max(Peak, Z) : Z;
+	if (SaidPeak.IsSet()) Peak = FMath::Max(Peak, FMath::Min(SaidPeak.GetValue(), CubeSpec::MaxZ + 8.0));
+	bAirborne = true;
+	return 0;
+}
 
 FCubeInventory FCubeInventory::Starting()
 {
@@ -200,17 +289,40 @@ FCubeInventory FCubeInventory::Starting()
 
 FCubeInventory FCubeInventory::Parse(const FString& StacksJson)
 {
-	TSharedPtr<FJsonObject> Object;
-	if (StacksJson.IsEmpty() || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(StacksJson), Object) || !Object.IsValid()) return Starting();
+	// Read token by token. A row an Unreal server wrote as "Stone" and the refill then topped up as "stone" lists one kind
+	// twice, and both counts are the player's, within a stack; FJsonObject keeps its fields in a case-insensitive map and
+	// kept only the last of the two, which left a player 1 stone of 64.
+	if (StacksJson.IsEmpty()) return Starting();
 	FCubeInventory I;
-	for (const auto& Pair : Object->Values) I.Stacks.Add(FName(*Pair.Key), (int32)Pair.Value->AsNumber());
-	return I;
+	const TSharedRef<TJsonReader<TCHAR>> Reader = TJsonReaderFactory<TCHAR>::Create(StacksJson);
+	EJsonNotation Notation;
+	int32 Depth = 0;
+	bool bObject = false;
+	while (Reader->ReadNext(Notation))
+	{
+		switch (Notation)
+		{
+		case EJsonNotation::ObjectStart: bObject |= Depth == 0; Depth++; break;
+		case EJsonNotation::ArrayStart: Depth++; break;
+		case EJsonNotation::ObjectEnd: case EJsonNotation::ArrayEnd: Depth--; break;
+		case EJsonNotation::Number:
+			if (Depth == 1)
+			{
+				int32& Count = I.Stacks.FindOrAdd(FName(*Reader->GetIdentifier()));
+				Count = FMath::Min(Count + (int32)Reader->GetValueAsNumber(), CubeSpec::StackSize);
+			}
+			break;
+		case EJsonNotation::Error: return Starting();
+		default: break;
+		}
+	}
+	return bObject && Reader->GetErrorMessage().IsEmpty() ? I : Starting();
 }
 
 FString FCubeInventory::ToJson() const
 {
 	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
-	for (const auto& Pair : Stacks) Object->SetNumberField(Pair.Key.ToString(), Pair.Value);
+	for (const auto& Pair : Stacks) Object->SetNumberField(CubeSpec::KindName(Pair.Key), Pair.Value);
 	FString Out;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
 	FJsonSerializer::Serialize(Object, Writer);
@@ -236,4 +348,51 @@ bool FCubeInventory::Give(FName Kind)
 	if (!CubeSpec::Block(Kind).IsPlaceable() || Count(Kind) >= CubeSpec::StackSize) return false;
 	Stacks.FindOrAdd(Kind) = Count(Kind) + 1;
 	return true;
+}
+
+bool FCubeInventory::Same(const FCubeInventory& Other) const
+{
+	for (const auto& Pair : Stacks) if (Other.Count(Pair.Key) != Pair.Value) return false;
+	for (const auto& Pair : Other.Stacks) if (Count(Pair.Key) != Pair.Value) return false;
+	return true;
+}
+
+void FCubeInventorySync::Wrote(const FCubeInventory& Stacks, int64 Now)
+{
+	Written.Add({ Stacks, Now });
+	if (Written.Num() > 32) Written.RemoveAt(0);
+}
+
+bool FCubeInventorySync::Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, int64 Now, FCubeInventory& Merged)
+{
+	// The platform keeps one write of a row at a time and sends the latest: a later write of ours heard means the
+	// earlier ones are behind us too.
+	const int32 Own = Written.IndexOfByPredicate([&Theirs](const TPair<FCubeInventory, int64>& W) { return W.Key.Same(Theirs); });
+	if (Own != INDEX_NONE)
+	{
+		Written.RemoveAt(0, Own + 1);
+		Base = Theirs;
+		return false;
+	}
+	// Writes of ours that never came back are in the row: another writer's change counts from the latest of them.
+	const int32 Landed = Written.FindLastByPredicate([Now](const TPair<FCubeInventory, int64>& W) { return Now - W.Value >= EchoMs; });
+	if (Landed != INDEX_NONE)
+	{
+		Base = Written[Landed].Key;
+		Written.RemoveAt(0, Landed + 1);
+	}
+	Merged = Merge(Ours, Base, Theirs);
+	Base = Theirs;
+	return true;
+}
+
+FCubeInventory FCubeInventorySync::Merge(const FCubeInventory& Ours, const FCubeInventory& InBase, const FCubeInventory& Theirs)
+{
+	TSet<FName> Kinds;
+	for (const auto& Pair : Ours.Stacks) Kinds.Add(Pair.Key);
+	for (const auto& Pair : InBase.Stacks) Kinds.Add(Pair.Key);
+	for (const auto& Pair : Theirs.Stacks) Kinds.Add(Pair.Key);
+	FCubeInventory Out;
+	for (const FName& Kind : Kinds) Out.Stacks.Add(Kind, FMath::Clamp(Ours.Count(Kind) + Theirs.Count(Kind) - InBase.Count(Kind), 0, CubeSpec::StackSize));
+	return Out;
 }

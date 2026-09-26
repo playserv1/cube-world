@@ -16,11 +16,80 @@ public sealed partial class CubeWorldServer
         {
             foreach (var bomb in await LoadBombsAsync())
             {
-                lock (_world) OnBomb(bomb, owned: false);
+                lock (_world)
+                {
+                    // A bomb the tables say is over is remembered as over: a later row from a server that missed its end
+                    // does not bring it back.
+                    if (Bomb.Over(bomb.state)) _finished.Remember(bomb.bomb_id, bomb.at);
+                    else OnBomb(bomb, owned: false);
+                }
             }
+            _bombsLoaded = true;
+            _bombsReadAt = Now;
         }
         catch (Exception e) { _ = Platform.Log($"bombs not loaded, the world opens without them: {e.Message}"); }
     }
+
+    /// <summary>
+    /// Every 30 s the bomb table is read again, as the blocks are (PSV-2977): the platform's pushes are lost when the
+    /// uplink drops for a moment, nothing replays them, and the C# SDK says nothing of a reconnect. On dev on 2026-10-02
+    /// these servers kept 28 bombs whose fizzles a platform deploy lost. While some bomb in play has no row in the table,
+    /// the table is read every <see cref="Bomb.RecheckMs"/> instead, so that bomb goes or stays soon.
+    /// </summary>
+    private void ReadBombsAgainNow()
+    {
+        long every;
+        lock (_world) every = _bombsMissingSince.Count > 0 ? Bomb.RecheckMs : 30_000;
+        if (Now - _bombsReadAt < every || Interlocked.Exchange(ref _readingBombs, 1) == 1) return;
+        _bombsReadAt = Now;
+        _ = Task.Run(async () =>
+        {
+            try { await ReadBombsAgainAsync(); }
+            catch (Exception e) { _ = Platform.Log($"{RoomName}: bombs not read again, again in 30 s: {e.Message}"); }
+            finally { Interlocked.Exchange(ref _readingBombs, 0); }
+        });
+    }
+
+    /// <summary>
+    /// What the bomb table says now, against what this server has in play. A bomb the table moved on is moved on here. One
+    /// whose end this server missed long ago goes out of play as one that fizzled: its blast was worked out by every server
+    /// that heard it then, and is not again here. One the table has no row of at all goes the same way once no read for
+    /// <see cref="Bomb.RecheckMs"/> found one (<see cref="Bomb.GoneFromTable"/>). Nothing is written: the rows are there or
+    /// gone already. The Unreal servers keep the same rules (ApplyBombTable, EndBombsGoneFromTable).
+    /// </summary>
+    private async Task ReadBombsAgainAsync()
+    {
+        var table = await LoadBombsAsync();
+        lock (_world)
+        {
+            var now = Now;
+            foreach (var bomb in table)
+            {
+                var live = _bombs.GetValueOrDefault(bomb.bomb_id);
+                if (!Bomb.Over(bomb.state))
+                {
+                    if (!(_bombsLoaded && Bomb.IsGhost(bomb, live is not null, now))) OnBomb(bomb, owned: false);
+                }
+                else if (live is not null && now - bomb.at > 5000) OnBomb(Fizzled(live), owned: false);
+                else OnBomb(bomb, owned: false);
+            }
+            var droppedAt = _bombs.ToDictionary(b => b.Key, b => b.Value.Record.dropped_at);
+            var gone = Bomb.GoneFromTable(droppedAt, table.Select(b => b.bomb_id).ToHashSet(), _bombsMissingSince, now);
+            foreach (var id in gone) OnBomb(Fizzled(_bombs[id]), owned: false);
+            _bombsLoaded = true;
+            if (gone.Count > 0)
+                _ = Platform.Log($"{RoomName}: bombs read again: {gone.Count} the table no longer has went out of play, their ends missed ({string.Join(", ", gone)})");
+            if (_bombsMissingSince.Count > 0)
+                _ = Platform.Log($"{RoomName}: bombs read again: {_bombsMissingSince.Count} in play have no row in the table, reading it again in {Bomb.RecheckMs / 1000} s");
+        }
+    }
+
+    /// <summary>A bomb in play here, gone up in smoke where it is. Its time stays, so a client that never had it shows no puff.</summary>
+    private static WorldBomb Fizzled(LiveBomb live) => new()
+    {
+        bomb_id = live.Record.bomb_id, state = Bomb.Fizzled, holder = live.Record.holder,
+        x = live.Record.x, y = live.Record.y, z = live.Z, dropped_at = live.Record.dropped_at, at = live.Record.at,
+    };
 
     /// <summary>Every tick: free bombs come down and are picked up, thrown ones fly and go off.</summary>
     private void MoveBombs()
@@ -41,7 +110,7 @@ public sealed partial class CubeWorldServer
         live.Z = Bomb.Descend(_world, bomb.x, bomb.y, live.Z);
         if (World.RegionOf(bomb.x, bomb.y) != _region) return;
 
-        var taker = _players.Values.FirstOrDefault(p => !p.Dead && p.Bomb is null
+        var taker = _players.Values.FirstOrDefault(p => !p.Dead && p.Bomb is null && InThisRegion(p)
                                                         && Bomb.InPickupReach(HitboxOf(p.Pose), bomb.x, bomb.y, live.Z));
         if (taker is not null)
             Share(Next(bomb, Bomb.Held, taker.Pose.player_id, bomb.x, bomb.y, live.Z), owned: false);
@@ -58,7 +127,8 @@ public sealed partial class CubeWorldServer
 
     private void Throw(Player player, Command command)
     {
-        if (player.Dead || player.Bomb is not { } id) return;
+        // A player past the border whose next room did not let them in keeps the bomb in the hand until they walk back.
+        if (player.Dead || player.Bomb is not { } id || !InThisRegion(player)) return;
         player.Bomb = null;
         if (!_bombs.TryGetValue(id, out var live) || live.Record.state != Bomb.Held || live.Record.holder != player.Pose.player_id) return;
 
@@ -128,17 +198,33 @@ public sealed partial class CubeWorldServer
 
     private void HearBomb(WorldBomb bomb)
     {
-        lock (_world) OnBomb(bomb, owned: false);
+        lock (_world)
+        {
+            // Only a server that read the bombs at start-up knows every live one; one that could not read them takes them as heard.
+            if (_bombsLoaded && Bomb.IsGhost(bomb, _bombs.ContainsKey(bomb.bomb_id), Now)) return;
+            OnBomb(bomb, owned: false);
+        }
     }
 
     /// <summary>A bomb moved on, here or on another server. Anything that does not move it forward is an echo or stale.</summary>
     private void OnBomb(WorldBomb bomb, bool owned)
     {
+        // A bomb that went off or fizzled stays over: a server that missed its end (an Unreal server's ghost of a free
+        // bomb, picked up after it fizzled) cannot bring it back, and an echo of its end does not go off again.
+        if (_finished.Has(bomb.bomb_id, Now)) return;
         var known = _bombs.GetValueOrDefault(bomb.bomb_id);
         if (known is not null && Bomb.Rank(bomb.state) <= Bomb.Rank(known.Record.state)) return;
-        if (known is null && Bomb.Over(bomb.state) && Now - bomb.at > 5000) return;
+        if (known is null && Bomb.Over(bomb.state) && Now - bomb.at > 5000)
+        {
+            _finished.Remember(bomb.bomb_id, bomb.at);
+            return;
+        }
 
-        if (Bomb.Over(bomb.state)) _bombs.Remove(bomb.bomb_id);
+        if (Bomb.Over(bomb.state))
+        {
+            _bombs.Remove(bomb.bomb_id);
+            _finished.Remember(bomb.bomb_id, Now);
+        }
         else _bombs[bomb.bomb_id] = LiveBomb.Of(bomb, _world, owned, Now);
         if (bomb.state == Bomb.Exploded) Crater(bomb);
 
@@ -155,11 +241,11 @@ public sealed partial class CubeWorldServer
 
     private static async Task<List<WorldBomb>> LoadBombsAsync()
     {
-        var bombs = (await ReadAll(Platform.Table<WorldBomb>().Query())).Select(r => r.Fields!);
+        var bombs = (await ReadAll(() => Platform.Table<WorldBomb>().Query())).Select(r => r.Fields!);
         // A bomb can have several rows (the drop function's and the servers'): the one furthest on is the bomb.
         return bombs.GroupBy(b => b.bomb_id)
             .Select(g => g.OrderByDescending(b => Bomb.Rank(b.state)).ThenByDescending(b => b.at).First())
-            .Where(b => !Bomb.Over(b.state)).ToList();
+            .ToList();
     }
 
     /// <summary>A bomb as this server follows it: the height of a free one, the path of one it threw.</summary>

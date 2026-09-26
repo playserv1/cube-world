@@ -3,6 +3,7 @@
 #include "CubeWorldActor.h"
 #include "CubeSocket.h"
 #include "PlayServ.h"
+#include "Auth/PlayServAuth.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -21,21 +22,73 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Containers/Ticker.h"
 #include "CubeSpec.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "CubeGameEngine.h"
+#include "CubePlayerPawn.h"
+#include "CubeAvatar.h"
+#include "CubeBombs.h"
+#include "CubeTombstone.h"
+#include "InputCoreTypes.h"
+#include "InputKeyEventArgs.h"
+#include "GameFramework/InputSettings.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+
+namespace
+{
+	/** Where the guest playing under this name keeps their refresh token: their only credential, single-use, rotated about every 12 minutes. */
+	FString GuestFile(const FString& Name)
+	{
+		FString Safe = Name.ToLower();
+		for (TCHAR& C : Safe) if (!FChar::IsAlnum(C) && C != TEXT('-') && C != TEXT('_')) C = TEXT('_');
+		return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Guests"), Safe + TEXT(".token"));
+	}
+}
 
 void UCubeWorldGameInstance::Init()
 {
 	Super::Init();
-	if (!CubeIsServerProcess()) Textures.Build();
+	if (!CubeIsServerProcess())
+	{
+		Textures.Build();
+		// The SDK hands the refresh token over at login and on every rotation; it is written at once, since a spent one
+		// can never be used again.
+		PlayServ::Auth::SetRefreshTokenChangedHandler(FPlayServRefreshTokenChanged::CreateUObject(this, &UCubeWorldGameInstance::KeepGuest));
+		PlayServ::Auth::OnSessionLost().AddDynamic(this, &UCubeWorldGameInstance::HandleSessionLost);
+	}
 	Hotbar = CubeSpec::Hotbar();
+	if (!CubeIsServerProcess() && FParse::Value(FCommandLine::Get(), TEXT("-fakemouse="), FakeMouseRate) && FakeMouseRate > 0)
+		FakeMouseHandle = FCoreDelegates::OnBeginFrame.AddUObject(this, &UCubeWorldGameInstance::TickFakeMouse);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCubeWorldGameInstance::HandlePostLoadMap);
 	if (GEngine) GEngine->OnNetworkFailure().AddUObject(this, &UCubeWorldGameInstance::HandleNetworkFailure);
+	if (UCubeGameEngine* Engine = UCubeGameEngine::Get())
+	{
+		Engine->OnServerSwitched.AddUObject(this, &UCubeWorldGameInstance::HandleServerSwitched);
+		Engine->OnSeamlessTravelFailed.AddUObject(this, &UCubeWorldGameInstance::HandleSeamlessTravelFailed);
+	}
+}
+
+void UCubeWorldGameInstance::KeepGuest(const FString& RefreshToken)
+{
+	if (PlayerName.IsEmpty() || RefreshToken.IsEmpty()) return;
+	if (!FFileHelper::SaveStringToFile(RefreshToken, *GuestFile(PlayerName))) Log(TEXT("the guest's sign-in could not be kept: the next launch makes a new one"));
+}
+
+// The platform refused the token: the guest it kept is gone, and the next sign-in under this name makes a new one.
+void UCubeWorldGameInstance::HandleSessionLost()
+{
+	if (!PlayerName.IsEmpty()) IFileManager::Get().Delete(*GuestFile(PlayerName), false, true, true);
 }
 
 void UCubeWorldGameInstance::Shutdown()
 {
 	CloseSockets();
+	CubeKeys::StopMouse();
+	if (FakeMouseHandle.IsValid()) { FCoreDelegates::OnBeginFrame.Remove(FakeMouseHandle); FakeMouseHandle.Reset(); }
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 	if (GEngine) GEngine->OnNetworkFailure().RemoveAll(this);
+	if (UCubeGameEngine* Engine = UCubeGameEngine::Get()) { Engine->OnServerSwitched.RemoveAll(this); Engine->OnSeamlessTravelFailed.RemoveAll(this); }
 	Super::Shutdown();
 }
 
@@ -49,63 +102,7 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	// The crossing pose is the latest one the old world had, not the one from when the travel began: the player walked on.
 	if (Crossing.bSet && LastBody.bSet) { Crossing = LastBody; Crossing.bSet = true; }
 	// Until the next server hands over the pawn the view stays at the player's eyes, not at the map's origin.
-	if (Crossing.bSet && LoadedWorld->GetNetMode() == NM_Client)
-	{
-		EndCrossingView();
-		const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
-		const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
-		CrossingEye = Eye; CrossingLook = Look;
-		// The body goes on from the old pawn's very state, and the time the map took to load is walked too.
-		GapBody = LastFullBody;
-		GapAccumulator = LastAccumulator;
-		GapLastTime = LastBodyTime > 0 ? LastBodyTime : FPlatformTime::Seconds();
-		GapYawDeg = Look.Yaw; GapPitchDeg = Look.Pitch;
-		GapFov = LastFov > 0 ? LastFov : CubeSpec::Fov;
-		FString WalkTo;
-		bGapTestWalk = FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"));
-		bGapActive = true;
-		CubeKeys::StartMouse();
-		StepGap();
-		CrossingCamera = LoadedWorld->SpawnActor<ACameraActor>(Eye, Look);
-		// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
-		if (CrossingCamera.IsValid())
-		{
-			CrossingCamera->GetCameraComponent()->SetConstraintAspectRatio(false);
-			if (LastHorizontalFov > 0) CrossingCamera->GetCameraComponent()->SetFieldOfView(LastHorizontalFov);
-		}
-		// The engine draws nothing while the local player has no player controller, and the next server's arrives a round
-		// trip after the map: a local placeholder (which the engine destroys when the real one comes, NetConnection.cpp)
-		// shows the world from the crossing camera meanwhile.
-		// The engine spawns a placeholder of its own in LoadMap; only when it has not is one made here.
-		if (ULocalPlayer* LocalPlayer = GetFirstGamePlayer())
-			if (!LocalPlayer->PlayerController)
-			{
-				FActorSpawnParameters Params;
-				Params.ObjectFlags |= RF_Transient;
-				if (APlayerController* Placeholder = LoadedWorld->SpawnActor<APlayerController>(APlayerController::StaticClass(), Eye, Look, Params))
-				{
-					Placeholder->SetPlayer(LocalPlayer);
-					Placeholder->SetControlRotation(Look);
-					AimPlaceholder(Placeholder);
-					Placeholder->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
-				}
-			}
-		if (APlayerController* Existing = GetFirstLocalPlayerController()) if (Existing->GetLocalRole() == ROLE_Authority) { AimPlaceholder(Existing); Existing->ClientSetHUD_Implementation(ACubeHUD::StaticClass()); }
-		CrossingBlankFrames = 0; CrossingWrongFrames = 0;
-		// Held on every frame after the engine's own camera update (LevelTick: cameras, then the post-actor-tick hook), so a
-		// view target the engine switches to on its own (the next server's controller, its pawn still where that server
-		// spawned it) is never drawn.
-		CrossingViewUntil = FPlatformTime::Seconds() + 5;
-		if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport && !DrawLogHandle.IsValid())
-		{
-			DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + 3);
-			DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
-		}
-		CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
-		// The world does not tick until the server's game state says play has begun, but frames are drawn all along: the
-		// view is aimed right before each draw as well.
-		if (GEngine && GEngine->GameViewport) CrossingDrawHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::AimCrossingViewBeforeDraw);
-	}
+	if (Crossing.bSet && LoadedWorld->GetNetMode() == NM_Client) BeginCrossingGap(LoadedWorld);
 	// Back in the local map after an Unreal server: the C# server waiting for us is reached now.
 	if (SocketPlan.bSet && LoadedWorld->GetNetMode() == NM_Standalone)
 	{
@@ -115,16 +112,152 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	}
 }
 
+void UCubeWorldGameInstance::BeginCrossingGap(UWorld* InWorld)
+{
+	EndCrossingView();
+	const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
+	// The view drawn in the frame before this one (NoteDrawnView), so the first frame of the gap goes on from it.
+	const FRotator Look = LookOf(Crossing);
+	CrossingEye = Eye; CrossingLook = Look;
+	// The body goes on from the old pawn's very state, and the time the map took to load is walked too.
+	GapBody = LastFullBody;
+	GapAccumulator = LastAccumulator;
+	GapLastTime = LastBodyTime > 0 ? LastBodyTime : FPlatformTime::Seconds();
+	GapYawDeg = Look.Yaw; GapPitchDeg = Look.Pitch;
+	GapFov = LastFov > 0 ? LastFov : CubeSpec::Fov;
+	FString WalkTo;
+	bGapTestWalk = FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"));
+	bGapActive = true;
+	// The mouse movement no controller took since the old pawn's last frame is the gap's first turn. After a stretch with
+	// no pawn at all (a map loaded meanwhile) it is too old to be anyone's turn, and is dropped.
+	CubeKeys::StartMouse();
+	if (FPlatformTime::Seconds() - LastBodyTime > 0.1) CubeKeys::TakeMouse();
+	StepGap();
+	CrossingCamera = InWorld->SpawnActor<ACameraActor>(Eye, Look);
+	// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
+	if (CrossingCamera.IsValid())
+	{
+		CrossingCamera->GetCameraComponent()->SetConstraintAspectRatio(false);
+		if (LastHorizontalFov > 0) CrossingCamera->GetCameraComponent()->SetFieldOfView(LastHorizontalFov);
+	}
+	// The engine draws nothing while the local player has no player controller, and the next server's arrives a round
+	// trip after the map: a local placeholder (which the engine destroys when the real one comes, NetConnection.cpp)
+	// shows the world from the crossing camera meanwhile.
+	// The engine spawns a placeholder of its own in LoadMap; only when it has not is one made here.
+	if (ULocalPlayer* LocalPlayer = GetFirstGamePlayer())
+		if (!LocalPlayer->PlayerController)
+		{
+			FActorSpawnParameters Params;
+			Params.ObjectFlags |= RF_Transient;
+			if (APlayerController* Placeholder = InWorld->SpawnActor<APlayerController>(APlayerController::StaticClass(), Eye, Look, Params))
+			{
+				Placeholder->SetPlayer(LocalPlayer);
+				Placeholder->SetControlRotation(Look);
+				AimPlaceholder(Placeholder);
+				Placeholder->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
+			}
+		}
+	if (APlayerController* Existing = GetFirstLocalPlayerController()) if (Existing->GetLocalRole() == ROLE_Authority) { AimPlaceholder(Existing); Existing->ClientSetHUD_Implementation(ACubeHUD::StaticClass()); }
+	CrossingBlankFrames = 0; CrossingWrongFrames = 0;
+	// Held on every frame after the engine's own camera update (LevelTick: cameras, then the post-actor-tick hook), so a
+	// view target the engine switches to on its own (the next server's controller, its pawn still where that server
+	// spawned it) is never drawn.
+	CrossingViewUntil = FPlatformTime::Seconds() + 5;
+	LogFramesFor(3);
+	CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
+	// The world does not tick until the server's game state says play has begun, but frames are drawn all along: the
+	// view is aimed right before each draw as well.
+	if (GEngine && GEngine->GameViewport) CrossingDrawHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::AimCrossingViewBeforeDraw);
+}
+
+void UCubeWorldGameInstance::CarryOver(TMap<FString, ACubeAvatar*>& InAvatars, TMap<FString, ACubeBomb*>& InBombs, ACubeTombstone*& InTomb)
+{
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs"))) Log(FString::Printf(TEXT("bombs: %d carried over from the pawn that goes, with %d players"), InBombs.Num(), InAvatars.Num()));
+	for (const auto& Pair : InAvatars) if (Pair.Value) CarriedAvatars.Add(Pair.Key, Pair.Value);
+	for (const auto& Pair : InBombs) if (Pair.Value) CarriedBombs.Add(Pair.Key, Pair.Value);
+	if (InTomb) CarriedTomb = InTomb;
+	InAvatars.Empty(); InBombs.Empty(); InTomb = nullptr;
+}
+
+void UCubeWorldGameInstance::TakeCarried(TMap<FString, ACubeAvatar*>& OutAvatars, TMap<FString, ACubeBomb*>& OutBombs, ACubeTombstone*& OutTomb)
+{
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs"))) Log(FString::Printf(TEXT("bombs: the new pawn takes %d carried (it has %d)"), CarriedBombs.Num(), OutBombs.Num()));
+	for (const auto& Pair : CarriedAvatars) if (Pair.Value.IsValid() && !OutAvatars.Contains(Pair.Key)) OutAvatars.Add(Pair.Key, Pair.Value.Get());
+	for (const auto& Pair : CarriedBombs) if (Pair.Value.IsValid() && !OutBombs.Contains(Pair.Key)) OutBombs.Add(Pair.Key, Pair.Value.Get());
+	if (CarriedTomb.IsValid() && !OutTomb) OutTomb = CarriedTomb.Get();
+	CarriedAvatars.Empty(); CarriedBombs.Empty(); CarriedTomb.Reset();
+}
+
+void UCubeWorldGameInstance::DropCarried()
+{
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs")) && CarriedBombs.Num() > 0) Log(FString::Printf(TEXT("bombs: %d carried dropped (a pawn bound with no crossing in progress)"), CarriedBombs.Num()));
+	for (const auto& Pair : CarriedAvatars) if (Pair.Value.IsValid()) Pair.Value->Destroy();
+	for (const auto& Pair : CarriedBombs) if (Pair.Value.IsValid()) Pair.Value->Destroy();
+	if (CarriedTomb.IsValid()) CarriedTomb->Destroy();
+	CarriedAvatars.Empty(); CarriedBombs.Empty(); CarriedTomb.Reset();
+}
+
+// The next Unreal server's connection took over this very world (a seamless crossing), or the world was left without a
+// server (for a C# one, LeaveUnrealServerKeepWorld). Nothing was unloaded: the drawn world, the other players, the bombs
+// are all still here; only the old server's pawn and controller are gone, so the client carries the body meanwhile.
+void UCubeWorldGameInstance::HandleServerSwitched(UWorld* InWorld, bool bConnected)
+{
+	if (CubeIsServerProcess() || !InWorld || !bConnected) return;
+	bSeamlessCrossing = false;
+	if (bViaSocket)
+	{
+		// Leaving a C# server: its socket ends now that the Unreal one has let us in, and the client's own pawn that played
+		// on it goes; the gap carries the body to the next server's pawn.
+		bViaSocket = false;
+		TSharedPtr<FCubeSocket> Old = MoveTemp(Socket);
+		PendingSocket.Reset();
+		if (Old.IsValid()) Old->Close();
+		if (APlayerController* PC = GetFirstLocalPlayerController()) if (APawn* Own = PC->GetPawn()) { PC->UnPossess(); Own->Destroy(); }
+	}
+	Crossing = LastBody;
+	Crossing.bSet = true;
+	bWelcomed = false;
+	bWorldLoaded = false;
+	BeginCrossingGap(InWorld);
+	Log(FString::Printf(TEXT("crossing into %s: the world stayed, the connection changed hands"), *Travelling));
+}
+
+void UCubeWorldGameInstance::LeaveUnrealServerKeepWorld()
+{
+	UCubeGameEngine* Engine = UCubeGameEngine::Get();
+	UWorld* InWorld = GetWorld();
+	if (!Engine || !InWorld || InWorld->GetNetMode() != NM_Client) return;
+	Crossing = LastBody;
+	Crossing.bSet = true;
+	// The server's pawn, controller and state go; a local controller takes the player, and the client's own pawn takes
+	// the body over at once, where the player is: the socket plays from it. The body goes on from the old pawn's very
+	// state (the gap, closed again as soon as the pawn binds), so nothing jumps or stops in between.
+	Engine->DisconnectKeepWorld(InWorld);
+	BeginCrossingGap(InWorld);
+	APlayerController* PC = GetFirstLocalPlayerController();
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ACubePlayerPawn* Pawn = InWorld->SpawnActor<ACubePlayerPawn>(ACubePlayerPawn::StaticClass(), FVector(Crossing.X, Crossing.Y, Crossing.Z) * CubeSpec::BlockCm, FRotator::ZeroRotator, Params);
+	if (PC && Pawn)
+	{
+		PC->Possess(Pawn);
+		PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
+		Pawn->BindNow();
+	}
+}
+
 void UCubeWorldGameInstance::StepGap()
 {
 	if (!bGapActive) return;
 	const double Now = FPlatformTime::Seconds();
 	const double Dt = FMath::Clamp(Now - GapLastTime, 0.0, 0.25);
 	GapLastTime = Now;
-	// The mouse turns the view as the pawn's OnTurn and OnLookUp do (MouseX and MouseY at 0.15 degrees each).
+	// The mouse turns the view as the pawn's OnTurn and OnLookUp do: 0.15 degrees a pixel, scaled with the field of view
+	// drawn as the engine scales the pawn's (without it the gap turned 7-19 % slower than the pawn on either side of it).
 	const FVector2D Mouse = CubeKeys::TakeMouse();
-	GapYawDeg += Mouse.X * CubeSpec::DegreesPerMousePixel;
-	GapPitchDeg = FMath::Clamp(GapPitchDeg + (float)Mouse.Y * CubeSpec::DegreesPerMousePixel, -89.9f, 89.9f);
+	FrameTapMouse += Mouse;
+	GapYawDeg += MouseDegrees(Mouse.X, LastHorizontalFov);
+	GapPitchDeg = FMath::Clamp(GapPitchDeg + MouseDegrees(Mouse.Y, LastHorizontalFov), -89.9f, 89.9f);
 	FCubeInput Input;
 	FCubeKeys Keys;
 	if (CubeKeys::Read(Keys))
@@ -133,6 +266,8 @@ void UCubeWorldGameInstance::StepGap()
 		Input.bJump = Keys.bJump; Input.bSprint = Keys.bSprint; Input.bSneak = Keys.bSneak;
 	}
 	if (bGapTestWalk) { Input.Forward = 1; Input.bSprint = true; }
+	// -fakemouse: the hand has the view swing, and the walk keeps to its heading by the keys (as the pawn's does).
+	if (IsFakeMouse() && WalkHeading.IsSet() && Input.Forward > 0) { const FVector2D K = WalkKeys(WalkHeading.GetValue(), GapYawDeg); Input.Forward = K.X; Input.Strafe = K.Y; }
 	Input.Yaw = CubeSpec::YawFromUnreal(GapYawDeg);
 	const FCubeSolidQuery Solid = [this](int32 X, int32 Y, int32 Z) { return World.IsSolidForPhysics(X, Y, Z); };
 	GapAccumulator += Dt;
@@ -156,6 +291,78 @@ void UCubeWorldGameInstance::StepGap()
 	Crossing.Forward = Input.Forward; Crossing.Strafe = -Input.Strafe;
 }
 
+void UCubeWorldGameInstance::NoteDrawnView(const FRotator& View)
+{
+	LastBody.Yaw = CubeSpec::YawFromUnreal(View.Yaw);
+	LastBody.Pitch = CubeSpec::PitchFromUnreal(View.Pitch);
+}
+
+FRotator UCubeWorldGameInstance::LookOf(const FCubeCrossing& Pose)
+{
+	return FRotator(-FMath::RadiansToDegrees(Pose.Pitch), FMath::RadiansToDegrees(Pose.Yaw) + 90.f, 0);
+}
+
+float UCubeWorldGameInstance::MouseDegrees(float Pixels, float HorizontalFov)
+{
+	const UInputSettings* Settings = GetDefault<UInputSettings>();
+	const float Scale = Settings && Settings->bEnableFOVScaling && HorizontalFov > 0 ? Settings->FOVScale * HorizontalFov : 1.f;
+	return Pixels * CubeSpec::DegreesPerMousePixel * Scale;
+}
+
+void UCubeWorldGameInstance::HoldFov(APlayerCameraManager* Cam, float HorizontalFov)
+{
+	if (!Cam || HorizontalFov <= 0) return;
+	// The camera manager's own view (the controller as its own view target, as in the gap) is drawn at its default.
+	Cam->DefaultFOV = HorizontalFov;
+	Cam->UnlockFOV();
+}
+
+double UCubeWorldGameInstance::SwingAt(double Seconds, double Rate, double Amplitude)
+{
+	if (Rate <= 0 || Amplitude <= 0) return 0;
+	const double Period = 4 * Amplitude / Rate;
+	const double P = FMath::Fmod(FMath::Max(0.0, Seconds), Period) / Period;
+	return Amplitude * (P < 0.25 ? 4 * P : P < 0.75 ? 2 - 4 * P : 4 * P - 4);
+}
+
+FVector2D UCubeWorldGameInstance::WalkKeys(float Heading, float ViewYaw)
+{
+	const double Off = FMath::DegreesToRadians(FRotator::NormalizeAxis(Heading - ViewYaw));
+	return FVector2D(FMath::Cos(Off), -FMath::Sin(Off));
+}
+
+// The hand's movement for this frame, worked out in degrees (the swing, and a turn of the centre it swings around
+// towards the walk's heading and back to level) and handed in as a mouse's pixels are, before this frame's input is
+// read: to the viewport, which gives it to whatever controller holds the player now, and to the gap's tap, which a
+// real mouse reaches as well. A crossing that drops or doubles a real mouse's movement drops or doubles this too.
+void UCubeWorldGameInstance::TickFakeMouse()
+{
+	const double Now = FPlatformTime::Seconds();
+	const double Dt = FakeMouseLastTime > 0 ? FMath::Min(Now - FakeMouseLastTime, 0.1) : 0.0;
+	FakeMouseLastTime = Now;
+	UGameViewportClient* Client = GEngine ? GEngine->GameViewport : nullptr;
+	APlayerController* PC = GetFirstLocalPlayerController();
+	// The hand moves only while the player plays: from the first placement on, through every crossing.
+	if (Dt <= 0 || !bPlaced || !Client || !Client->Viewport || !PC) return;
+	FakeMouseClock += Dt;
+	const FVector2D Swing(SwingAt(FakeMouseClock, FakeMouseRate, 30.0), SwingAt(FakeMouseClock, FakeMouseRate / 5, 10.0));
+	FVector2D Turn = Swing - FakeSwing;
+	const FRotator View = PC->GetControlRotation();
+	if (WalkHeading.IsSet()) Turn.X += FMath::Clamp((double)FRotator::NormalizeAxis(WalkHeading.GetValue() - (View.Yaw - FakeSwing.X)), -90.0 * Dt, 90.0 * Dt);
+	Turn.Y += FMath::Clamp(-(double)FRotator::NormalizeAxis(View.Pitch - FakeSwing.Y), -30.0 * Dt, 30.0 * Dt);
+	FakeSwing = Swing;
+	// In pixels, as the engine reads a mouse: 0.15° each, scaled by the field of view drawn (bEnableFOVScaling).
+	const UInputSettings* Settings = GetDefault<UInputSettings>();
+	const float Fov = PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : 90.f;
+	const double Degrees = CubeSpec::DegreesPerMousePixel * (Settings && Settings->bEnableFOVScaling ? Settings->FOVScale * Fov : 1.0);
+	const FVector2D Pixels = Turn / Degrees;
+	const FInputDeviceId Device = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+	Client->InputAxis(FInputKeyEventArgs(Client->Viewport, Device, EKeys::MouseX, (float)Pixels.X, (float)Dt, 1, (uint64)0));
+	Client->InputAxis(FInputKeyEventArgs(Client->Viewport, Device, EKeys::MouseY, (float)Pixels.Y, (float)Dt, 1, (uint64)0));
+	CubeKeys::AddMouse(Pixels);
+	FakeTurn += Turn;
+}
+
 void UCubeWorldGameInstance::AimPlaceholder(APlayerController* PC)
 {
 	if (!PC) return;
@@ -164,7 +371,7 @@ void UCubeWorldGameInstance::AimPlaceholder(APlayerController* PC)
 	if (PC->GetViewTarget() != PC) PC->SetViewTarget(PC);
 	if (APlayerCameraManager* Cam = PC->PlayerCameraManager)
 	{
-		if (LastHorizontalFov > 0) { Cam->DefaultFOV = LastHorizontalFov; Cam->SetFOV(LastHorizontalFov); }
+		if (LastHorizontalFov > 0) HoldFov(Cam, LastHorizontalFov);
 		Cam->UpdateCamera(0.f);
 	}
 }
@@ -204,6 +411,49 @@ void UCubeWorldGameInstance::HoldCrossingView(UWorld* InWorld, ELevelTick, float
 	if (!PC->GetHUD() || !PC->GetHUD()->IsA(ACubeHUD::StaticClass())) PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
 }
 
+void UCubeWorldGameInstance::LogFramesFor(double Seconds)
+{
+	if (!FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) || !GEngine || !GEngine->GameViewport) return;
+	WatchFrames();
+	// A new stretch of frame lines starts from this frame's mouse, not from all that came while none was logged.
+	if (!DrawLogHandle.IsValid()) { FrameMouse = FrameTapMouse = FrameTurn = FakeTurn = FVector2D::ZeroVector; }
+	DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + Seconds);
+	if (!DrawLogHandle.IsValid()) DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
+	if (!EndFrameLogHandle.IsValid()) EndFrameLogHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UCubeWorldGameInstance::LogEndOfFrame);
+}
+
+void UCubeWorldGameInstance::WatchFrames()
+{
+	if (!FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) || !GEngine || !GEngine->GameViewport) return;
+	if (!InputAxisHandle.IsValid()) InputAxisHandle = GEngine->GameViewport->OnInputAxis().AddUObject(this, &UCubeWorldGameInstance::HandleInputAxis);
+	if (!FovCheckHandle.IsValid()) FovCheckHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::CheckDrawnFov);
+}
+
+void UCubeWorldGameInstance::HandleInputAxis(FViewport*, int32, FKey Key, float Delta, float, int32, bool)
+{
+	if (Key == EKeys::MouseX) FrameMouse.X += Delta;
+	else if (Key == EKeys::MouseY) FrameMouse.Y += Delta;
+}
+
+// The camera manager draws its locked field of view, if it has one, whatever the view target's camera says: locked at a
+// crossing and left so, the sprint's zoom never showed in a C# room, and showed all at once at the next crossing.
+void UCubeWorldGameInstance::CheckDrawnFov()
+{
+	APlayerController* PC = GetFirstLocalPlayerController();
+	const APlayerCameraManager* Cam = PC ? PC->PlayerCameraManager : nullptr;
+	if (!Cam || bGapActive || !PC->GetPawn() || PC->GetViewTarget() != PC->GetPawn() || LastHorizontalFov <= 0) return;
+	const float Drawn = Cam->GetFOVAngle(), Off = FMath::Abs(Drawn - LastHorizontalFov);
+	if (Off > 0.1f)
+	{
+		if (FovOffFrames++ == 0) UE_LOG(LogCubeWorld, Log, TEXT("fov off: drawn %.1f, the pawn's %.1f, locked %.1f, in %s"), Drawn, LastHorizontalFov, Cam->GetLockedFOV(), Room.IsEmpty() ? *Travelling : *Room);
+		FovOffWorst = FMath::Max(FovOffWorst, Off);
+		return;
+	}
+	if (FovOffFrames == 0) return;
+	UE_LOG(LogCubeWorld, Log, TEXT("fov back to the pawn's after %d frame(s), %.1f off at most"), FovOffFrames, FovOffWorst);
+	FovOffFrames = 0; FovOffWorst = 0;
+}
+
 void UCubeWorldGameInstance::LogDrawnFrame()
 {
 	LastDrawnFrame = GFrameCounter;
@@ -216,8 +466,15 @@ void UCubeWorldGameInstance::LogDrawnFrame()
 		FVector Loc; FRotator Rot;
 		PC->GetPlayerViewPoint(Loc, Rot);
 		const AActor* Target = PC->GetViewTarget();
-		Line += FString::Printf(TEXT("view %.3f %.3f %.3f yaw %.1f fov %.1f target %s pc %s pawn %s"), Loc.X / CubeSpec::BlockCm, Loc.Y / CubeSpec::BlockCm, Loc.Z / CubeSpec::BlockCm, Rot.Yaw, PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : 0.f, Target ? *Target->GetClass()->GetName() : TEXT("none"), PC->GetLocalRole() == ROLE_Authority ? TEXT("placeholder") : TEXT("server"), PC->GetPawn() ? *PC->GetPawn()->GetActorLocation().ToString() : TEXT("none"));
+		const APlayerCameraManager* Cam = PC->PlayerCameraManager;
+		Line += FString::Printf(TEXT("view %.3f %.3f %.3f yaw %.1f fov %.1f target %s pc %s pawn %s"), Loc.X / CubeSpec::BlockCm, Loc.Y / CubeSpec::BlockCm, Loc.Z / CubeSpec::BlockCm, Rot.Yaw, Cam ? Cam->GetFOVAngle() : 0.f, Target ? *Target->GetClass()->GetName() : TEXT("none"), PC->GetLocalRole() == ROLE_Authority ? TEXT("placeholder") : TEXT("server"), PC->GetPawn() ? *PC->GetPawn()->GetActorLocation().ToString() : TEXT("none"));
+		// What turned it: the pitch; a locked field of view (0: none) and the pawn's own; the mouse at the viewport and at
+		// the gap's tap (pixels); the turn the pawn applied (degrees); and whether the gap holds the view.
+		Line += FString::Printf(TEXT(" pitch %.1f lock %.1f pawnfov %.1f mouse %.1f %.1f tap %.1f %.1f turn %.2f %.2f gap %d"), FRotator::NormalizeAxis(Rot.Pitch), Cam ? Cam->GetLockedFOV() : 0.f, LastHorizontalFov, FrameMouse.X, FrameMouse.Y, FrameTapMouse.X, FrameTapMouse.Y, FrameTurn.X, FrameTurn.Y, bGapActive ? 1 : 0);
+		// -fakemouse: the turn the hand meant this frame, which the view should show.
+		if (IsFakeMouse()) Line += FString::Printf(TEXT(" fake %.2f %.2f"), FakeTurn.X, FakeTurn.Y);
 	}
+	FrameMouse = FrameTapMouse = FrameTurn = FakeTurn = FVector2D::ZeroVector;
 	UE_LOG(LogCubeWorld, Log, TEXT("%s"), *Line);
 }
 
@@ -231,7 +488,10 @@ void UCubeWorldGameInstance::LogEndOfFrame()
 
 void UCubeWorldGameInstance::EndCrossingView()
 {
-	if (bGapActive) { bGapActive = false; CubeKeys::StopMouse(); }
+	// The mouse goes on being added up: the pawn takes it from here (ACubePlayerPawn::TakeUnreadMouse).
+	bGapActive = false;
+	// Whatever locked the field of view (the gap did, until PSV-3027), the pawn's own is drawn from here.
+	if (APlayerController* Local = GetFirstLocalPlayerController()) if (Local->PlayerCameraManager) Local->PlayerCameraManager->UnlockFOV();
 	if (CrossingCamera.IsValid()) Log(FString::Printf(TEXT("crossing: %d frame(s) without a view, %d held from a wrong place"), CrossingBlankFrames, CrossingWrongFrames));
 	if (CrossingViewTicker.IsValid()) { FWorldDelegates::OnWorldPostActorTick.Remove(CrossingViewTicker); CrossingViewTicker.Reset(); }
 	if (CrossingDrawHandle.IsValid()) { if (GEngine && GEngine->GameViewport) GEngine->GameViewport->OnBeginDraw().Remove(CrossingDrawHandle); CrossingDrawHandle.Reset(); }
@@ -253,18 +513,62 @@ void UCubeWorldGameInstance::Log(const FString& Text)
 void UCubeWorldGameInstance::StartPlay(const FString& Name)
 {
 	if (bSigningIn || IsConnected() || bSwitching) return;
+	WatchFrames();
 	PlayerName = Name;
 	bSigningIn = true;
+	bEntering = true;
 	Status = TEXT("Signing in...");
 	if (PlayServ::Auth::IsLoggedIn() && !PlayerId.IsEmpty()) { Browse(); return; }
+	if (CubeIsOffline())
+	{
+		// Nobody to sign in to: the player names themselves, the same on every server of the run.
+		PlayerId = FString::Printf(TEXT("offline-%s"), *Name.ToLower());
+		Log(FString::Printf(TEXT("offline as %s"), *Name));
+		Browse();
+		return;
+	}
+	FString Kept;
+	if (!FFileHelper::LoadFileToString(Kept, *GuestFile(Name)) || Kept.TrimStartAndEnd().IsEmpty()) { SignInAsNewGuest(); return; }
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
-	PlayServ::Auth::LoginAnonymous(Name, FPlayServAuthCallback::CreateLambda([Weak](bool bOk, const FString& InPlayerId, const FPlayServError& Error)
+	PlayServ::Auth::LoginWithRefreshToken(Kept.TrimStartAndEnd(), FPlayServAuthCallback::CreateLambda([Weak](bool bOk, const FString& InPlayerId, const FPlayServError& Error)
+	{
+		if (!Weak.IsValid()) return;
+		UCubeWorldGameInstance* Self = Weak.Get();
+		if (bOk)
+		{
+			Self->PlayerId = InPlayerId;
+			Self->Log(FString::Printf(TEXT("signed in again as %s"), *Self->PlayerName));
+			Self->Browse();
+			return;
+		}
+		// Not refused: no answer, or the platform's front end standing in for an app that was restarting (429, 502, 503,
+		// 504). The token is still the live one and is kept for the next try; taken as refused, one 503 at launch made a
+		// new guest under the same name (bug hunt B16).
+		if (!UPlayServAuth::IsTerminalRefreshFailure(Error))
+		{
+			Self->bSigningIn = false;
+			Self->bEntering = false;
+			Self->Status = FString::Printf(TEXT("Sign-in failed: %s"), *Error.Message);
+			Self->Log(Self->Status);
+			return;
+		}
+		// Refused, the token is spent: a new guest under the same name.
+		IFileManager::Get().Delete(*GuestFile(Self->PlayerName), false, true, true);
+		Self->SignInAsNewGuest();
+	}));
+}
+
+void UCubeWorldGameInstance::SignInAsNewGuest()
+{
+	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
+	PlayServ::Auth::LoginAnonymous(PlayerName, FPlayServAuthCallback::CreateLambda([Weak](bool bOk, const FString& InPlayerId, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
 		UCubeWorldGameInstance* Self = Weak.Get();
 		if (!bOk)
 		{
 			Self->bSigningIn = false;
+			Self->bEntering = false;
 			Self->Status = FString::Printf(TEXT("Sign-in failed: %s"), *Error.Message);
 			Self->Log(Self->Status);
 			return;
@@ -275,35 +579,65 @@ void UCubeWorldGameInstance::StartPlay(const FString& Name)
 	}));
 }
 
-// An operator's close is followed by the room opening again fresh within a minute or two; an operator's removal holds
-// for as long as that room lives. The same rules as web/rooms.js.
-FString UCubeWorldGameInstance::TurnedAway(const FString& RoomName, const FString& ReasonOrCode)
+FCubeRefusal FCubeRefusal::Of(const FString& ReasonOrCode)
 {
-	double Wait = 0;
-	FString Message;
+	FCubeRefusal R;
+	// Loose: a kick over Iris comes back wrapped in the engine's own words.
 	if (ReasonOrCode.Contains(TEXT("room_closed")))
 	{
-		Wait = 30;
-		Message = TEXT("This room was closed by an operator. It opens again fresh in a minute or two.");
+		R.Wait = 30;
+		R.Title = TEXT("Room closed");
+		R.Message = TEXT("This room was closed by an operator. It opens again fresh in a minute or two.");
+		R.Barred = TEXT("This room was closed by an operator and is opening again: you can enter once it is back.");
 	}
 	else if (ReasonOrCode.Contains(TEXT("removed")))
 	{
-		Wait = 60;
-		Message = TEXT("An operator removed you from this room. You can still walk into the other regions.");
+		R.Title = TEXT("Removed from the room");
+		R.Message = TEXT("An operator removed you from this room. You can still walk into the other regions.");
+		R.Barred = TEXT("You can't enter this room: an operator removed you from it.");
 	}
-	if (!Message.IsEmpty() && !RoomName.IsEmpty()) NotBefore.Add(RoomName, FPlatformTime::Seconds() + Wait);
-	return Message;
+	return R;
+}
+
+FCubeRefusal UCubeWorldGameInstance::TurnedAway(const FString& RoomName, const FString& ReasonOrCode)
+{
+	const FCubeRefusal Turned = FCubeRefusal::Of(ReasonOrCode);
+	if (Turned.IsSet() && !RoomName.IsEmpty())
+	{
+		NotBefore.Add(RoomName, FPlatformTime::Seconds() + Turned.Wait);
+		Barred.Add(RoomName, Turned);
+	}
+	return Turned;
+}
+
+FString UCubeWorldGameInstance::BarredLine() const
+{
+	if (!LastBody.bSet || CubeIsOffline()) return FString();
+	const FString Here = RoomOfRegion(CubeSpec::RegionOf(LastBody.X, LastBody.Y));
+	const FCubeRefusal* Turned = Here.IsEmpty() || Here == Room ? nullptr : Barred.Find(Here);
+	return Turned ? FString::Printf(TEXT("%s: %s"), *Here, *Turned->Barred) : FString();
 }
 
 void UCubeWorldGameInstance::TurnedAwayBy(const FString& Reason)
 {
-	const FString Message = TurnedAway(Room.IsEmpty() ? Travelling : Room, Reason);
-	Log(Message.IsEmpty() ? FString::Printf(TEXT("turned away: %s"), *Reason) : Message);
+	const FCubeRefusal Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Reason);
+	Log(Turned.IsSet() ? Turned.Message : FString::Printf(TEXT("turned away: %s"), *Reason));
+	if (Turned.IsSet()) ShowNotice(Turned);
 }
 
 void UCubeWorldGameInstance::Browse()
 {
 	if (BrowsesPending > 0) return;
+	if (CubeIsOffline())
+	{
+		// The rooms are the run's servers, from -peers: the lowest region first.
+		BrowseFound.Empty();
+		TArray<FCubeOfflinePeer> Peers = CubeOfflinePeers();
+		Peers.Sort([](const FCubeOfflinePeer& A, const FCubeOfflinePeer& B) { return A.Region < B.Region; });
+		for (const FCubeOfflinePeer& Peer : Peers) { BrowseFound.Add(CubeOfflineRoomName(Peer.Region)); RoomSlugs.Add(CubeOfflineRoomName(Peer.Region), TEXT("cubeworld-ue")); }
+		Browsed();
+		return;
+	}
 	Status = TEXT("Looking for servers...");
 	// The C# servers and the Unreal servers register under their own room types; both are listed, and a room is
 	// joined under the type it was found in. A type the project has not got simply lists nothing.
@@ -338,6 +672,7 @@ void UCubeWorldGameInstance::Browsed()
 		if (!BrowseError.IsEmpty() || RoomSlugs.Num() == 0)
 		{
 			bSigningIn = false;
+			bEntering = false;
 			Status = BrowseError.IsEmpty() ? TEXT("No server is running. Press Enter to retry.") : FString::Printf(TEXT("Browse failed: %s"), *BrowseError);
 			Log(Status);
 			return;
@@ -347,8 +682,9 @@ void UCubeWorldGameInstance::Browsed()
 		return;
 	}
 	Candidates = BrowseFound;
-	// The Unreal servers first, the C# ones after: the Unreal client is at home on Iris.
-	Candidates.Sort([this](const FString& A, const FString& B)
+	// The Unreal servers first, the C# ones after: the Unreal client is at home on Iris. Offline, the -peers order holds
+	// (the lowest region first), so a run starts where its test walk begins.
+	if (!CubeIsOffline()) Candidates.Sort([this](const FString& A, const FString& B)
 	{
 		const bool bUnrealA = RoomSlugs.FindRef(A) == TEXT("cubeworld-ue"), bUnrealB = RoomSlugs.FindRef(B) == TEXT("cubeworld-ue");
 		return bUnrealA != bUnrealB ? bUnrealA : A < B;
@@ -363,6 +699,28 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 	if (RoomName == Room || bSwitching) return;
 	bSwitching = true;
 	Status = FString::Printf(TEXT("Joining %s..."), *RoomName);
+	if (bTeleport) bEntering = true;
+	if (CubeIsOffline())
+	{
+		// No join, no ticket: straight to the address of the server that holds the room's region.
+		for (const FCubeOfflinePeer& Peer : CubeOfflinePeers())
+			if (CubeOfflineRoomName(Peer.Region) == RoomName)
+			{
+				// ws://host:port is the server's JSON door: the region is played as a C# server's is, over the socket.
+				FString Scheme, Rest, Host, PortText;
+				if (Peer.Address.Split(TEXT("://"), &Scheme, &Rest) && Rest.Split(TEXT(":"), &Host, &PortText))
+				{
+					ConnectSocket(RoomName, Host, FCString::Atoi(*PortText), Scheme == TEXT("wss"), FString(), bTeleport);
+					return;
+				}
+				TravelToUnrealServer(RoomName, FString::Printf(TEXT("%s?cubeplayer=%s"), *Peer.Address, *PlayerId), bTeleport);
+				return;
+			}
+		bSwitching = false;
+		CrossAfter = FPlatformTime::Seconds() + 3;
+		Log(FString::Printf(TEXT("%s is not in -peers"), *RoomName));
+		return;
+	}
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
 	// The SDK is not handed the controller: the travel is ours, so the position survives a border crossing.
 	const FPlayServJoinCallback Joined = FPlayServJoinCallback::CreateLambda([Weak, RoomName, bTeleport](bool bOk, const FPlayServJoinResult& Result, const FPlayServError& Error)
@@ -386,12 +744,19 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 			}
 			Self->bSwitching = false;
 			Self->CrossAfter = FPlatformTime::Seconds() + 3;
-			const FString Turned = Self->TurnedAway(RoomName, Error.ProblemCode);
-			Self->Log(Turned.IsEmpty() ? FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message) : Turned);
+			const FCubeRefusal Turned = Self->TurnedAway(RoomName, Error.ProblemCode);
+			Self->Log(Turned.IsSet() ? Turned.Message : FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message));
 			if (!Self->IsConnected())
 			{
+				// Play goes on to the next room that may let the player in; a room that holds them out is marked in the panel,
+				// and only when every room has held them out does the notice say why (as enterFirst on the web).
+				if (Turned.IsSet() && !Self->FirstRefusal.IsSet()) Self->FirstRefusal = Turned;
 				if (Self->Candidates.Num() > 0) { const FString NextRoom = Self->Candidates[0]; Self->Candidates.RemoveAt(0); Self->Enter(NextRoom, bTeleport); }
-				else Self->GetTimerManager().SetTimer(Self->RetryTimer, [Weak]() { if (Weak.IsValid()) Weak->Browse(); }, 3.f, false);
+				else
+				{
+					if (Self->FirstRefusal.IsSet()) { Self->ShowNotice(Self->FirstRefusal); Self->FirstRefusal = FCubeRefusal(); }
+					Self->GetTimerManager().SetTimer(Self->RetryTimer, [Weak]() { if (Weak.IsValid()) Weak->Browse(); }, 3.f, false);
+				}
 			}
 			return;
 		}
@@ -442,6 +807,19 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 {
 	APlayerController* PC = GetFirstLocalPlayerController();
 	if (!PC) { bSwitching = false; return; }
+	UCubeGameEngine* Engine = UCubeGameEngine::Get();
+	if (Engine && !bTeleport && bPlaced && bWelcomed && !FParse::Param(FCommandLine::Get(), TEXT("noseamless")))
+	{
+		// Make before break: the server (or the socket) the player is on plays on until the next one has let us in, and then
+		// that one's connection takes over this world, which stays loaded (UCubeGameEngine, HandleServerSwitched).
+		bSeamlessCrossing = true;
+		Travelling = RoomName;
+		Log(FString::Printf(TEXT("crossing to %s (Unreal) at %s; this server plays on until it lets us in"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
+		LogFramesFor(3);
+		Engine->RequestSeamlessTravel();
+		PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
+		return;
+	}
 	CloseSockets();
 	bViaSocket = false;
 	// A crossing keeps the body where it is; a fresh join takes the server's spawn.
@@ -452,12 +830,7 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 	Travelling = RoomName;
 	// A crossing keeps the players it knows: the next world shows them at once, where they were.
 	if (!Crossing.bSet) Players.Empty();
-	if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport)
-	{
-		DrawLogUntil = FPlatformTime::Seconds() + 5;
-		if (!DrawLogHandle.IsValid()) DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
-		if (!EndFrameLogHandle.IsValid()) EndFrameLogHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UCubeWorldGameInstance::LogEndOfFrame);
-	}
+	LogFramesFor(5);
 	Log(FString::Printf(TEXT("travelling to %s (Unreal) at %s"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
 	PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
 }
@@ -466,7 +839,22 @@ void UCubeWorldGameInstance::HandleNetworkFailure(UWorld* InWorld, UNetDriver* N
 {
 	if (CubeIsServerProcess()) return;
 	if (SocketPlan.bSet) return;   // leaving an Unreal server on purpose, for a C# one
+	// The next server's handshake failed while the player played on: the engine gives that travel up and says so
+	// (HandleSeamlessTravelFailed); the connection (or socket) the player is on was never closed.
+	if (bSeamlessCrossing && NetDriver && NetDriver->NetDriverName == NAME_PendingNetDriver) return;
+	// The connection the world had before a seamless crossing reports its own end: the next one already took over.
+	if (NetDriver && InWorld && InWorld->GetNetDriver() != NetDriver && NetDriver->NetDriverName != NAME_PendingNetDriver) return;
 	Disconnected(ErrorString.IsEmpty() ? FString(ENetworkFailure::ToString(FailureType)) : ErrorString);
+}
+
+void UCubeWorldGameInstance::HandleSeamlessTravelFailed(const FString& Why)
+{
+	if (!bSeamlessCrossing) return;
+	bSeamlessCrossing = false;
+	bSwitching = false;
+	CrossAfter = FPlatformTime::Seconds() + 3;
+	Log(FString::Printf(TEXT("%s did not let us in (%s); playing on here"), *Travelling, *Why));
+	Travelling.Empty();
 }
 
 // A kick (an operator's close or removal) brings the client back to the menu map; look for a server again after it.
@@ -482,8 +870,9 @@ void UCubeWorldGameInstance::Disconnected(const FString& Why)
 	Crossing = FCubeCrossing();
 	if (Socket.IsValid()) { Socket->Close(); Socket.Reset(); }
 	bViaSocket = false;
-	const FString Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Why);
-	Log(Turned.IsEmpty() ? FString::Printf(TEXT("disconnected: %s"), *Why) : Turned);
+	const FCubeRefusal Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Why);
+	Log(Turned.IsSet() ? Turned.Message : FString::Printf(TEXT("disconnected: %s"), *Why));
+	if (Turned.IsSet()) ShowNotice(Turned);
 	bWelcomed = false;
 	bSwitching = false;
 	bSigningIn = false;
@@ -528,6 +917,8 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 	const bool bCrossed = Crossing.bSet;
 	if (bCrossed) bCrossedOnce = true;
 	RetriedOtherType.Remove(InRoom);
+	Barred.Remove(InRoom);
+	FirstRefusal = FCubeRefusal();
 	Server = InServer; Color = InColor; Room = InRoom; Region = InRegion;
 	Travelling.Empty();
 	bSwitching = false;
@@ -535,6 +926,7 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 	bWelcomed = true;
 	Health = You.Health;
 	bDead = false;
+	MoveSeq = 0;
 	Status.Empty();
 	// A fresh join starts from the generated terrain; a crossing keeps the world on screen and applies only what differs.
 	bSnapshotDiff = bCrossed;
@@ -554,9 +946,10 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 
 void UCubeWorldGameInstance::ApplySnapshot()
 {
-	TMap<FIntVector, FName> Next;
-	for (const auto& P : Snapshot) if (P.Value != NAME_None) Next.Add(P.Key, P.Value);
-	const TArray<FIntVector> Changed = World.ReplaceOverrides(Next);
+	// Moved, not copied: a C# welcome's snapshot holds every changed block of the world.
+	TMap<FIntVector, FName> Next = MoveTemp(Snapshot);
+	for (auto It = Next.CreateIterator(); It; ++It) if (It.Value() == NAME_None) It.RemoveCurrent();
+	const TArray<FIntVector> Changed = World.ReplaceOverrides(MoveTemp(Next));
 	Snapshot.Reset();
 	bSnapshotDiff = false;
 	if (Changed.Num() > 0) OnCubes.Broadcast(Changed);
@@ -573,9 +966,13 @@ void UCubeWorldGameInstance::OnWorldChunk(const TArray<FCubeCellRep>& Cells, boo
 	ChunksReceived++;
 	if (!bLast) return;
 	bWorldLoaded = true;
-	if (bSnapshotDiff) ApplySnapshot();
-	OnWelcome.Broadcast(WelcomePose, !bSnapshotDiff);
+	// A crossing's snapshot is applied as ordinary changes, and the welcome says so: read before ApplySnapshot clears it,
+	// or every crossing would rebuild every chunk.
+	const bool bDiff = bSnapshotDiff;
+	if (bDiff) ApplySnapshot();
+	OnWelcome.Broadcast(WelcomePose, !bDiff);
 	bPlaced = true;
+	if (bEntering) { bEntering = false; CurtainUntil = FPlatformTime::Seconds() + 0.3; }
 	for (const FPendingCubes& P : PendingCubes) ApplyCubes(P.Changes, P.Falls, P.bRemote);
 	PendingCubes.Empty();
 }
@@ -650,6 +1047,23 @@ void UCubeWorldGameInstance::OnRespawnFrame(const FCubePose& You)
 	OnRespawn.Broadcast(You);
 }
 
+void UCubeWorldGameInstance::OnCorrectFrame(const FCubePose& At, int32 Seq)
+{
+	// Not while crossing: the room being left is behind, and following it back over the border crossed again, and again
+	// (the web client's rule too).
+	if (bSwitching) return;
+	MoveSeq = Seq;
+	OnCorrect.Broadcast(At);
+}
+
+void UCubeWorldGameInstance::OnBombListFrame(const TArray<FCubeBombRep>& List)
+{
+	TSet<FString> Known;
+	for (const FCubeBombRep& B : List) Known.Add(B.Id);
+	OnBombList.Broadcast(Known);
+	for (const FCubeBombRep& B : List) OnBombFrame(B);
+}
+
 void UCubeWorldGameInstance::OnBombFrame(const FCubeBombRep& B)
 {
 	FCubeBombFrame F;
@@ -657,5 +1071,8 @@ void UCubeWorldGameInstance::OnBombFrame(const FCubeBombRep& B)
 	F.X = B.X; F.Y = B.Y; F.Z = B.Z; F.VX = B.VX; F.VY = B.VY; F.VZ = B.VZ;
 	F.Age = B.AgeMs;
 	if (B.bHasHeight) F.Height = B.Height;
+	// -logbombs: every bomb frame a server sends, to follow a bomb through crossings.
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs")))
+		UE_LOG(LogCubeWorld, Log, TEXT("bomb frame from %s: %s %s holder '%s' at %.1f %.1f %.1f height %.2f age %d ms"), *Room, *B.Id, *B.State, *B.Holder, B.X, B.Y, B.Z, B.bHasHeight ? B.Height : -1.0, B.AgeMs);
 	OnBomb.Broadcast(F);
 }

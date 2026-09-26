@@ -66,7 +66,9 @@ bool CubeKeys::Read(FCubeKeys& Out)
 {
 	// -fakekeys: W and Shift held on a keyboard nobody touches, for testing a crossing without the game in front.
 	static const bool bFake = FParse::Param(FCommandLine::Get(), TEXT("fakekeys"));
-	if (bFake) { Out = FCubeKeys(); Out.Forward = 1; Out.bSprint = true; return true; }
+	// -fakejump: Space held too, to climb out of craters on the way.
+	static const bool bFakeJump = FParse::Param(FCommandLine::Get(), TEXT("fakejump"));
+	if (bFake) { Out = FCubeKeys(); Out.Forward = 1; Out.bSprint = true; Out.bJump = bFakeJump; return true; }
 #if PLATFORM_WINDOWS
 	const UInputSettings* Settings = UInputSettings::GetInputSettings();
 	if (!Settings || !FPlatformApplicationMisc::IsThisApplicationForeground()) return false;
@@ -83,13 +85,9 @@ bool CubeKeys::Read(FCubeKeys& Out)
 
 void CubeKeys::StartMouse()
 {
-	if (!FSlateApplication::IsInitialized()) return;
-	if (!Tap.IsValid())
-	{
-		Tap = MakeShared<FMouseTap>();
-		FSlateApplication::Get().RegisterInputPreProcessor(Tap);
-	}
-	Tap->Delta = FVector2D::ZeroVector;
+	if (!FSlateApplication::IsInitialized() || Tap.IsValid()) return;
+	Tap = MakeShared<FMouseTap>();
+	FSlateApplication::Get().RegisterInputPreProcessor(Tap);
 }
 
 FVector2D CubeKeys::TakeMouse()
@@ -98,6 +96,11 @@ FVector2D CubeKeys::TakeMouse()
 	const FVector2D D = Tap->Delta;
 	Tap->Delta = FVector2D::ZeroVector;
 	return D;
+}
+
+void CubeKeys::AddMouse(const FVector2D& Delta)
+{
+	if (Tap.IsValid()) Tap->Delta += Delta;
 }
 
 void CubeKeys::StopMouse()

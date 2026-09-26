@@ -36,7 +36,7 @@ namespace
 
 	const TMap<FName, TArray<int32>>& GrassTints()
 	{
-		static const TMap<FName, TArray<int32>> Tints = { { TEXT("green"), { 93, 160, 60 } }, { TEXT("red"), { 200, 118, 48 } }, { TEXT("blue"), { 58, 150, 150 } }, { TEXT("yellow"), { 196, 186, 64 } }, { TEXT("purple"), { 140, 95, 170 } }, { TEXT("pink"), { 210, 120, 160 } } };
+		static const TMap<FName, TArray<int32>> Tints = { { TEXT("green"), { 93, 160, 60 } }, { TEXT("red"), { 190, 42, 38 } }, { TEXT("blue"), { 58, 150, 150 } }, { TEXT("yellow"), { 196, 186, 64 } }, { TEXT("purple"), { 140, 95, 170 } }, { TEXT("pink"), { 210, 120, 160 } } };
 		return Tints;
 	}
 
