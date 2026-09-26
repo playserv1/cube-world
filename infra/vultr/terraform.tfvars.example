@@ -1,0 +1,43 @@
+# Every input of this folder. Copy to terraform.tfvars (gitignored) and replace each <...>.
+# The Vultr API key is not set here: export VULTR_API_KEY in your shell (README.md, step 1).
+
+# ── Required ──────────────────────────────────────────────────────────────────────────────
+
+# E-mail Let's Encrypt writes to about expiring or revoked certificates.
+acme_email = "<you@playserv.com>"
+
+# Public SSH keys of the admins; they log in as `ops` (sudo). One line each, from ~/.ssh/id_ed25519.pub.
+admin_ssh_public_keys = [
+  "<ssh-ed25519 AAAA... you@laptop>",
+]
+
+# environment → hostname. main deploys to prod, dev to dev (.github/workflows/web-*.yml).
+# Each needs an A record to `terraform output ipv4`, created by hand (README.md, step 2).
+sites = {
+  prod = "cube-world.playserv.com"
+  dev  = "dev.cube-world.playserv.com"
+}
+
+# ── Optional: the values below are the defaults (variables.tf) ──────────────────────────────
+
+# Label and hostname of the VM, and the prefix of everything else created in Vultr.
+name = "cube-world-web"
+
+# Vultr region id: curl -s https://api.vultr.com/v2/regions | jq -r '.regions[].id'
+region = "fra"
+
+# Vultr plan id: curl -s "https://api.vultr.com/v2/plans?type=vc2" | jq -r '.plans[] | "\(.id) $\(.monthly_cost)"'
+plan = "vc2-1c-1gb"
+
+# Exact Vultr OS name. cloud-init is written for Ubuntu 24.04: change it only together with cloud-init.tf.
+os_name = "Ubuntu 24.04 LTS x64"
+
+# Networks allowed to reach SSH. GitHub-hosted runners deploy from changing addresses, so narrowing this
+# stops CI deploys unless their ranges are added (README.md, "Changing the VM").
+ssh_allowed_cidrs = ["0.0.0.0/0", "::/0"]
+
+# The only image repository the VM pulls from; must match the image web-image.yml pushes.
+web_image = "ghcr.io/playserv1/cube-world-web"
+
+# The edge Caddy on the VM. Keep the minor version in step with FROM in deploy/web/Dockerfile.
+caddy_image = "caddy:2.11-alpine"

@@ -1,0 +1,34 @@
+# The edge Caddy of the Cube World web VM. Managed by Terraform (infra/vultr/files/Caddyfile.tftpl): a change made
+# here on the VM is lost when the VM is rebuilt.
+#
+# Each environment's site is in sites/<env>.caddy. /usr/local/bin/cube-deploy rewrites it on every deploy, so the
+# environment is served either from its own image (serve-image) or from a release uploaded with rsync (serve-files).
+{
+	email ${acme_email}
+}
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# No file name carries a content hash, so the browser revalidates every file (ETag) instead of caching it blind.
+		Cache-Control "no-cache"
+		-Server
+	}
+	log
+}
+
+# The environment's own container, compose service web-<env>, built from deploy/web/Dockerfile.
+(serve-image) {
+	reverse_proxy web-{args[0]}:8080
+}
+
+# The release that /srv/cube-world/sites/<env> links to, uploaded into /srv/cube-world/releases/<env>/.
+(serve-files) {
+	root * /srv/cube-world/sites/{args[0]}
+	file_server
+}
+
+import sites/*.caddy

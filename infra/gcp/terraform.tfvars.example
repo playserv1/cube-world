@@ -1,0 +1,29 @@
+# Every input of this folder. Copy to terraform.tfvars (gitignored) and replace each <...>.
+# Credentials are not set here: `gcloud auth application-default login` (README.md, step 1).
+
+# ── Required ──────────────────────────────────────────────────────────────────────────────
+
+# The GCP project (its id, not its name or number). Must exist with billing enabled.
+project_id = "<gcp-project-id>"
+
+# The custom domain of the Cloud Run site. Its CNAME is created by hand (README.md, step 4).
+# cube-world.playserv.com is the Vultr VM's prod site, so Cloud Run gets a name of its own.
+domain = "run.cube-world.playserv.com"
+
+# ── Optional: the values below are the defaults (variables.tf) ──────────────────────────────
+
+# Must be a region with Cloud Run domain mappings; europe-west3 (Frankfurt) has none.
+region = "europe-west1"
+
+# Name of the service, its runtime service account and its Artifact Registry repository.
+service_name = "cube-world-web"
+
+# The repository and the only branches allowed to deploy (web-cloudrun.yml runs on dev and main).
+github_repository = "playserv1/cube-world"
+deploy_branches   = ["main", "dev"]
+
+# Most instances at once; the service scales to zero when idle.
+max_instances = 3
+
+# Image versions kept in Artifact Registry (how far back a rollback can go).
+image_keep_count = 10

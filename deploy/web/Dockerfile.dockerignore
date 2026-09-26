@@ -1,0 +1,8 @@
+# Only the client and the image's own Caddyfile go into the build context. Keep the web/ lines in step with
+# exclude.txt, the same list for the rsync deploy.
+*
+!web/
+!deploy/web/Caddyfile
+web/**/*.test.js
+web/bundle.mjs
+web/config.example.js
