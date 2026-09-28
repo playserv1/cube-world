@@ -19,6 +19,7 @@ public sealed class CubeWorldServer : PlatformGameServer
     private readonly ConcurrentDictionary<string, Player> _players = new();
     private readonly ConcurrentDictionary<string, WorldPresence> _elsewhere = new();
     private readonly Dictionary<string, LiveBomb> _bombs = new();
+    private readonly List<Change> _heard = new();
     private readonly Random _random = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));
@@ -160,7 +161,15 @@ public sealed class CubeWorldServer : PlatformGameServer
                 }
                 catch (Exception e) { _ = Platform.Log($"tick: {e.Message}"); }
             }
-            try { lock (_world) TickBombs(); }
+            try
+            {
+                lock (_world)
+                {
+                    TickBombs();
+                    // What the other servers changed this tick goes out together (a blast elsewhere is a hundred blocks).
+                    if (_heard.Count > 0) { BroadcastCubes([], _heard.ToList(), remote: true); _heard.Clear(); }
+                }
+            }
             catch (Exception e) { _ = Platform.Log($"bombs: {e.Message}"); }
         }
     }
@@ -503,14 +512,42 @@ public sealed class CubeWorldServer : PlatformGameServer
 
     private void Publish(WorldUpdate update)
     {
-        foreach (var fall in update.Falls)
-            Broadcast(new { type = "fall", kind = fall.Kind, x = fall.X, y = fall.Y, fromZ = fall.FromZ, toZ = fall.ToZ });
         foreach (var (op, cube) in update.Changes)
         {
             if (op == "delete") Platform.RuntimeData.Delete(Uplink, "WorldCube", cube.key);
             else Platform.RuntimeData.Write(Uplink, "WorldCube", cube.key, cube);
-            Broadcast(new { type = "cube", op, cube, remote = false });
         }
+        BroadcastCubes(update.Falls, update.Changes, remote: false);
+    }
+
+    /// <summary>
+    /// A player's socket holds at most 64 frames queued and is cut the moment one more is sent, so blocks that change
+    /// together go out together: one "cubes" frame. A client that has not said it reads them (the Unreal one) gets a
+    /// frame per block as before, each sent only once there is room for it.
+    /// </summary>
+    private void BroadcastCubes(IReadOnlyList<Fall> falls, IReadOnlyList<Change> changes, bool remote)
+    {
+        if (falls.Count == 0 && changes.Count == 0) return;
+        var batch = JsonSerializer.Serialize(new
+        {
+            type = "cubes", remote,
+            falls = falls.Select(f => new { kind = f.Kind, x = f.X, y = f.Y, fromZ = f.FromZ, toZ = f.ToZ }),
+            changes = changes.Select(c => new { op = c.Op, cube = c.Cube }),
+        });
+        string[]? single = null;
+        foreach (var player in _players.Values)
+        {
+            if (player.Throws) { player.Session.TrySendText(batch); continue; }
+            single ??= falls.Select(f => JsonSerializer.Serialize(new { type = "fall", kind = f.Kind, x = f.X, y = f.Y, fromZ = f.FromZ, toZ = f.ToZ }))
+                .Concat(changes.Select(c => JsonSerializer.Serialize(new { type = "cube", op = c.Op, cube = c.Cube, remote }))).ToArray();
+            _ = SendInTurnAsync(player.Session, single);
+        }
+    }
+
+    private static async Task SendInTurnAsync(PlayerSession session, string[] frames)
+    {
+        try { foreach (var frame in frames) await session.SendTextAsync(frame); }
+        catch { }
     }
 
     private void ShareInventory(Player player)
@@ -545,8 +582,11 @@ public sealed class CubeWorldServer : PlatformGameServer
         {
             case "WorldCube" when update.Data.Deserialize<WorldCube>() is { } cube:
                 bool changed;
-                lock (_world) changed = _world.Apply(update.Op, cube);
-                if (changed) Broadcast(new { type = "cube", op = update.Op, cube, remote = true });
+                lock (_world)
+                {
+                    changed = _world.Apply(update.Op, cube);
+                    if (changed) _heard.Add(new Change(update.Op, cube));
+                }
                 break;
 
             case "CubeInventory" when update.Data.Deserialize<CubeInventory>() is { } refill
@@ -647,7 +687,7 @@ public sealed class CubeWorldServer : PlatformGameServer
         public DigState? Dig { get; set; }
         /// <summary>The bomb in the player's hand. A player holds one at a time and can only throw it.</summary>
         public string? Bomb { get; set; }
-        /// <summary>The client can show and throw a bomb; a client that cannot is never handed one.</summary>
+        /// <summary>The client can show and throw a bomb and reads batched "cubes" frames; one that cannot is never handed a bomb.</summary>
         public bool Throws { get; set; }
     }
 

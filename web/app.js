@@ -160,7 +160,8 @@ function onFrame(frame, teleport) {
       if (teleport) spawn(frame.you);
       for (const id of [...bombs.keys()]) removeBomb(id);
       for (const bomb of frame.bombs ?? []) onBomb(bomb);
-      // This client can show a bomb in the hand and throw it; the server hands bombs only to clients that say so.
+      // This client can show a bomb in the hand and throw it, and reads blocks batched in one "cubes" frame; the
+      // server hands bombs, and batches, only to clients that say so.
       send({ op: "bombs" });
       $("banner").textContent = `you are on server ${frame.color}-${frame.server}`;
       $("banner").style.borderLeft = `6px solid ${SERVER_COLORS[frame.color]}`;
@@ -182,6 +183,19 @@ function onFrame(frame, teleport) {
     case "fall":
       startFall(frame);
       break;
+    case "cubes": {
+      // Blocks that changed together (a blast is a hundred of them) arrive in one frame and rebuild each chunk once.
+      for (const f of frame.falls) startFall(f);
+      const ids = new Set();
+      for (const { op, cube: c } of frame.changes) {
+        for (const id of world.set(c.x, c.z, c.y, op === "delete" ? null : c.kind)) ids.add(id);
+        if (state.dig && state.dig.key === `${c.x},${c.z},${c.y}` && world.kindAt(c.x, c.z, c.y) === "air") { state.dig = null; state.digCooldown = S.DIG_COOLDOWN_TICKS; }
+      }
+      rebuild(ids);
+      const first = frame.changes[0]?.cube;
+      if (frame.remote && first) log(`${frame.changes.length} block${frame.changes.length > 1 ? "s" : ""} changed on server ${first.placed_on} → arrived here`);
+      break;
+    }
     case "dig":
       showCrack(frame);
       break;
