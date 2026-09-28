@@ -183,6 +183,27 @@ public class BombTests
     }
 
     [Fact]
+    public void A_bomb_with_several_rows_is_the_row_furthest_on()
+    {
+        var bombs = new[]
+        {
+            Free("b0", 1000),
+            new Drop.WorldBomb { bomb_id = "b0", state = "held", dropped_at = 1000, at = 2000 },
+            Free("b1", 1500),
+            Free("b2", 1600),
+            new Drop.WorldBomb { bomb_id = "b2", state = "exploded", dropped_at = 1600, at = 3000 },
+        };
+
+        var latest = DropBombs.Latest(bombs).ToDictionary(b => b.bomb_id, b => b.state);
+        var plan = DropBombs.Plan(bombs, 10_000, new Random(1));
+
+        Assert.Equal("held", latest["b0"]);
+        Assert.Equal("exploded", latest["b2"]);
+        Assert.Equal(2, plan.Free);
+        Assert.Empty(plan.Fizzle);
+    }
+
+    [Fact]
     public void A_drop_under_the_limit_fizzles_nothing_and_sweeps_old_finished_bombs()
     {
         var bombs = new[]

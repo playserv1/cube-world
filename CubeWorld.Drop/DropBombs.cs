@@ -26,6 +26,11 @@ public sealed record DropRequest(int? Drops);
 /// Drops a bomb on a parachute every 15 seconds. A cron fires once a minute at most, so each fire drops four, 15
 /// seconds apart. At most five bombs lie free in the world: before a sixth comes, the oldest goes up in smoke.
 /// </summary>
+/// <remarks>
+/// bomb_id is not the entity's primary key, so one bomb can have several rows: the servers write theirs through
+/// runtime data, keyed by bomb_id, and this function creates its own. A bomb only moves forward through its states,
+/// so the row furthest on is the bomb; this function only ever adds rows, never updates one.
+/// </remarks>
 public sealed class DropBombs : PlatformFunction<DropRequest>
 {
     public const int MaxFree = 5, DropsPerFire = 4, Width = 72, Depth = 24;
@@ -52,7 +57,7 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
 
             foreach (var bomb in plan.Fizzle)
             {
-                await table.UpsertByAsync(b => b.bomb_id, bomb.bomb_id, UpsertMode.Managed, bomb, ct);
+                await table.CreateAsync(bomb, ct);
                 fizzled++;
             }
             foreach (var row in rows.Where(r => plan.Sweep.Contains(r.Fields!.bomb_id)))
@@ -60,7 +65,7 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
                 try { await table.DeleteAsync(row.Id, ct); swept++; }
                 catch (ApiException) { }
             }
-            await table.UpsertByAsync(b => b.bomb_id, plan.Drop.bomb_id, UpsertMode.Managed, plan.Drop, ct);
+            await table.CreateAsync(plan.Drop, ct);
             dropped++;
             await Platform.Log($"dropped bomb {plan.Drop.bomb_id} over ({plan.Drop.x:0.0}, {plan.Drop.y:0.0}), {plan.Free} free", ct: ct);
         }
@@ -71,7 +76,7 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
     /// <summary>What one drop does: which bombs go up in smoke, which finished ones are swept, and the new bomb.</summary>
     internal static (List<WorldBomb> Fizzle, HashSet<string> Sweep, WorldBomb Drop, int Free) Plan(IEnumerable<WorldBomb> bombs, long now, Random random)
     {
-        var all = bombs.ToList();
+        var all = Latest(bombs);
         var fizzle = new List<WorldBomb>();
 
         var free = all.Where(b => b.state == "free").OrderBy(b => b.dropped_at).ToList();
@@ -90,6 +95,12 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
         };
         return (fizzle, sweep, drop, free.Count - oldest.Count + 1);
     }
+
+    /// <summary>Each bomb as its row furthest through free, held, flying, exploded or fizzled says it is.</summary>
+    internal static List<WorldBomb> Latest(IEnumerable<WorldBomb> rows) =>
+        rows.GroupBy(b => b.bomb_id).Select(g => g.OrderByDescending(b => Rank(b.state)).ThenByDescending(b => b.at).First()).ToList();
+
+    private static int Rank(string state) => state switch { "free" => 0, "held" => 1, "flying" => 2, _ => 3 };
 
     private static WorldBomb Fizzled(WorldBomb bomb, long now) => new()
     {

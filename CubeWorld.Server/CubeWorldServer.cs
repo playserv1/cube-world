@@ -587,10 +587,13 @@ public sealed class CubeWorldServer : PlatformGameServer
         do
         {
             var page = await Platform.Table<WorldBomb>().Query().Take(200).WithCursor(cursor).ToPageAsync();
-            bombs.AddRange(page.Items.Select(r => r.Fields!).Where(b => !Bomb.Over(b.state)));
+            bombs.AddRange(page.Items.Select(r => r.Fields!));
             cursor = page.NextCursor;
         } while (!string.IsNullOrEmpty(cursor));
-        return bombs;
+        // A bomb can have several rows (the drop function's and the servers'): the one furthest on is the bomb.
+        return bombs.GroupBy(b => b.bomb_id)
+            .Select(g => g.OrderByDescending(b => Bomb.Rank(b.state)).ThenByDescending(b => b.at).First())
+            .Where(b => !Bomb.Over(b.state)).ToList();
     }
 
     private void Broadcast(object frame)
