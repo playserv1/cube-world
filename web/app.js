@@ -34,19 +34,46 @@ function log(text) {
 
 // ── platform ─────────────────────────────────────────────────────────────────────────────────────
 
-async function api(method, path, body) {
+async function api(method, path, body, retried = false) {
   const headers = { "X-PlayServ-Client": cfg.clientKey, "Content-Type": "application/json" };
   if (state.player) headers.Authorization = `Bearer ${state.player.access_token}`;
   const res = await fetch(`${cfg.api}${path}`, { method, headers, body: body && JSON.stringify(body) });
   const json = await res.json().catch(() => ({}));
+  // A player's access token lasts 15 minutes: on a 401 the session is refreshed once and the call repeated.
+  if (res.status === 401 && !retried && state.player?.refresh_token) { await refreshSession(); return api(method, path, body, true); }
   if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${json.code || json.title || ""}`);
   return json;
+}
+
+let refreshing = null;
+
+// Swaps the refresh token for a new access token, and schedules the next swap a minute before it runs out.
+function refreshSession() {
+  refreshing ??= (async () => {
+    try {
+      const res = await fetch(`${cfg.api}/auth/players/refresh`, {
+        method: "POST", headers: { "X-PlayServ-Client": cfg.clientKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: state.player.refresh_token }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`session refresh → ${res.status} ${json.code || json.title || ""}`);
+      Object.assign(state.player, { access_token: json.access_token, refresh_token: json.refresh_token });
+      scheduleRefresh((new Date(json.expires_at) - Date.now()) / 1000);
+    } finally { refreshing = null; }
+  })();
+  return refreshing;
+}
+
+function scheduleRefresh(seconds) {
+  clearTimeout(scheduleRefresh.timer);
+  scheduleRefresh.timer = setTimeout(() => refreshSession().catch(e => log(e.message)), Math.max(10, (seconds || 900) - 60) * 1000);
 }
 
 async function signIn(name) {
   sessionStorage.setItem("cubeworld.name", name);
   state.player = OFFLINE ? { player_id: "offline-you", access_token: "", name } : await api("POST", "/auth/players/anon", { display_name: name });
   state.player.name = name;
+  if (!OFFLINE) scheduleRefresh(state.player.expires_in);
   $("join").hidden = true;
   $("name").blur();
   $("me").textContent = name;
@@ -550,9 +577,10 @@ function gameTick() {
     }
   }
 
+  // A crossing that fails is tried again three seconds later, not on every tick.
   const here = roomOfRegion(regionAt(me.x));
-  if (!OFFLINE && here && here !== state.room && !state.switching)
-    enter(here, false).catch(e => { state.switching = false; log(e.message); });
+  if (!OFFLINE && here && here !== state.room && !state.switching && performance.now() >= (state.crossAfter ?? 0))
+    enter(here, false).catch(e => { state.switching = false; state.crossAfter = performance.now() + 3000; log(e.message); });
 }
 
 let accumulator = 0;
