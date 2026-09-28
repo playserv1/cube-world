@@ -133,8 +133,8 @@ void ACubePlayerPawn::BeginPlay()
 
 ACubeWorldActor* ACubePlayerPawn::WorldActor() const
 {
-	for (TActorIterator<ACubeWorldActor> It(GetWorld()); It; ++It) return *It;
-	return nullptr;
+	TActorIterator<ACubeWorldActor> It(GetWorld());
+	return It ? *It : nullptr;
 }
 
 void ACubePlayerPawn::SetupPlayerInputComponent(UInputComponent* Input)
