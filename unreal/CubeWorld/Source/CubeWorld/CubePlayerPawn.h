@@ -1,5 +1,6 @@
 // The player: a first-person camera over the Minecraft body simulated in CubePhysics at 20 ticks a
-// second, the keys and mouse, aiming, digging, placing and hitting, and the reports to the server.
+// second, the keys and mouse, aiming, digging, placing and hitting, bombs picked up and thrown, the tombstones
+// of the dead, and the reports to the server.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -12,6 +13,9 @@ class UCameraComponent;
 class UCubeWorldGameInstance;
 class ACubeAvatar;
 class ACubeWorldActor;
+class ACubeBomb;
+class ACubeTombstone;
+struct FCubeBombFrame;
 struct FCubePose;
 struct FCubePresence;
 
@@ -52,6 +56,13 @@ private:
 	void HandleDeath(const FString& PlayerId, const FString& By);
 	void HandlePlayers(const TArray<FCubePresence>& Players);
 	void HandleCube(int32 X, int32 Y, int32 Z, FName Kind);
+	void HandleBomb(const FCubeBombFrame& Frame);
+	void RemoveBomb(const FString& Id);
+	void TickBomb(ACubeBomb* Bomb);
+	void PlaceHeld(ACubeBomb* Bomb);
+	void ThrowBomb();
+	void UpdateHolding();
+	void ShowMyTomb();
 	void Spawn(double X, double Y, double Z);
 	void Unstick();
 	void CaptureMouse(bool bCapture);
@@ -77,6 +88,9 @@ private:
 	UPROPERTY() UCameraComponent* Camera = nullptr;
 	UPROPERTY() TMap<FString, ACubeAvatar*> Avatars;
 	UPROPERTY() UMaterialInterface* SkinMaterial = nullptr;
+	UPROPERTY() TMap<FString, ACubeBomb*> Bombs;
+	UPROPERTY() ACubeTombstone* MyTomb = nullptr;
+	int64 TickCount = 0;
 	UCubeWorldGameInstance* Game = nullptr;
 	float AxisForward = 0, AxisRight = 0;
 	float TestForward = 0;   // -selftest drives the body without a keyboard

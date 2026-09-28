@@ -522,7 +522,7 @@ public sealed class CubeWorldServer : PlatformGameServer
 
     /// <summary>
     /// A player's socket holds at most 64 frames queued and is cut the moment one more is sent, so blocks that change
-    /// together go out together: one "cubes" frame. A client that has not said it reads them (the Unreal one) gets a
+    /// together go out together: one "cubes" frame. A client that has not said it reads them (an Unreal build from before the bombs) gets a
     /// frame per block as before, each sent only once there is room for it.
     /// </summary>
     private void BroadcastCubes(IReadOnlyList<Fall> falls, IReadOnlyList<Change> changes, bool remote)

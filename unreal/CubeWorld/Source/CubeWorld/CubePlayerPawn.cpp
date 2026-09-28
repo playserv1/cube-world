@@ -3,6 +3,8 @@
 #include "CubeWorldGameInstance.h"
 #include "CubeAvatar.h"
 #include "CubeWorldActor.h"
+#include "CubeBombs.h"
+#include "CubeTombstone.h"
 #include "Camera/CameraComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/PlayerController.h"
@@ -44,6 +46,7 @@ void ACubePlayerPawn::BeginPlay()
 	Game->OnDeath.AddUObject(this, &ACubePlayerPawn::HandleDeath);
 	Game->OnPlayers.AddUObject(this, &ACubePlayerPawn::HandlePlayers);
 	Game->OnCube.AddUObject(this, &ACubePlayerPawn::HandleCube);
+	Game->OnBomb.AddUObject(this, &ACubePlayerPawn::HandleBomb);
 
 	Body.Teleport(36, 12, 0);
 	if (APlayerController* PC = Cast<APlayerController>(GetController()))
@@ -226,6 +229,7 @@ void ACubePlayerPawn::OnDig(bool bHeld)
 void ACubePlayerPawn::OnPlace()
 {
 	if (!Game || !bMouseCaptured || Game->bDead) return;
+	if (!Game->Holding.IsEmpty()) { ThrowBomb(); return; }
 	UpdateAim();
 	if (!Aim.bBlock) return;
 	const FName Kind = Game->Hotbar.IsValidIndex(Slot()) ? Game->Hotbar[Slot()] : NAME_None;
@@ -258,6 +262,9 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 	LastPose.Empty();
 	for (auto& Pair : Avatars) if (Pair.Value) Pair.Value->Destroy();
 	Avatars.Empty();
+	TArray<FString> Ids;
+	Bombs.GetKeys(Ids);
+	for (const FString& Id : Ids) RemoveBomb(Id);
 	if (!bMouseCaptured) CaptureMouse(true);
 }
 
@@ -331,7 +338,7 @@ void ACubePlayerPawn::UpdateAim()
 	for (const auto& Pair : Avatars)
 	{
 		const ACubeAvatar* A = Pair.Value;
-		if (!A) continue;
+		if (!A || A->IsDead()) continue;
 		const FVector P = A->GetActorLocation() / CubeSpec::BlockCm;
 		const double H = A->bSneaking ? CubeSpec::SneakHeight : CubeSpec::Height;
 		const FBox Box(FVector(P.X - 0.3, P.Y - 0.3, P.Z), FVector(P.X + 0.3, P.Y + 0.3, P.Z + H));
@@ -385,6 +392,10 @@ void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
 
 void ACubePlayerPawn::GameTick()
 {
+	TickCount++;
+	TArray<ACubeBomb*> Live;
+	Bombs.GenerateValueArray(Live);
+	for (ACubeBomb* Bomb : Live) if (Bomb) TickBomb(Bomb);
 	if (!Game->bPlaced) return;
 	if (!Game->bDead)
 	{
@@ -401,7 +412,7 @@ void ACubePlayerPawn::GameTick()
 		}
 		Input.Yaw = Yaw;
 		TArray<FCubeOtherBody> Others;
-		for (const auto& Pair : Avatars) if (Pair.Value) { const FVector P = Pair.Value->GetActorLocation() / CubeSpec::BlockCm; Others.Add({ P.X, P.Y, P.Z, Pair.Value->bSneaking ? CubeSpec::SneakHeight : CubeSpec::Height }); }
+		for (const auto& Pair : Avatars) if (Pair.Value && !Pair.Value->IsDead()) { const FVector P = Pair.Value->GetActorLocation() / CubeSpec::BlockCm; Others.Add({ P.X, P.Y, P.Z, Pair.Value->bSneaking ? CubeSpec::SneakHeight : CubeSpec::Height }); }
 		CubePhysics::PushAway(Body, Others);
 		const FCubeSolidQuery Solid = [this](int32 X, int32 Y, int32 Z) { return Game->World.IsSolidForPhysics(X, Y, Z); };
 		CubePhysics::Tick(Body, Input, Solid);
@@ -428,10 +439,152 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 	Fov += (TargetFov - Fov) * FMath::Min(1.f, DeltaSeconds * 12.f);
 	Camera->SetFieldOfView(Fov);
 
+	const double Now = FPlatformTime::Seconds();
+	for (const auto& Pair : Bombs)
+	{
+		ACubeBomb* Bomb = Pair.Value;
+		if (!Bomb) continue;
+		if (Bomb->State == TEXT("held")) PlaceHeld(Bomb);
+		else Bomb->SetActorLocation(FMath::Lerp(Bomb->Prev, Bomb->Pos, Partial) * CubeSpec::BlockCm);
+		Bomb->Animate(Now);
+	}
+	ShowMyTomb();
+
 	if (bMouseCaptured && !Game->bDead) UpdateAim(); else Aim = FCubeAim();
 	if (Aim.bBlock)
 	{
 		const FVector Center = (FVector(Aim.Hit.Block) + FVector(0.5)) * CubeSpec::BlockCm;
 		DrawDebugBox(GetWorld(), Center, FVector(CubeSpec::BlockCm * 0.502f), FColor(0, 0, 0, 160), false, -1.f, 0, 1.5f);
 	}
+}
+
+// ── bombs ────────────────────────────────────────────────────────────────────────────────────────
+// A free bomb comes down under its parachute, a held one sits in its holder's hand, a thrown one flies the
+// path the server flies it. The server says when one is picked up, thrown, explodes or fizzles out.
+
+void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
+{
+	ACubeBomb** Found = Bombs.Find(B.Id);
+	ACubeBomb* Bomb = Found ? *Found : nullptr;
+	const FVector At(B.X, B.Y, B.Z);
+	if (B.State == TEXT("exploded"))
+	{
+		ACubeBurst::Explosion(GetWorld(), At);
+		Game->Log(FString::Printf(TEXT("%s blew up a bomb"), *Game->NameOf(B.Holder)));
+		RemoveBomb(B.Id);
+		return;
+	}
+	if (B.State == TEXT("fizzled"))
+	{
+		if (Bomb || B.Age < 5000) ACubeBurst::Smoke(GetWorld(), Bomb ? Bomb->GetActorLocation() / CubeSpec::BlockCm : FVector(B.X, B.Y, B.Height.Get(B.Z)));
+		RemoveBomb(B.Id);
+		return;
+	}
+	if (!Bomb)
+	{
+		Bomb = GetWorld()->SpawnActor<ACubeBomb>();
+		if (!Bomb) return;
+		Bomb->Id = B.Id;
+		Bombs.Add(B.Id, Bomb);
+	}
+	Bomb->State = B.State;
+	Bomb->Holder = B.Holder;
+	Bomb->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	Bomb->SetActorRotation(FRotator::ZeroRotator);
+	Bomb->SetActorScale3D(FVector(1));
+	Bomb->SetActorHiddenInGame(false);
+	if (B.State == TEXT("free"))
+	{
+		Bomb->Pos = FVector(B.X, B.Y, B.Height.Get(B.Z));
+		Bomb->bLanded = false;
+	}
+	else if (B.State == TEXT("flying"))
+	{
+		// Heard late, it is flown as far as it has come.
+		Bomb->Pos = At;
+		Bomb->Vel = FVector(B.VX, B.VY, B.VZ);
+		Bomb->Stopped = 0;
+		const int32 Ticks = FMath::Min(CubeSpec::BombFlightTicks, FMath::FloorToInt32(B.Age / (CubeSpec::TickSeconds * 1000)));
+		for (int32 T = 0; T < Ticks && !Bomb->Stopped; T++) TickBomb(Bomb);
+	}
+	Bomb->Prev = Bomb->Pos;
+	if (B.State != TEXT("held")) Bomb->SetActorLocation(Bomb->Pos * CubeSpec::BlockCm);
+	UpdateHolding();
+}
+
+void ACubePlayerPawn::RemoveBomb(const FString& Id)
+{
+	ACubeBomb* Bomb = nullptr;
+	if (!Bombs.RemoveAndCopyValue(Id, Bomb)) return;
+	if (Bomb) Bomb->Destroy();
+	UpdateHolding();
+}
+
+void ACubePlayerPawn::UpdateHolding()
+{
+	Game->Holding.Empty();
+	for (const auto& Pair : Bombs)
+		if (Pair.Value && Pair.Value->State == TEXT("held") && Pair.Value->Holder == Game->PlayerId) Game->Holding = Pair.Key;
+}
+
+void ACubePlayerPawn::TickBomb(ACubeBomb* Bomb)
+{
+	Bomb->Prev = Bomb->Pos;
+	if (Bomb->State == TEXT("free"))
+	{
+		Bomb->Pos.Z = CubeBombs::Descend(Game->World, Bomb->Pos.X, Bomb->Pos.Y, Bomb->Pos.Z);
+		Bomb->bLanded = Bomb->Pos.Z == Bomb->Prev.Z;
+	}
+	else if (Bomb->State == TEXT("flying") && !Bomb->Stopped)
+	{
+		if (CubeBombs::Fly(Game->World, Bomb->Pos, Bomb->Vel) != ECubeFlight::Flying) Bomb->Stopped = FMath::Max<int64>(1, TickCount);
+	}
+	// The server's word on where it went off comes soon; one that never comes is taken away after three seconds.
+	else if (Bomb->State == TEXT("flying") && TickCount - Bomb->Stopped > 60)
+	{
+		RemoveBomb(Bomb->Id);
+	}
+}
+
+// Where a held bomb goes: in front of the camera for the holder, in the right hand of anyone else's model.
+void ACubePlayerPawn::PlaceHeld(ACubeBomb* Bomb)
+{
+	USceneComponent* Hand = nullptr;
+	if (Bomb->Holder == Game->PlayerId) Hand = Camera;
+	else if (ACubeAvatar** A = Avatars.Find(Bomb->Holder)) if (*A && !(*A)->IsDead()) Hand = (*A)->Hand();
+	USceneComponent* Root = Bomb->GetRootComponent();
+	if (!Hand)
+	{
+		if (Root->GetAttachParent()) Bomb->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		if (!Bomb->IsHidden()) Bomb->SetActorHiddenInGame(true);
+		return;
+	}
+	if (Root->GetAttachParent() == Hand) return;
+	Bomb->SetActorHiddenInGame(false);
+	Bomb->AttachToComponent(Hand, FAttachmentTransformRules::KeepRelativeTransform);
+	const bool bOwn = Hand == Camera;
+	Root->SetRelativeLocationAndRotation(bOwn ? FVector(50, 22, -22) : FVector(0, 0, -95), FRotator::ZeroRotator);
+	Root->SetRelativeScale3D(FVector(bOwn ? 0.32 : 1));
+}
+
+void ACubePlayerPawn::ThrowBomb()
+{
+	const FVector Look = Camera->GetForwardVector();
+	const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
+	F->SetStringField(TEXT("op"), TEXT("throw"));
+	F->SetNumberField(TEXT("x"), Look.X); F->SetNumberField(TEXT("y"), Look.Y); F->SetNumberField(TEXT("z"), Look.Z);
+	Game->Send(F);
+}
+
+// A dead player leaves the map, you too: your tombstone stands where you fell until you respawn.
+void ACubePlayerPawn::ShowMyTomb()
+{
+	if (Game->bDead && !MyTomb)
+	{
+		MyTomb = GetWorld()->SpawnActor<ACubeTombstone>();
+		if (MyTomb) MyTomb->Setup(Game->PlayerName);
+	}
+	if (!MyTomb) return;
+	if (!Game->bDead) MyTomb->Show(false);
+	else if (MyTomb->IsHidden()) MyTomb->Show(true, FVector(Body.X, Body.Y, Body.Z), FMath::DegreesToRadians(GetControlRotation().Yaw - 90.f));
 }

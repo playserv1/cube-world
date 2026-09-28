@@ -91,7 +91,7 @@ void ACubeWorldActor::BeginPlay()
 
 	BuildSky();
 	Game->OnWelcome.AddUObject(this, &ACubeWorldActor::RebuildAllFromWelcome);
-	Game->OnCube.AddUObject(this, &ACubeWorldActor::HandleCube);
+	Game->OnCubes.AddUObject(this, &ACubeWorldActor::HandleCubes);
 	Game->OnFall.AddUObject(this, &ACubeWorldActor::HandleFall);
 	Game->OnDig.AddUObject(this, &ACubeWorldActor::HandleDig);
 	RebuildAll();
@@ -177,9 +177,11 @@ void ACubeWorldActor::BuildBlockMesh(UProceduralMeshComponent* Mesh, FName Kind,
 	Data.Commit(Mesh, 0);
 }
 
-void ACubeWorldActor::HandleCube(int32 X, int32 Y, int32 Z, FName)
+void ACubeWorldActor::HandleCubes(const TArray<FIntVector>& Changed)
 {
-	Rebuild(Game->World.ChunksAround(X, Y));
+	TSet<FIntPoint> Ids;
+	for (const FIntVector& C : Changed) Ids.Append(Game->World.ChunksAround(C.X, C.Y));
+	Rebuild(Ids);
 }
 
 // Falling sand: the block is hidden where it will land and a loose block drops there at 0.04 a tick.

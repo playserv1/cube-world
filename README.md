@@ -64,7 +64,8 @@ sign-in, the room list and the join ticket go through the PlayServ Unreal SDK (t
 `Plugins/PlayServSDK`, copied from `playserv-platform/unreal`), and the game socket speaks the
 browser client's JSON frames, so a player in Unreal and a player in a browser share one world.
 The world, the physics, the textures and the player model are ports of the browser client's
-(`Source/CubeWorld/CubePhysics.cpp`, `CubeVoxelWorld.cpp`, `CubeTextures.cpp`, `CubeAvatar.cpp`);
+(`Source/CubeWorld/CubePhysics.cpp`, `CubeVoxelWorld.cpp`, `CubeTextures.cpp`, `CubeAvatar.cpp`, and the bombs
+and tombstones in `CubeBombs.cpp` and `CubeTombstone.cpp`);
 `CubeSocket.cpp` is a small WebSocket client over the engine's TCP socket, because the engine's
 own client asks the server for `//` and is refused.
 
@@ -83,6 +84,6 @@ D:\EpicGames\UE_5.8\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat BuildCookRun -proj
 
 The package lands in `Saved/Packaged/Windows/CubeWorld.exe`; give the whole `Windows` folder to whoever
 wants to play. Keys: WASD, mouse, Space, Shift sprints, Ctrl sneaks, hold the left button to break,
-the right places, 1-9 or the wheel pick a block, Enter plays, Esc frees the mouse. Command-line flags
+the right places (or throws the bomb in the hand; walk into a bomb to pick it up), 1-9 or the wheel pick a block, Enter plays, Esc frees the mouse. Command-line flags
 for unattended runs: `-name=`, `-autoplay`, `-screenshot=<seconds>`, `-quitafter=<seconds>`,
 `-selftest`, `-frametest`, `-logframes`, `-debughud`.

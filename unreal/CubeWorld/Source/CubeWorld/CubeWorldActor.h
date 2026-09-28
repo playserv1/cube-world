@@ -43,7 +43,7 @@ private:
 	void Rebuild(const TSet<FIntPoint>& Chunks);
 	void RebuildChunk(const FIntPoint& Id);
 	void BuildBlockMesh(UProceduralMeshComponent* Mesh, FName Kind, FName Tile, bool bCrack);
-	void HandleCube(int32 X, int32 Y, int32 Z, FName Kind);
+	void HandleCubes(const TArray<FIntVector>& Changed);
 	void HandleFall(FName Kind, int32 X, int32 Y, int32 FromZ, int32 ToZ);
 	void HandleDig(const FString& PlayerId, int32 X, int32 Y, int32 Z, int32 Stage);
 	void TickFalling();

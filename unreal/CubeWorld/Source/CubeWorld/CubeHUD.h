@@ -1,5 +1,5 @@
 // The heads-up display, drawn straight on the canvas: crosshair, the nine-slot hotbar with block icons
-// and counts, hearts, the server banner, the player list, the log, the hurt vignette, the start
+// and counts (dimmed while a bomb is in the hand), hearts, the server banner, the player list, the log, the hurt vignette, the start
 // screen and the death screen.
 #pragma once
 

@@ -1,6 +1,6 @@
 // Another player: Minecraft's model (head 8×8×8, body 8×12×4, arms and legs 4×12×4 pixels, 16 pixels to
 // the block, drawn at 15/16) wearing the skin painted from their id, with a walk cycle, a name tag,
-// the sneaking pose and a red flash when hurt. The model faces +X; the actor's yaw turns it.
+// the sneaking pose and a red flash when hurt. A dead player leaves the map; their tombstone stands where they fell. The model faces +X; the actor's yaw turns it.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -11,6 +11,7 @@ class UProceduralMeshComponent;
 class UMaterialInstanceDynamic;
 class UTextRenderComponent;
 class USceneComponent;
+class ACubeTombstone;
 
 UCLASS()
 class CUBEWORLD_API ACubeAvatar : public AActor
@@ -20,11 +21,15 @@ class CUBEWORLD_API ACubeAvatar : public AActor
 public:
 	ACubeAvatar();
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void Destroyed() override;
 
 	void Setup(const FString& PlayerId, const FString& Name, UMaterialInterface* SkinBase);
 	/** Server coordinates in blocks; yaw and pitch are Minecraft's, in radians. */
 	void SetTarget(double X, double Y, double Z, double Yaw, double Pitch, bool bSneaking, double Health);
 	void Hurt();
+	bool IsDead() const { return Health <= 0; }
+	/** Where a bomb they hold sits: the right arm, which swings as they walk. */
+	USceneComponent* Hand() const { return RightArm; }
 
 	FString PlayerId;
 	double TX = 0, TY = 0, TZ = 0, Yaw = 0, Pitch = 0, Health = 20;
@@ -42,6 +47,7 @@ private:
 	UPROPERTY() USceneComponent* LeftLeg = nullptr;
 	UPROPERTY() UTextRenderComponent* Tag = nullptr;
 	UPROPERTY() UMaterialInstanceDynamic* Skin = nullptr;
+	UPROPERTY() ACubeTombstone* Tomb = nullptr;
 	FVector Last = FVector::ZeroVector;
 	double Swing = 0, Amount = 0;
 	double HurtUntil = 0;

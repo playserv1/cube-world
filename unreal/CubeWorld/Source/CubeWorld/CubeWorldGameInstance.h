@@ -7,6 +7,7 @@
 #include "Engine/GameInstance.h"
 #include "CubeVoxelWorld.h"
 #include "CubeTextures.h"
+#include "CubeBombs.h"
 #include "Engine/EngineTypes.h"
 #include "CubeWorldGameInstance.generated.h"
 
@@ -33,6 +34,8 @@ struct FCubePose
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnWelcome, const FCubePose& /*You*/, bool /*bTeleport*/);
 DECLARE_MULTICAST_DELEGATE_FourParams(FCubeOnCube, int32, int32, int32, FName /*Kind, None = generated*/);
+/** After one "cube" frame or one batched "cubes" frame, every block it changed: rebuild each chunk once. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnCubes, const TArray<FIntVector>&);
 DECLARE_MULTICAST_DELEGATE_FiveParams(FCubeOnFall, FName /*Kind*/, int32 /*X*/, int32 /*Y*/, int32 /*FromZ*/, int32 /*ToZ*/);
 DECLARE_MULTICAST_DELEGATE_FiveParams(FCubeOnDig, const FString& /*PlayerId*/, int32, int32, int32, int32 /*Stage, -1 clears*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnPlayers, const TArray<FCubePresence>&);
@@ -40,6 +43,7 @@ DECLARE_MULTICAST_DELEGATE_FiveParams(FCubeOnHurt, const FString& /*PlayerId*/, 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnDeath, const FString& /*PlayerId*/, const FString& /*By*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnRespawn, const FCubePose&);
 DECLARE_MULTICAST_DELEGATE(FCubeOnInventory);
+DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnBomb, const FCubeBombFrame&);
 
 UCLASS()
 class CUBEWORLD_API UCubeWorldGameInstance : public UGameInstance
@@ -61,6 +65,8 @@ public:
 	void Log(const FString& Text);
 
 	bool IsConnected() const;
+	/** "you", or the name another player goes by. */
+	FString NameOf(const FString& Id) const;
 	bool IsSigningIn() const { return bSigningIn; }
 
 	// ---- state the pawn and HUD read --------------------------------------------------------
@@ -74,6 +80,8 @@ public:
 	double Health = 20;
 	bool bDead = false;
 	bool bPlaced = false;
+	/** The bomb in the player's hand, if any: right click throws it instead of placing a block. */
+	FString Holding;
 	FString Status = TEXT("Press Enter to play");
 	TArray<FString> LogLines;
 	TArray<FCubePresence> Players;
@@ -91,6 +99,8 @@ public:
 	FCubeOnDeath OnDeath;
 	FCubeOnRespawn OnRespawn;
 	FCubeOnInventory OnInventory;
+	FCubeOnCubes OnCubes;
+	FCubeOnBomb OnBomb;
 
 private:
 	void Browse();
@@ -98,12 +108,16 @@ private:
 	void Connect(const FString& RoomName, const FString& Host, int32 Port, const FString& Path, const FString& ReservationToken, bool bTeleport);
 	void OnFrame(const TSharedPtr<FJsonObject>& Frame, bool bTeleport);
 	void ReadInventory(const TSharedPtr<FJsonObject>& Object);
+	void ReadCube(const TSharedPtr<FJsonObject>& Cube, bool bDelete, TArray<FIntVector>& Changed);
+	void ReadFall(const TSharedPtr<FJsonObject>& Fall);
 	FString RoomOfRegion(int32 InRegion) const;
 
 	TSharedPtr<FCubeSocket> Socket;
 	TSharedPtr<FCubeSocket> Pending;
 	bool bSigningIn = false;
 	bool bSwitching = false;
+	/** A crossing that fails is tried again three seconds later, not on every tick. */
+	double CrossAfter = 0;
 	TArray<FString> Candidates;
 	FTimerHandle RetryTimer;
 };

@@ -1,6 +1,8 @@
 #include "CubeAvatar.h"
 #include "CubeSpec.h"
 #include "CubeTextures.h"
+#include "CubeTombstone.h"
+#include "Engine/World.h"
 #include "ProceduralMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -107,6 +109,15 @@ void ACubeAvatar::Setup(const FString& InPlayerId, const FString& Name, UMateria
 	Tag->SetTextRenderColor(FColor::White);
 	Tag->SetRelativeLocation(FVector(0, 0, (CubeSpec::Height + 0.5) * CubeSpec::BlockCm / CubeSpec::ModelScale));
 	Tag->SetAbsolute(false, true, true);
+
+	Tomb = GetWorld()->SpawnActor<ACubeTombstone>();
+	if (Tomb) Tomb->Setup(Name);
+}
+
+void ACubeAvatar::Destroyed()
+{
+	if (Tomb) Tomb->Destroy();
+	Super::Destroyed();
 }
 
 void ACubeAvatar::SetTarget(double X, double Y, double Z, double InYaw, double InPitch, bool bInSneaking, double InHealth)
@@ -129,6 +140,10 @@ void ACubeAvatar::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	if (!Head) return;
+	// A dead player leaves the map; a tombstone with their name stands where they fell until they respawn.
+	const bool bDead = IsDead();
+	if (IsHidden() != bDead) SetActorHiddenInGame(bDead);
+	if (Tomb) Tomb->Show(bDead, FVector(TX, TY, TZ), Yaw);
 	const FVector Target = FVector(TX, TY, TZ) * CubeSpec::BlockCm;
 	const FVector Position = FMath::Lerp(GetActorLocation(), Target, FMath::Min(1.f, DeltaSeconds * 20.f));
 	SetActorLocation(Position);

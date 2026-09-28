@@ -86,7 +86,8 @@ void ACubeHUD::DrawHUD()
 		float PY = 12;
 		for (const FCubePresence& P : Game->Players)
 		{
-			const FString Line = FString::Printf(TEXT("%s%s  %d hp  %s"), *P.Name, P.Id == Game->PlayerId ? TEXT(" (you)") : TEXT(""), FMath::CeilToInt32(P.Health), *P.Color);
+			const FString Health = P.Health <= 0 ? FString(TEXT("dead")) : FString::Printf(TEXT("%d hp"), FMath::CeilToInt32(P.Health));
+			const FString Line = FString::Printf(TEXT("%s%s  %s  %s"), *P.Name, P.Id == Game->PlayerId ? TEXT(" (you)") : TEXT(""), *Health, *P.Color);
 			float LW, LH; GetTextSize(Line, LW, LH, GEngine->GetMediumFont(), 1.f);
 			DrawText(Line, FLinearColor::Black, W - LW - 11, PY + 1, GEngine->GetMediumFont());
 			DrawText(Line, ServerColor(P.Color), W - LW - 12, PY, GEngine->GetMediumFont());
@@ -114,23 +115,27 @@ void ACubeHUD::DrawHUD()
 	const float BarX = W / 2 - BarW / 2, BarY = H - SlotSize - 14;
 	if (Game->IsConnected())
 	{
+		// With a bomb in the hand the hotbar steps back: right click throws the bomb, it places nothing.
+		const bool bHolding = !Game->Holding.IsEmpty();
+		const float Dim = bHolding ? 0.55f : 1.f;
 		DrawHearts(BarX + 4, BarY - 24, Game->Health);
-		DrawRect(FLinearColor(0, 0, 0, 0.55f), BarX, BarY, BarW, SlotSize + 8);
+		DrawRect(FLinearColor(0, 0, 0, 0.55f * Dim), BarX, BarY, BarW, SlotSize + 8);
 		for (int32 I = 0; I < 9; I++)
 		{
 			const float SX = BarX + 4 + I * (SlotSize + Gap), SY = BarY + 4;
-			DrawRect(I == Game->Slot ? FLinearColor::White : FLinearColor(0.33f, 0.33f, 0.33f), SX, SY, SlotSize, SlotSize);
-			DrawRect(FLinearColor(0.15f, 0.15f, 0.15f, 0.9f), SX + 2, SY + 2, SlotSize - 4, SlotSize - 4);
+			DrawRect(I == Game->Slot ? FLinearColor(1, 1, 1, Dim) : FLinearColor(0.33f, 0.33f, 0.33f, Dim), SX, SY, SlotSize, SlotSize);
+			DrawRect(FLinearColor(0.15f, 0.15f, 0.15f, 0.9f * Dim), SX + 2, SY + 2, SlotSize - 4, SlotSize - 4);
 			if (!Game->Hotbar.IsValidIndex(I)) continue;
 			const FName Kind = Game->Hotbar[I];
 			const int32 Count = Game->Inventory.FindRef(Kind);
-			DrawIcon(Kind, SX + 6, SY + 6, SlotSize - 12, Count > 0 ? 1.f : 0.3f);
+			DrawIcon(Kind, SX + 6, SY + 6, SlotSize - 12, (Count > 0 ? 1.f : 0.3f) * Dim);
 			const FString CountText = FString::FromInt(Count);
 			float CW, CH; GetTextSize(CountText, CW, CH, GEngine->GetSmallFont(), 1.f);
 			DrawText(CountText, FLinearColor::Black, SX + SlotSize - CW - 3, SY + SlotSize - CH - 2, GEngine->GetSmallFont());
 			DrawText(CountText, FLinearColor::White, SX + SlotSize - CW - 4, SY + SlotSize - CH - 3, GEngine->GetSmallFont());
 		}
-		if (Game->Hotbar.IsValidIndex(Game->Slot)) DrawCentered(Game->Hotbar[Game->Slot].ToString(), BarY - 50, 1.f, FLinearColor::White);
+		if (bHolding) DrawCentered(TEXT("bomb - right click throws it"), BarY - 50, 1.f, FLinearColor::White);
+		else if (Game->Hotbar.IsValidIndex(Game->Slot)) DrawCentered(Game->Hotbar[Game->Slot].ToString(), BarY - 50, 1.f, FLinearColor::White);
 	}
 
 	// The start screen and the death screen.
@@ -147,6 +152,7 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(FString::Printf(TEXT("Playing as %s  (start with -name=YourName to change it)"), *Game->PlayerName), H / 2 - 20, 1.f, FLinearColor(0.8f, 0.85f, 0.9f));
 		DrawCentered(Game->Status, H / 2 + 10, 1.2f, FLinearColor::White);
 		DrawCentered(TEXT("WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak. Hold left click to break, right click places, 1-9 or the wheel picks a block, Esc frees the mouse."), H / 2 + 50, 0.9f, FLinearColor(0.7f, 0.75f, 0.8f));
+		DrawCentered(TEXT("Left click a player to hit them. Bombs come down on parachutes: walk into one to pick it up, right click throws it."), H / 2 + 72, 0.9f, FLinearColor(0.7f, 0.75f, 0.8f));
 	}
 	else if (Pawn && !Pawn->bMouseCaptured)
 	{

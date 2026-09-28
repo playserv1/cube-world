@@ -43,6 +43,20 @@ namespace
 		return R;
 	}
 
+	FCubeBombFrame ReadBomb(const TSharedPtr<FJsonObject>& Frame)
+	{
+		FCubeBombFrame R;
+		const TSharedPtr<FJsonObject>* B;
+		if (!Frame.IsValid() || !Frame->TryGetObjectField(TEXT("bomb"), B)) return R;
+		R.Id = Str(*B, TEXT("bomb_id")); R.State = Str(*B, TEXT("state")); R.Holder = Str(*B, TEXT("holder"));
+		R.X = Num(*B, TEXT("x")); R.Y = Num(*B, TEXT("y")); R.Z = Num(*B, TEXT("z"));
+		R.VX = Num(*B, TEXT("vx")); R.VY = Num(*B, TEXT("vy")); R.VZ = Num(*B, TEXT("vz"));
+		R.Age = Num(Frame, TEXT("age"));
+		double Height;
+		if (Frame->TryGetNumberField(TEXT("z"), Height)) R.Height = Height;
+		return R;
+	}
+
 	FCubePose ReadPose(const TSharedPtr<FJsonObject>& P)
 	{
 		FCubePose R;
@@ -146,6 +160,7 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		if (!bOk || !Result.Ticket.Connect.IsSet())
 		{
 			Self->bSwitching = false;
+			Self->CrossAfter = FPlatformTime::Seconds() + 3;
 			Self->Log(FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message));
 			if (!Self->IsConnected())
 			{
@@ -191,6 +206,7 @@ void UCubeWorldGameInstance::Connect(const FString& RoomName, const FString& Hos
 		if (!Weak.IsValid()) return;
 		const bool bLive = Weak->Socket == WeakSocket.Pin();
 		Weak->bSwitching = false;
+		Weak->CrossAfter = FPlatformTime::Seconds() + 3;
 		Weak->bSigningIn = false;
 		Weak->Status = FString::Printf(TEXT("Could not reach %s: %s"), *RoomName, *Error);
 		Weak->Log(Weak->Status);
@@ -256,9 +272,31 @@ FString UCubeWorldGameInstance::RoomOfRegion(int32 InRegion) const
 
 void UCubeWorldGameInstance::MaybeCross(double X)
 {
-	if (!bPlaced || bSwitching || !IsConnected()) return;
+	if (!bPlaced || bSwitching || !IsConnected() || FPlatformTime::Seconds() < CrossAfter) return;
 	const FString Here = RoomOfRegion(FMath::FloorToInt32(X / World.RegionSize));
 	if (!Here.IsEmpty() && Here != Room) Enter(Here, false);
+}
+
+FString UCubeWorldGameInstance::NameOf(const FString& Id) const
+{
+	if (Id == PlayerId) return TEXT("you");
+	for (const FCubePresence& P : Players) if (P.Id == Id) return P.Name;
+	return Id;
+}
+
+void UCubeWorldGameInstance::ReadCube(const TSharedPtr<FJsonObject>& Cube, bool bDelete, TArray<FIntVector>& Changed)
+{
+	if (!Cube.IsValid()) return;
+	const FName Kind = bDelete ? NAME_None : FName(*Str(Cube, TEXT("kind")));
+	const int32 X = (int32)Num(Cube, TEXT("x")), Y = (int32)Num(Cube, TEXT("y")), Z = (int32)Num(Cube, TEXT("z"));
+	World.Set(X, Y, Z, Kind);
+	Changed.Add(FIntVector(X, Y, Z));
+	OnCube.Broadcast(X, Y, Z, Kind);
+}
+
+void UCubeWorldGameInstance::ReadFall(const TSharedPtr<FJsonObject>& Fall)
+{
+	OnFall.Broadcast(FName(*Str(Fall, TEXT("kind"))), (int32)Num(Fall, TEXT("x")), (int32)Num(Fall, TEXT("y")), (int32)Num(Fall, TEXT("fromZ")), (int32)Num(Fall, TEXT("toZ")));
 }
 
 void UCubeWorldGameInstance::ReadInventory(const TSharedPtr<FJsonObject>& Object)
@@ -332,6 +370,14 @@ void UCubeWorldGameInstance::OnFrame(const TSharedPtr<FJsonObject>& Frame, bool 
 		Status.Empty();
 		OnWelcome.Broadcast(Pose, bTeleport);
 		if (bTeleport) bPlaced = true;
+		const TArray<TSharedPtr<FJsonValue>>* BombsJson;
+		if (Frame->TryGetArrayField(TEXT("bombs"), BombsJson))
+			for (const auto& V : *BombsJson) OnBomb.Broadcast(ReadBomb(V->AsObject()));
+		// This client can show a bomb in the hand and throw it, and reads blocks batched in one "cubes" frame; the
+		// server hands bombs, and batches, only to clients that say so.
+		const TSharedRef<FJsonObject> Bombs = MakeShared<FJsonObject>();
+		Bombs->SetStringField(TEXT("op"), TEXT("bombs"));
+		Send(Bombs);
 		return;
 	}
 	if (Type == TEXT("regions"))
@@ -353,16 +399,43 @@ void UCubeWorldGameInstance::OnFrame(const TSharedPtr<FJsonObject>& Frame, bool 
 		if (!Frame->TryGetObjectField(TEXT("cube"), C)) return;
 		const bool bDelete = Str(Frame, TEXT("op")) == TEXT("delete");
 		const FName Kind = bDelete ? NAME_None : FName(*Str(*C, TEXT("kind")));
-		const int32 X = (int32)Num(*C, TEXT("x")), Y = (int32)Num(*C, TEXT("y")), Z = (int32)Num(*C, TEXT("z"));
-		World.Set(X, Y, Z, Kind);
-		OnCube.Broadcast(X, Y, Z, Kind);
+		TArray<FIntVector> Changed;
+		ReadCube(*C, bDelete, Changed);
+		OnCubes.Broadcast(Changed);
 		if (Frame->HasTypedField<EJson::Boolean>(TEXT("remote")) && Frame->GetBoolField(TEXT("remote")))
 			Log(FString::Printf(TEXT("%s on server %s -> arrived here"), Kind == NAME_None || Kind == TEXT("air") ? TEXT("removed") : TEXT("placed"), *Str(*C, TEXT("placed_on"))));
 		return;
 	}
 	if (Type == TEXT("fall"))
 	{
-		OnFall.Broadcast(FName(*Str(Frame, TEXT("kind"))), (int32)Num(Frame, TEXT("x")), (int32)Num(Frame, TEXT("y")), (int32)Num(Frame, TEXT("fromZ")), (int32)Num(Frame, TEXT("toZ")));
+		ReadFall(Frame);
+		return;
+	}
+	if (Type == TEXT("cubes"))
+	{
+		// Blocks that changed together (a blast is a hundred of them) arrive in one frame and rebuild each chunk once.
+		const TArray<TSharedPtr<FJsonValue>>* Falls;
+		if (Frame->TryGetArrayField(TEXT("falls"), Falls)) for (const auto& V : *Falls) ReadFall(V->AsObject());
+		TArray<FIntVector> Changed;
+		FString PlacedOn;
+		const TArray<TSharedPtr<FJsonValue>>* Changes;
+		if (Frame->TryGetArrayField(TEXT("changes"), Changes))
+			for (const auto& V : *Changes)
+			{
+				const TSharedPtr<FJsonObject> Change = V->AsObject();
+				const TSharedPtr<FJsonObject>* C;
+				if (!Change.IsValid() || !Change->TryGetObjectField(TEXT("cube"), C)) continue;
+				ReadCube(*C, Str(Change, TEXT("op")) == TEXT("delete"), Changed);
+				if (PlacedOn.IsEmpty()) PlacedOn = Str(*C, TEXT("placed_on"));
+			}
+		OnCubes.Broadcast(Changed);
+		if (Changed.Num() > 0 && Frame->HasTypedField<EJson::Boolean>(TEXT("remote")) && Frame->GetBoolField(TEXT("remote")))
+			Log(FString::Printf(TEXT("%d block%s changed on server %s -> arrived here"), Changed.Num(), Changed.Num() > 1 ? TEXT("s") : TEXT(""), *PlacedOn));
+		return;
+	}
+	if (Type == TEXT("bomb"))
+	{
+		OnBomb.Broadcast(ReadBomb(Frame));
 		return;
 	}
 	if (Type == TEXT("dig"))

@@ -26,6 +26,11 @@ namespace CubeSpec
 	constexpr float ModelScale = 0.9375f;
 
 	constexpr int32 RegionSize = 24, Width_ = 72, Depth = 24, MinZ = -4, MaxZ = 64;
+
+	// Bombs (CubeWorld.Server/Spec.cs): thrown at 1 block a tick, drag 0.99, gravity 0.05 (a thrown potion's);
+	// a parachute comes down at 0.1 a tick from 32 up. The server decides where one goes; the client flies the same path to draw it.
+	constexpr double ThrowSpeed = 1.0, ProjectileDrag = 0.99, ProjectileGravity = 0.05, ParachuteSpeed = 0.1;
+	constexpr int32 BombFlightTicks = 200;
 }
 
 /** One block kind and what Minecraft gives it; the server sends the same table in its welcome frame. */
