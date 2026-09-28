@@ -16,3 +16,7 @@ unreal/CubeWorld/Plugins/*/Binaries/
 unreal/CubeWorld/Plugins/*/Intermediate/
 unreal/CubeWorld/*.sln
 unreal/CubeWorld/.vs/
+.DS_Store
+.claude/worktrees/
+unreal/CubeWorld/Content/Developers/
+unreal/CubeWorld/Content/Collections/
