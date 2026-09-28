@@ -521,7 +521,7 @@ public sealed class CubeWorldServer : PlatformGameServer
 
     private IEnumerable<Hitbox> Hitboxes() =>
         _players.Values.Where(p => !p.Dead).Select(p => p.Pose)
-            .Concat(_elsewhere.Values.Where(p => Now - p.seen_at < 5000 && !_players.ContainsKey(p.player_id)))
+            .Concat(_elsewhere.Values.Where(p => Now - p.seen_at < 5000 && p.health > 0 && !_players.ContainsKey(p.player_id)))
             .Select(HitboxOf);
 
     private static Hitbox HitboxOf(WorldPresence pose) =>

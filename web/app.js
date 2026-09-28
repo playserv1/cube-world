@@ -7,6 +7,7 @@ import { buildPlayerModel, animatePlayer } from "./skin.js";
 import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlocks, raycastPlayers, buildTreeMap, TREES } from "./voxels.js";
 import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
 import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tickEffects } from "./bombfx.js";
+import { buildTombstone } from "./tombstone.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
 const toClient = p => ({ x: p.x, y: p.z, z: p.y });
@@ -455,8 +456,23 @@ function makeAvatar(p) {
   const tag = nameTag(p.name);
   model.add(tag);
   scene.add(model);
-  return { model, tag, target: new THREE.Vector3(), yaw: 0, pitch: 0, info: p, hurtUntil: 0, last: new THREE.Vector3() };
+  const tomb = makeTomb(p.name);
+  return { model, tag, tomb, target: new THREE.Vector3(), yaw: 0, pitch: 0, info: p, hurtUntil: 0, last: new THREE.Vector3() };
 }
+
+// A dead player leaves the map; a tombstone with their name stands where they fell until they respawn.
+function makeTomb(name) {
+  const tomb = buildTombstone(name);
+  const tag = nameTag(name);
+  tag.position.y = 1.5;
+  tomb.add(tag);
+  tomb.visible = false;
+  scene.add(tomb);
+  return tomb;
+}
+
+const isDead = info => (info.health ?? S.MAX_HEALTH) <= 0;
+let myTomb = null;
 
 function syncAvatars(players) {
   const seen = new Set();
@@ -471,14 +487,14 @@ function syncAvatars(players) {
     avatar.pitch = p.pitch ?? 0;
     avatar.info = { ...p, seen: true };
   }
-  for (const [id, avatar] of avatars) if (!seen.has(id)) { scene.remove(avatar.model); avatars.delete(id); }
+  for (const [id, avatar] of avatars) if (!seen.has(id)) { scene.remove(avatar.model, avatar.tomb); avatars.delete(id); }
   $("players").innerHTML = [...avatars.values()].map(a => a.info)
     .concat(state.player ? [{ player_id: state.player.player_id, name: `${state.player.name} (you)`, color: state.color, health: state.health }] : [])
-    .map(p => `<li>${p.name}<span>${Math.ceil(p.health ?? 20)} hp</span><em style="color:${SERVER_COLORS[p.color]}">${p.color}</em></li>`).join("");
+    .map(p => `<li>${p.name}<span>${isDead(p) ? "dead" : `${Math.ceil(p.health ?? 20)} hp`}</span><em style="color:${SERVER_COLORS[p.color]}">${p.color}</em></li>`).join("");
 }
 
 function avatarBoxes() {
-  return [...avatars.entries()].map(([id, a]) => ({ id, x: a.model.position.x, y: a.model.position.y, z: a.model.position.z,
+  return [...avatars.entries()].filter(([, a]) => !isDead(a.info)).map(([id, a]) => ({ id, x: a.model.position.x, y: a.model.position.y, z: a.model.position.z,
     height: a.info.sneaking ? S.SNEAK_HEIGHT : S.HEIGHT }));
 }
 
@@ -618,7 +634,16 @@ function frame() {
     avatar.last.copy(avatar.model.position);
     animatePlayer(avatar.model, { distance, pitch: avatar.pitch, sneaking: !!avatar.info.sneaking, hurt: avatar.hurtUntil > now });
     avatar.tag.visible = !avatar.info.sneaking;
+    const dead = isDead(avatar.info);
+    avatar.model.visible = !dead;
+    avatar.tomb.visible = dead;
+    if (dead) { avatar.tomb.position.copy(avatar.target); avatar.tomb.rotation.y = -avatar.yaw; }
   }
+  if (state.dead && state.player) {
+    myTomb ??= makeTomb(state.player.name);
+    if (!myTomb.visible) { myTomb.position.set(me.x, me.y, me.z); myTomb.rotation.y = camera.rotation.y; }
+  }
+  if (myTomb) myTomb.visible = state.dead;
 
   const w = $("view").clientWidth, h = $("view").clientHeight;
   if (renderer.domElement.width !== Math.floor(w * devicePixelRatio) || renderer.domElement.height !== Math.floor(h * devicePixelRatio)) {
@@ -682,7 +707,7 @@ function enterOffline() {
     } else {
       dummy.health = Math.max(0, dummy.health - damage);
       emit({ type: "hurt", player: id, health: dummy.health, kx: 0, ky: 0, strength: 0 });
-      if (dummy.health === 0) { emit({ type: "death", player: id, by: "offline-you" }); dummy.health = 20; }
+      if (dummy.health === 0) { emit({ type: "death", player: id, by: "offline-you" }); setTimeout(() => { dummy.health = 20; }, 5000); }
     }
   };
   const blowUp = b => {
@@ -691,7 +716,7 @@ function enterOffline() {
       return kind === "air" ? null : { resistance: RESISTANCE[kind] ?? 1, breakable: kind !== "bedrock" };
     };
     for (const [x, y, z] of explode(block, b.p.x, b.p.y, b.p.z, S.BOMB_POWER)) setBlock(x, z, y, "air");
-    const targets = [{ id: "offline-you", x: me.x, y: me.y, z: me.z }, { id: dummy.player_id, ...toClient(dummy) }];
+    const targets = [{ id: "offline-you", x: me.x, y: me.y, z: me.z }].concat(dummy.health > 0 ? [{ id: dummy.player_id, ...toClient(dummy) }] : []);
     for (const t of targets) {
       const d = new THREE.Vector3(t.x - b.p.x, t.y - b.p.y, t.z - b.p.z);
       const hit = blastDamage(d.length(), S.BOMB_POWER);
@@ -757,10 +782,10 @@ function enterOffline() {
         let to = z; if (block.Gravity) while (to - 1 >= -4 && kindAt(x, y, to - 1) === "air") to--;
         setBlock(x, y, to, m.kind);
         if (to !== z) emit({ type: "fall", kind: m.kind, x, y, fromZ: z, toZ: to });
-      } else if (m.op === "attack" && m.target === dummy.player_id) {
+      } else if (m.op === "attack" && m.target === dummy.player_id && dummy.health > 0) {
         dummy.health = Math.max(0, dummy.health - 1);
         emit({ type: "hurt", player: dummy.player_id, health: dummy.health, kx: 0, ky: 0, strength: 0 });
-        if (dummy.health === 0) { emit({ type: "death", player: dummy.player_id, by: "offline-you" }); dummy.health = 20; }
+        if (dummy.health === 0) { emit({ type: "death", player: dummy.player_id, by: "offline-you" }); setTimeout(() => { dummy.health = 20; }, 5000); }
       } else if (m.op === "respawn") {
         emit({ type: "respawn", you: { x: 36, y: 12, z: 0, health: 20 } });
       }
@@ -776,7 +801,7 @@ function enterOffline() {
   setInterval(() => {
     t += 0.1;
     // Walks along x; Minecraft's yaw -π/2 faces +x, π/2 faces -x.
-    dummy.x = 39 + Math.sin(t) * 3; dummy.yaw = Math.cos(t) > 0 ? -Math.PI / 2 : Math.PI / 2; dummy.sneaking = Math.sin(t / 3) > 0.8 ? 1 : 0;
+    if (dummy.health > 0) { dummy.x = 39 + Math.sin(t) * 3; dummy.yaw = Math.cos(t) > 0 ? -Math.PI / 2 : Math.PI / 2; dummy.sneaking = Math.sin(t / 3) > 0.8 ? 1 : 0; }
     emit({ type: "players", players: [dummy] });
   }, 100);
   log("offline: no platform, a local world with one other player");

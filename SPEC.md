@@ -94,4 +94,5 @@ and death. Every world change goes through platform data so the other servers se
 - A hit on a player another server hosts travels through platform data (WorldHit), so anyone within reach can be hit, whichever region they stand in.
 - The world is a small flat slab with a ceiling at 64, and its floor colours mark the three servers.
 - Every player starts with 64 of each block and a cloud function adds one of each per minute.
+- A dead player leaves the map until they respawn; a tombstone with their name stands where they fell (Minecraft lets the body fall over and vanish). Every server knows from the player's presence (health 0), so the tombstone shows wherever you stand.
 - Bombs are this world's own: Minecraft has none to throw. One falls under a parachute at 2 m/s from 32 blocks up every 15 seconds, at most five lie free (the oldest fizzles out, harmlessly, for a new one), a player carries one at a time and can only throw it. It is thrown at 1 block a tick, not a snowball's 1.5, which would cross the whole world; it lands some 15 to 20 blocks away. An explosion drops nothing.
