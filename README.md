@@ -52,3 +52,33 @@ then open `http://localhost:5173` in several tabs and pick a different server in
 one other player, for looking at blocks, physics and the model.
 
 Deploying the servers and the function is in `RUNBOOK.md`.
+
+## The Unreal client
+
+`unreal/CubeWorld` is a UE 5.8 C++ project that plays on the same servers as the browser client:
+sign-in, the room list and the join ticket go through the PlayServ Unreal SDK (the plugin under
+`Plugins/PlayServSDK`, copied from `playserv-platform/unreal`), and the game socket speaks the
+browser client's JSON frames, so a player in Unreal and a player in a browser share one world.
+The world, the physics, the textures and the player model are ports of the browser client's
+(`Source/CubeWorld/CubePhysics.cpp`, `CubeVoxelWorld.cpp`, `CubeTextures.cpp`, `CubeAvatar.cpp`);
+`CubeSocket.cpp` is a small WebSocket client over the engine's TCP socket, because the engine's
+own client asks the server for `//` and is refused.
+
+Needs Unreal Engine 5.8 (`D:\EpicGames\UE_5.8`) and Visual Studio 2022 or later with the C++ workload.
+The platform settings are in `Config/DefaultGame.ini` (`BaseURL`, the public `pk_` client key, the
+room type `cubeworld`).
+
+Build the editor target, create the material assets once, then run or package:
+
+```bash
+D:\EpicGames\UE_5.8\UE_5.8\Engine\Build\BatchFiles\Build.bat CubeWorldEditor Win64 Development -Project="<repo>\unreal\CubeWorld\CubeWorld.uproject" -WaitMutex -NoHotReload
+D:\EpicGames\UE_5.8\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "<repo>\unreal\CubeWorld\CubeWorld.uproject" -run=pythonscript -script="<repo>\unreal\CubeWorld\Scripts\MakeAssets.py" -unattended -nopause -nosplash
+D:\EpicGames\UE_5.8\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe "<repo>\unreal\CubeWorld\CubeWorld.uproject" -game -windowed -resx=1280 -resy=720 -name=YourName
+D:\EpicGames\UE_5.8\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat BuildCookRun -project="<repo>\unreal\CubeWorld\CubeWorld.uproject" -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory="<repo>\unreal\CubeWorld\Saved\Packaged"
+```
+
+The package lands in `Saved/Packaged/Windows/CubeWorld.exe`; give the whole `Windows` folder to whoever
+wants to play. Keys: WASD, mouse, Space, Shift sprints, Ctrl sneaks, hold the left button to break,
+the right places, 1-9 or the wheel pick a block, Enter plays, Esc frees the mouse. Command-line flags
+for unattended runs: `-name=`, `-autoplay`, `-screenshot=<seconds>`, `-quitafter=<seconds>`,
+`-selftest`, `-frametest`, `-logframes`, `-debughud`.

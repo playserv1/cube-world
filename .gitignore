@@ -8,3 +8,11 @@ obj/
 *.user
 node_modules/
 dist/
+unreal/CubeWorld/Saved/
+unreal/CubeWorld/Binaries/
+unreal/CubeWorld/Intermediate/
+unreal/CubeWorld/DerivedDataCache/
+unreal/CubeWorld/Plugins/*/Binaries/
+unreal/CubeWorld/Plugins/*/Intermediate/
+unreal/CubeWorld/*.sln
+unreal/CubeWorld/.vs/
