@@ -12,7 +12,7 @@
       "cron": "* * * * *",
       "timezone": "UTC",
       "catch_up": "skip",
-      "timeout_s": 75
+      "timeout_s": 1860
     }
   ]
 }

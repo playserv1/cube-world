@@ -19,7 +19,7 @@ function tops up each player's blocks once a minute; another drops a bomb on a p
 | Seamless crossing | When a player walks over a region border, the client joins the next server's room in the background and switches sockets once it answers; position and view are kept. |
 | Players enter through the platform | `POST /auth/players/anon` → `GET /rooms/{slug}:browse` → `POST /rooms/{slug}/{room}:join` → WebSocket to the machine the reservation names. |
 | Data a studio can read and edit | `WorldCube` and `CubeInventory` tables; `query_records` shows the world. |
-| Serverless logic beside the servers | `CubeWorld.Refill`: a scheduled cloud function, `* * * * *`. `CubeWorld.Drop`: fires every minute and drops four bombs 15 s apart (`timeout_s` 75); it writes `WorldBomb` and every server hears it. |
+| Serverless logic beside the servers | `CubeWorld.Refill`: a scheduled cloud function, `* * * * *`. `CubeWorld.Drop`: a cron every minute; a fire runs for half an hour and drops a bomb on every quarter minute (`timeout_s` 1860), the fires in between are skipped. It writes `WorldBomb` and every server hears it. |
 | One object, one owner at a time | A free bomb is picked up only by the server of the region it lies in; a thrown one is flown by its thrower's server. A bomb only moves forward (free → held → flying → exploded, or free → fizzled), so a stale or echoed update is dropped. |
 
 ## Folder

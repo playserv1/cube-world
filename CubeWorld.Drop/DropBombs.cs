@@ -20,12 +20,18 @@ public sealed class WorldBomb
     public long at { get; set; }
 }
 
-public sealed record DropRequest(int? Drops);
+public sealed record DropRequest(int? Minutes);
 
 /// <summary>
-/// Drops a bomb on a parachute every 15 seconds. A cron fires once a minute at most, so each fire drops four, 15
-/// seconds apart. At most five bombs lie free in the world: before a sixth comes, the oldest goes up in smoke.
+/// Drops a bomb on a parachute every 15 seconds, on the clock's quarter minutes. At most five bombs lie free in the
+/// world: before a sixth comes, the oldest goes up in smoke.
 /// </summary>
+/// <remarks>
+/// A cron fires once a minute at most and starts some 30 seconds late, and the platform skips a fire while the last
+/// one still runs. So one fire runs for half an hour, dropping on every quarter minute, and the fires in between are
+/// skipped; the next one takes over when it ends. A drop is named by its quarter minute and placed by a random seeded
+/// with it, so two fires that ever overlap write the very same bomb.
+/// </remarks>
 /// <remarks>
 /// bomb_id is not the entity's primary key, so one bomb can have several rows: the servers write theirs through
 /// runtime data, keyed by bomb_id, and this function creates its own. A bomb only moves forward through its states,
@@ -33,9 +39,9 @@ public sealed record DropRequest(int? Drops);
 /// </remarks>
 public sealed class DropBombs : PlatformFunction<DropRequest>
 {
-    public const int MaxFree = 5, DropsPerFire = 4, Width = 72, Depth = 24;
+    public const int MaxFree = 5, Width = 72, Depth = 24, RunMinutes = 30;
     public const double DropHeight = 32;
-    public static readonly TimeSpan Interval = TimeSpan.FromSeconds(15), Late = TimeSpan.FromSeconds(10);
+    public const long Interval = 15_000;
 
     // A thrown bomb whose server went away never lands; it goes after half a minute. Finished bombs are swept
     // after two: every server has heard them by then.
@@ -43,23 +49,16 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
 
     protected override async Task<FunctionResponse> HandleAsync(DropRequest body, CancellationToken ct)
     {
-        var drops = Math.Clamp(body.Drops ?? DropsPerFire, 1, DropsPerFire);
+        var until = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(body.Minutes ?? RunMinutes, 1, RunMinutes)).ToUnixTimeMilliseconds();
         var table = Platform.Table<WorldBomb>();
-        var random = new Random();
         int dropped = 0, fizzled = 0, swept = 0;
 
-        // The drops keep to the fire's own clock (0, 15, 30 and 45 s after it began), not to the end of the last drop:
-        // a fire that ran past the minute would make the platform skip the next one, and a whole minute of bombs.
-        var began = DateTimeOffset.UtcNow;
-        for (var i = 0; i < drops; i++)
+        for (var slot = NextSlot(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); slot <= until; slot += Interval)
         {
-            var due = began + i * Interval;
-            var wait = due - DateTimeOffset.UtcNow;
-            if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
-            else if (-wait > Late) continue;
+            var wait = slot - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (wait > 0) await Task.Delay(TimeSpan.FromMilliseconds(wait), ct);
             var rows = await LoadAsync(table, ct);
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var plan = Plan(rows.Select(r => r.Fields!), now, random);
+            var plan = Plan(rows.Select(r => r.Fields!), slot);
 
             foreach (var bomb in plan.Fizzle)
             {
@@ -80,8 +79,12 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
     }
 
     /// <summary>What one drop does: which bombs go up in smoke, which finished ones are swept, and the new bomb.</summary>
-    internal static (List<WorldBomb> Fizzle, HashSet<string> Sweep, WorldBomb Drop, int Free) Plan(IEnumerable<WorldBomb> bombs, long now, Random random)
+    /// <summary>The first quarter minute at or after <paramref name="now"/>, Unix milliseconds.</summary>
+    internal static long NextSlot(long now) => (now + Interval - 1) / Interval * Interval;
+
+    internal static (List<WorldBomb> Fizzle, HashSet<string> Sweep, WorldBomb Drop, int Free) Plan(IEnumerable<WorldBomb> bombs, long now)
     {
+        var random = new Random((int)(now / Interval % int.MaxValue));
         var all = Latest(bombs);
         var fizzle = new List<WorldBomb>();
 
@@ -95,7 +98,7 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
 
         var drop = new WorldBomb
         {
-            bomb_id = Guid.NewGuid().ToString("N"), state = "free",
+            bomb_id = $"drop-{now / 1000}", state = "free",
             x = 1 + random.NextDouble() * (Width - 2), y = 1 + random.NextDouble() * (Depth - 2), z = DropHeight,
             dropped_at = now, at = now,
         };

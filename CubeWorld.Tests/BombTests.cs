@@ -181,7 +181,7 @@ public class BombTests
         var bombs = Enumerable.Range(0, 5).Select(i => Free($"b{i}", 1000 + i))
             .Append(new Drop.WorldBomb { bomb_id = "held", state = "held", dropped_at = 1 });
 
-        var plan = DropBombs.Plan(bombs, 10_000, new Random(1));
+        var plan = DropBombs.Plan(bombs, 10_000);
 
         Assert.Equal("b0", Assert.Single(plan.Fizzle).bomb_id);
         Assert.Equal("fizzled", plan.Fizzle[0].state);
@@ -205,12 +205,26 @@ public class BombTests
         };
 
         var latest = DropBombs.Latest(bombs).ToDictionary(b => b.bomb_id, b => b.state);
-        var plan = DropBombs.Plan(bombs, 10_000, new Random(1));
+        var plan = DropBombs.Plan(bombs, 10_000);
 
         Assert.Equal("held", latest["b0"]);
         Assert.Equal("exploded", latest["b2"]);
         Assert.Equal(2, plan.Free);
         Assert.Empty(plan.Fizzle);
+    }
+
+    [Fact]
+    public void Drops_fall_on_the_quarter_minutes_and_two_fires_drop_the_same_bomb()
+    {
+        Assert.Equal(15_000, DropBombs.NextSlot(1));
+        Assert.Equal(15_000, DropBombs.NextSlot(15_000));
+        Assert.Equal(30_000, DropBombs.NextSlot(15_001));
+
+        var one = DropBombs.Plan([], 1_790_601_015_000).Drop;
+        var other = DropBombs.Plan([], 1_790_601_015_000).Drop;
+        Assert.Equal("drop-1790601015", one.bomb_id);
+        Assert.Equal((one.bomb_id, one.x, one.y), (other.bomb_id, other.x, other.y));
+        Assert.NotEqual(one.x, DropBombs.Plan([], 1_790_601_030_000).Drop.x);
     }
 
     [Fact]
@@ -224,7 +238,7 @@ public class BombTests
             new Drop.WorldBomb { bomb_id = "lost", state = "flying", at = 100_000 },
         };
 
-        var plan = DropBombs.Plan(bombs, 200_000, new Random(1));
+        var plan = DropBombs.Plan(bombs, 200_000);
 
         Assert.Equal("lost", Assert.Single(plan.Fizzle).bomb_id);
         Assert.Equal(["done"], plan.Sweep);
