@@ -8,21 +8,22 @@ Everything below runs against the dev platform, `https://dev.platform.playserv.i
 | # | who | step |
 |---|---|---|
 | A1 | agent (MCP) | `create_project(name="Cube World", region="fra")` → `$PROJECT` |
-| A2 | agent (MCP) | `apply_schema_state` with five entities: `WorldCube` (`key` text **primary**, `x` `y` `z` integer, `kind` text, `placed_by` text, `placed_on` text), `CubeInventory` (`player_id` text **primary**, `cubes` integer indexed, `stacks` text), `WorldPresence` (`player_id` text **primary**, `name` `server` `color` text, `x` `y` `z` `yaw` `pitch` `health` decimal, `sneaking` `sprinting` `seen_at` integer), `WorldHit` (`hit_id` text **primary**, `victim` `attacker` text, `damage` `kx` `ky` `strength` decimal, `at` integer) and `WorldRegion` (`region` text **primary**, `server` `color` `room` text, `seen_at` integer) |
+| A2 | agent (MCP) | `apply_schema_state` with six entities: `WorldCube` (`key` text **primary**, `x` `y` `z` integer, `kind` text, `placed_by` text, `placed_on` text), `CubeInventory` (`player_id` text **primary**, `cubes` integer indexed, `stacks` text), `WorldPresence` (`player_id` text **primary**, `name` `server` `color` text, `x` `y` `z` `yaw` `pitch` `health` decimal, `sneaking` `sprinting` `seen_at` integer), `WorldHit` (`hit_id` text **primary**, `victim` `attacker` text, `damage` `kx` `ky` `strength` decimal, `at` integer), `WorldBomb` (`bomb_id` text **primary**, `state` `holder` text, `x` `y` `z` `vx` `vy` `vz` decimal, `dropped_at` `at` integer) and `WorldRegion` (`region` text **primary**, `server` `color` `room` text, `seen_at` integer) |
 | A3 | agent (MCP) | `create_api_key(type="server")` → `$SK`; `create_api_key(type="client")` → `$PK` |
 | A4 | agent (MCP) | `create_function(name="cubeworld", slug=$SLUG, runtime="dotnet10", kind="game_server", hosting_mode="multi-room")` → `$FN` |
 | A5 | agent (MCP) | `set_room_configuration(function_id=$FN, capacity=16, reservation_ttl_seconds=20, room_lifetime_seconds=86400, room_idle_timeout_seconds=60, max_rooms=20)` |
 
 `$SLUG` must be unique across the organisation: `cubeworld-<suffix of $PROJECT>`.
 
-## Part B — the refill function
+## Part B — the refill and drop functions
 
 ```bash
 playserv login $SK
 playserv functions deploy --slug cubeworld-refill-<suffix> --kind cloud_function --src CubeWorld.Refill
+playserv functions deploy --slug cubeworld-drop-<suffix> --kind cloud_function --src CubeWorld.Drop
 ```
 
-Live in about 150 s. The cron in `platform.json` fires every minute.
+Live in about 150 s. Both crons in `platform.json` fire every minute; each drop fire runs 45 s and drops four bombs.
 
 ## Part C — the servers on Vultr
 
@@ -72,6 +73,8 @@ Needs Docker with `buildx` (Docker Desktop on macOS and Windows) and the CLI ses
 | D4c | The world is platform data | `query_records(entity="WorldCube")` |
 | D5 | Leave a server, enter another: the world and your cubes are still there | press **enter** on another server |
 | D6 | Out of cubes, then the refill arrives | place until the bar is empty; within a minute the function tops it up; `list_function_logs` of the refill shows `refilled N inventories` |
+| D7 | A bomb comes down on a parachute, a player picks it up and throws it across a border | walk into a bomb in tab 1: it is in the hand in tab 1 and in the figure's hand in tabs 2 and 3; right click throws it; the crater and the damage show on every server; `list_function_logs` of the drop shows `dropped bomb` every 15 s |
+| D8 | Never more than five bombs | leave the bombs lying: the sixth drop makes the oldest go up in a puff of smoke |
 
 ## Tear-down
 

@@ -60,6 +60,16 @@ Every mechanic below follows the [Minecraft Wiki](https://minecraft.wiki). The c
 | Hotbar | 9 slots, keys 1–9 and the mouse wheel, stacks of 64 | [Hotbar](https://minecraft.wiki/w/Hotbar), [Item § Stacking](https://minecraft.wiki/w/Item) |
 | Block outline | a thin black box around the targeted block | [Block](https://minecraft.wiki/w/Block) |
 
+## Bombs
+
+| What | Value | Wiki |
+|---|---|---|
+| Throw | a thrown projectile's motion: each tick it moves, motion × 0.99, gravity 0.05 (a thrown potion's); it leaves the hand at 1 block a tick (see the deviations) | [Entity § Motion](https://minecraft.wiki/w/Entity), [Splash Potion](https://minecraft.wiki/w/Splash_Potion) |
+| Pickup | walking into it, within the hitbox grown by 1 sideways and 0.5 up and down, as items are picked up | [Item (entity)](https://minecraft.wiki/w/Item_(entity)) |
+| Explosion | power 3, a creeper's: 16 × 16 × 16 rays of intensity power × (0.7–1.3), 0.3 blocks a step, each step −0.225 and in a block −(blast resistance + 0.3) × 0.3 | [Explosion](https://minecraft.wiki/w/Explosion), [Creeper](https://minecraft.wiki/w/Creeper) |
+| Blast resistance | grass block 0.6, dirt 0.5, sand 0.5, stone 6, oak log 2, bricks 6, glass 0.3, block of gold 6, leaves 0.2, bedrock 3,600,000 | [Explosion § Blast resistance](https://minecraft.wiki/w/Explosion) |
+| Damage | within 2 × power: impact = (1 − distance / (2 × power)) × the share of the hitbox in sight, damage ⌊(impact² + impact) / 2 × 7 × 2 × power + 1⌋, thrown back by the impact | [Explosion § Damage](https://minecraft.wiki/w/Explosion) |
+
 ## Player model
 
 | What | Value | Wiki |
@@ -84,3 +94,4 @@ and death. Every world change goes through platform data so the other servers se
 - A hit on a player another server hosts travels through platform data (WorldHit), so anyone within reach can be hit, whichever region they stand in.
 - The world is a small flat slab with a ceiling at 64, and its floor colours mark the three servers.
 - Every player starts with 64 of each block and a cloud function adds one of each per minute.
+- Bombs are this world's own: Minecraft has none to throw. One falls under a parachute at 2 m/s from 32 blocks up every 15 seconds, at most five lie free (the oldest fizzles out, harmlessly, for a new one), a player carries one at a time and can only throw it. It is thrown at 1 block a tick, not a snowball's 1.5, which would cross the whole world; it lands some 15 to 20 blocks away. An explosion drops nothing.

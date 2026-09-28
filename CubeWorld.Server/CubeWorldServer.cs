@@ -18,6 +18,8 @@ public sealed class CubeWorldServer : PlatformGameServer
     private readonly World _world = new();
     private readonly ConcurrentDictionary<string, Player> _players = new();
     private readonly ConcurrentDictionary<string, WorldPresence> _elsewhere = new();
+    private readonly Dictionary<string, LiveBomb> _bombs = new();
+    private readonly Random _random = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));
     private int _region = -1;
@@ -49,13 +51,14 @@ public sealed class CubeWorldServer : PlatformGameServer
                 // instead of being missed (applying one that the load already holds changes nothing).
                 Subscribe();
                 _world.Load(await LoadCubesAsync());
+                foreach (var bomb in await LoadBombsAsync()) lock (_world) OnBomb(bomb, owned: false);
                 _region = await ClaimRegionAsync();
                 if (_region >= 0) break;
             }
             catch { }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
-        await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, world ready");
+        await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, {_bombs.Count} bombs, world ready");
         _ = Task.Run(ShareMovesAsync);
         _ = Task.Run(TickAsync);
 
@@ -82,6 +85,7 @@ public sealed class CubeWorldServer : PlatformGameServer
         Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
         Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
         Platform.RuntimeData.Subscribe(Uplink, "WorldHit", "field:hit_id");
+        Platform.RuntimeData.Subscribe(Uplink, "WorldBomb", "field:bomb_id");
     }
 
     private async Task<int> ClaimRegionAsync()
@@ -130,7 +134,7 @@ public sealed class CubeWorldServer : PlatformGameServer
         }
     }
 
-    /// <summary>The 20 Hz game tick: digging progresses and finishes, health regenerates.</summary>
+    /// <summary>The 20 Hz game tick: digging progresses and finishes, health regenerates, bombs come down and fly.</summary>
     private async Task TickAsync()
     {
         var next = Environment.TickCount64;
@@ -154,8 +158,121 @@ public sealed class CubeWorldServer : PlatformGameServer
                 }
                 catch (Exception e) { _ = Platform.Log($"tick: {e.Message}"); }
             }
+            try { lock (_world) TickBombs(); }
+            catch (Exception e) { _ = Platform.Log($"bombs: {e.Message}"); }
         }
     }
+
+    // ── bombs ────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Every server brings every free bomb down, but only the server of the region a bomb is over lets a player pick
+    /// it up, so two servers never hand out one bomb. A thrown bomb is flown by its thrower's server alone.
+    /// </summary>
+    private void TickBombs()
+    {
+        foreach (var live in _bombs.Values.ToArray())
+        {
+            var bomb = live.Record;
+            if (bomb.state == Bomb.Free)
+            {
+                live.Z = Bomb.Descend(_world, bomb.x, bomb.y, live.Z);
+                if ((int)Math.Floor(bomb.x / World.RegionSize) != _region) continue;
+                var taker = _players.Values.FirstOrDefault(p => p.Throws && !p.Dead && p.Bomb is null
+                                                                && Bomb.InPickupReach(HitboxOf(p.Pose), bomb.x, bomb.y, live.Z));
+                if (taker is not null)
+                    Share(Next(bomb, Bomb.Held, taker.Pose.player_id, bomb.x, bomb.y, live.Z), owned: false);
+            }
+            else if (bomb.state == Bomb.Flying && live.Owned)
+            {
+                var flight = live.Age++ >= Spec.BombFlightTicks ? Flight.Exploded
+                    : Bomb.Fly(_world, live.P, live.V, Targets(), bomb.holder, live.Age);
+                if (flight == Flight.Exploded) Explode(bomb, live.P);
+                else if (flight == Flight.Gone) Share(Next(bomb, Bomb.Fizzled, bomb.holder, live.P[0], live.P[1], live.P[2]), owned: false);
+            }
+        }
+    }
+
+    private void Throw(Player player, Command command)
+    {
+        if (player.Dead || player.Bomb is not { } id) return;
+        player.Bomb = null;
+        if (!_bombs.TryGetValue(id, out var live) || live.Record.state != Bomb.Held || live.Record.holder != player.Pose.player_id) return;
+
+        double dx = command.x, dy = command.y, dz = command.z;
+        var length = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if (length < 1e-6)
+        {
+            var (yaw, pitch) = (player.Pose.yaw, player.Pose.pitch);
+            (dx, dy, dz, length) = (-Math.Sin(yaw) * Math.Cos(pitch), Math.Cos(yaw) * Math.Cos(pitch), -Math.Sin(pitch), 1);
+        }
+        var (ex, ey, ez) = Eye(player);
+        var thrown = Next(live.Record, Bomb.Flying, player.Pose.player_id, ex, ey, ez);
+        (thrown.vx, thrown.vy, thrown.vz) = (dx / length * Spec.ThrowSpeed, dy / length * Spec.ThrowSpeed, dz / length * Spec.ThrowSpeed);
+        Share(thrown, owned: true);
+    }
+
+    /// <summary>
+    /// Players here are hurt, players elsewhere get a WorldHit, both judged against the world as it stood before the
+    /// blast, as Minecraft does; then the blocks go through platform data as every change does.
+    /// </summary>
+    private void Explode(WorldBomb bomb, double[] at)
+    {
+        var (cx, cy, cz) = (at[0], at[1], at[2]);
+
+        foreach (var player in _players.Values.Where(p => !p.Dead))
+            if (_world.Blast(cx, cy, cz, Spec.BombPower, HitboxOf(player.Pose), EyeHeightOf(player.Pose)) is { } blast)
+                Hurt(player, blast.Damage, (blast.Nx, blast.Ny), blast.Impact, bomb.holder);
+
+        foreach (var pose in _elsewhere.Values.Where(p => Now - p.seen_at < 5000 && p.health > 0 && !_players.ContainsKey(p.player_id)))
+            if (_world.Blast(cx, cy, cz, Spec.BombPower, HitboxOf(pose), EyeHeightOf(pose)) is { } blast)
+            {
+                var hit = new WorldHit
+                {
+                    hit_id = $"{bomb.bomb_id}:{pose.player_id}", victim = pose.player_id, attacker = bomb.holder,
+                    damage = blast.Damage, kx = blast.Nx, ky = blast.Ny, strength = blast.Impact, at = Now,
+                };
+                Platform.RuntimeData.Write(Uplink, "WorldHit", hit.hit_id, hit);
+            }
+
+        Publish(_world.Explode(cx, cy, cz, Spec.BombPower, _random, bomb.holder, _server));
+        Share(Next(bomb, Bomb.Exploded, bomb.holder, cx, cy, cz), owned: false);
+    }
+
+    private static WorldBomb Next(WorldBomb bomb, string state, string holder, double x, double y, double z) => new()
+    {
+        bomb_id = bomb.bomb_id, state = state, holder = holder, x = x, y = y, z = z, dropped_at = bomb.dropped_at, at = Now,
+    };
+
+    private void Share(WorldBomb bomb, bool owned)
+    {
+        Platform.RuntimeData.Write(Uplink, "WorldBomb", bomb.bomb_id, bomb);
+        OnBomb(bomb, owned);
+    }
+
+    /// <summary>A bomb moved on, here or on another server. Anything that does not move it forward is an echo or stale.</summary>
+    private void OnBomb(WorldBomb bomb, bool owned)
+    {
+        var known = _bombs.GetValueOrDefault(bomb.bomb_id);
+        if (known is not null && Bomb.Rank(bomb.state) <= Bomb.Rank(known.Record.state)) return;
+        if (known is null && Bomb.Over(bomb.state) && Now - bomb.at > 5000) return;
+
+        if (Bomb.Over(bomb.state)) _bombs.Remove(bomb.bomb_id);
+        else _bombs[bomb.bomb_id] = LiveBomb.Of(bomb, _world, owned, Now);
+
+        foreach (var player in _players.Values)
+            if (player.Bomb == bomb.bomb_id && (bomb.state != Bomb.Held || bomb.holder != player.Pose.player_id)) player.Bomb = null;
+        if (bomb.state == Bomb.Held && _players.TryGetValue(bomb.holder, out var holder)) holder.Bomb = bomb.bomb_id;
+
+        Broadcast(BombFrame(bomb, _bombs.GetValueOrDefault(bomb.bomb_id)));
+    }
+
+    private static object BombFrame(WorldBomb bomb, LiveBomb? live) => new { type = "bomb", bomb, age = Now - bomb.at, z = live?.Z ?? bomb.z };
+
+    private IEnumerable<(string, Hitbox)> Targets() =>
+        _players.Values.Where(p => !p.Dead).Select(p => p.Pose)
+            .Concat(_elsewhere.Values.Where(p => Now - p.seen_at < 5000 && p.health > 0 && !_players.ContainsKey(p.player_id)))
+            .Select(p => (p.player_id, HitboxOf(p)));
 
     private void TickDig(Player player)
     {
@@ -204,14 +321,20 @@ public sealed class CubeWorldServer : PlatformGameServer
         InRoom(room => room.AddPlayer(new WorldPlayer { Id = session.Id, DisplayName = name }));
 
         WorldCube[] world;
-        lock (_world) world = _world.Overrides.ToArray();
+        object[] bombs;
+        lock (_world)
+        {
+            world = _world.Overrides.ToArray();
+            player.Bomb = _bombs.Values.FirstOrDefault(b => b.Record.state == Bomb.Held && b.Record.holder == session.Id)?.Record.bomb_id;
+            bombs = _bombs.Values.Select(b => BombFrame(b.Record, b)).ToArray();
+        }
         Send(session, new
         {
             type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = pose,
             width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
             layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
             blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
-            hotbar = Spec.Placeable, world, inventory = inventory.Stacks, tick = _tick,
+            hotbar = Spec.Placeable, world, inventory = inventory.Stacks, tick = _tick, bombs,
         });
     }
 
@@ -235,6 +358,8 @@ public sealed class CubeWorldServer : PlatformGameServer
                 case "place": Place(player, command); break;
                 case "attack": Attack(player, command); break;
                 case "respawn": Respawn(player); break;
+                case "throw": Throw(player, command); break;
+                case "bombs": player.Throws = true; break;
             }
         }
         return Task.CompletedTask;
@@ -394,8 +519,9 @@ public sealed class CubeWorldServer : PlatformGameServer
     private static Hitbox HitboxOf(WorldPresence pose) =>
         new(pose.x, pose.y, pose.z, pose.sneaking == 1 ? Spec.SneakHeight : Spec.PlayerHeight);
 
-    private static (double x, double y, double z) Eye(Player player) =>
-        (player.Pose.x, player.Pose.y, player.Pose.z + (player.Pose.sneaking == 1 ? Spec.SneakEyeHeight : Spec.EyeHeight));
+    private static (double x, double y, double z) Eye(Player player) => (player.Pose.x, player.Pose.y, player.Pose.z + EyeHeightOf(player.Pose));
+
+    private static double EyeHeightOf(WorldPresence pose) => pose.sneaking == 1 ? Spec.SneakEyeHeight : Spec.EyeHeight;
 
     protected override Task OnPlayerDisconnected(PlayerSession session, DisconnectReason reason)
     {
@@ -434,6 +560,10 @@ public sealed class CubeWorldServer : PlatformGameServer
                 lock (_world) Hurt(victim, hit.damage, (hit.kx, hit.ky), hit.strength, hit.attacker);
                 Platform.RuntimeData.Delete(Uplink, "WorldHit", hit.hit_id);
                 break;
+
+            case "WorldBomb" when !update.IsDelete && update.Data.Deserialize<WorldBomb>() is { } bomb:
+                lock (_world) OnBomb(bomb, owned: false);
+                break;
         }
     }
 
@@ -448,6 +578,19 @@ public sealed class CubeWorldServer : PlatformGameServer
             cursor = page.NextCursor;
         } while (!string.IsNullOrEmpty(cursor));
         return cubes;
+    }
+
+    private static async Task<List<WorldBomb>> LoadBombsAsync()
+    {
+        var bombs = new List<WorldBomb>();
+        string? cursor = null;
+        do
+        {
+            var page = await Platform.Table<WorldBomb>().Query().Take(200).WithCursor(cursor).ToPageAsync();
+            bombs.AddRange(page.Items.Select(r => r.Fields!).Where(b => !Bomb.Over(b.state)));
+            cursor = page.NextCursor;
+        } while (!string.IsNullOrEmpty(cursor));
+        return bombs;
     }
 
     private void Broadcast(object frame)
@@ -491,6 +634,35 @@ public sealed class CubeWorldServer : PlatformGameServer
         public long LastAttackTick { get; set; } = long.MinValue / 2;
         public long LastHurtTick { get; set; } = long.MinValue / 2;
         public DigState? Dig { get; set; }
+        /// <summary>The bomb in the player's hand. A player holds one at a time and can only throw it.</summary>
+        public string? Bomb { get; set; }
+        /// <summary>The client can show and throw a bomb; a client that cannot is never handed one.</summary>
+        public bool Throws { get; set; }
+    }
+
+    /// <summary>A bomb as this server follows it: the height of a free one, the path of one it threw.</summary>
+    private sealed class LiveBomb
+    {
+        public required WorldBomb Record { get; init; }
+        public double Z { get; set; }
+        public double[] P { get; init; } = [];
+        public double[] V { get; init; } = [];
+        public bool Owned { get; init; }
+        public int Age { get; set; }
+
+        /// <summary>A free bomb heard late is brought down as far as it has come since it was dropped.</summary>
+        public static LiveBomb Of(WorldBomb bomb, World world, bool owned, long now)
+        {
+            var z = bomb.z;
+            if (bomb.state == CubeWorld.Server.Bomb.Free)
+                for (long t = 0, ticks = Math.Clamp((now - bomb.at) / (1000 / Spec.TicksPerSecond), 0, 2000); t < ticks; t++)
+                    z = CubeWorld.Server.Bomb.Descend(world, bomb.x, bomb.y, z);
+            return new LiveBomb
+            {
+                Record = bomb, Z = z, Owned = owned && bomb.state == CubeWorld.Server.Bomb.Flying,
+                P = [bomb.x, bomb.y, bomb.z], V = [bomb.vx, bomb.vy, bomb.vz],
+            };
+        }
     }
 
     private sealed record Command(string op, double x, double y, double z, double yaw, double pitch, int nx, int ny, int nz,

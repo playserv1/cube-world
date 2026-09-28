@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="CubeWorld.Server/CubeWorld.Server.csproj" />
     <Project Path="CubeWorld.Refill/CubeWorld.Refill.csproj" />
+    <Project Path="CubeWorld.Drop/CubeWorld.Drop.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="CubeWorld.Tests/CubeWorld.Tests.csproj" />

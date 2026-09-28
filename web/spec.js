@@ -52,3 +52,15 @@ export const SPRINT_FOV = 1.15;
 // Rendering: a texture is 16 × 16 pixels, the player model is drawn at 15/16 of its pixel size.
 export const TEXTURE_SIZE = 16;
 export const MODEL_SCALE = 0.9375;
+
+// Bombs (CubeWorld.Server/Spec.cs): thrown at 1 block a tick, drag 0.99, gravity 0.05 (a thrown potion's);
+// a creeper's power of 3; a parachute comes down at 0.1 a tick from 32 up; picked up within 1 block of the hitbox.
+export const THROW_SPEED = 1.0;
+export const PROJECTILE_DRAG = 0.99;
+export const PROJECTILE_GRAVITY = 0.05;
+export const BOMB_POWER = 3;
+export const OWNER_IMMUNITY_TICKS = 4;
+export const PARACHUTE_SPEED = 0.1;
+export const DROP_HEIGHT = 32;
+export const PICKUP_REACH = 1;
+export const PICKUP_REACH_UP = 0.5;

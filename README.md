@@ -5,7 +5,8 @@ and break cubes, see each other across the whole world, and walk from one server
 into the next without a loading screen. Several copies of one C# game server run on
 platform machines; none of them owns the world. The cubes live in platform
 data, and every server hears every change the moment another server writes it. A cloud
-function tops up each player's blocks once a minute.
+function tops up each player's blocks once a minute; another drops a bomb on a parachute every
+15 seconds, which a player picks up, throws, and blows a crater with.
 
 ## What it shows
 
@@ -18,7 +19,8 @@ function tops up each player's blocks once a minute.
 | Seamless crossing | When a player walks over a region border, the client joins the next server's room in the background and switches sockets once it answers; position and view are kept. |
 | Players enter through the platform | `POST /auth/players/anon` → `GET /rooms/{slug}:browse` → `POST /rooms/{slug}/{room}:join` → WebSocket to the machine the reservation names. |
 | Data a studio can read and edit | `WorldCube` and `CubeInventory` tables; `query_records` shows the world. |
-| Serverless logic beside the servers | `CubeWorld.Refill`: a scheduled cloud function, `* * * * *`. |
+| Serverless logic beside the servers | `CubeWorld.Refill`: a scheduled cloud function, `* * * * *`. `CubeWorld.Drop`: fires every minute and drops four bombs 15 s apart (`timeout_s` 75); it writes `WorldBomb` and every server hears it. |
+| One object, one owner at a time | A free bomb is picked up only by the server of the region it lies in; a thrown one is flown by its thrower's server. A bomb only moves forward (free → held → flying → exploded, or free → fizzled), so a stale or echoed update is dropped. |
 
 ## Folder
 
@@ -27,9 +29,11 @@ function tops up each player's blocks once a minute.
 | `CubeWorld.Server/Spec.cs` | The Minecraft numbers and the block registry (hardness, drops, gravity). |
 | `CubeWorld.Server/World.cs` | The tables and the world's rules: superflat terrain, place against a face, break, falling sand, apply a change from elsewhere, the inventory. |
 | `CubeWorld.Server/CubeWorldServer.cs` | The game server: loads the world, keeps its room open, ticks 20 times a second, times digs, deals damage, writes and hears changes. |
+| `CubeWorld.Server/Bomb.cs` | The `WorldBomb` table and how a bomb moves: the parachute, the pickup reach, the throw. |
 | `CubeWorld.Refill/` | The refill function. |
+| `CubeWorld.Drop/` | The bomb drop function: at most five free bombs, the oldest fizzles out for a new one. |
 | `CubeWorld.Tests/` | The world's rules. |
-| `web/` | The browser client, a static page. |
+| `web/` | The browser client, a static page; `bombs.js` flies bombs as the server does, `bombfx.js` draws them. |
 
 ## Build and test
 

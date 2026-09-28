@@ -148,6 +148,90 @@ public sealed class World
         foreach (var cube in cubes) _overrides[cube.key] = cube;
     }
 
+    /// <summary>
+    /// An explosion as Minecraft's: rays go out from the centre towards every point of a 16 × 16 × 16 cube's
+    /// surface, each with an intensity of power × (0.7 to 1.3). Every 0.3 blocks a ray loses 0.225 and, in a
+    /// block, (blast resistance + 0.3) × 0.3; a block the ray still has intensity for is destroyed. Nothing drops.
+    /// </summary>
+    public WorldUpdate Explode(double cx, double cy, double cz, double power, Random random, string by, string on)
+    {
+        var destroyed = new HashSet<(int x, int y, int z)>();
+        for (var i = 0; i < 16; i++)
+            for (var j = 0; j < 16; j++)
+                for (var k = 0; k < 16; k++)
+                {
+                    if (i is not (0 or 15) && j is not (0 or 15) && k is not (0 or 15)) continue;
+                    double dx = i / 15.0 * 2 - 1, dy = j / 15.0 * 2 - 1, dz = k / 15.0 * 2 - 1;
+                    var length = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                    dx /= length; dy /= length; dz /= length;
+                    double x = cx, y = cy, z = cz;
+                    for (var intensity = power * (0.7 + random.NextDouble() * 0.6); intensity > 0; intensity -= 0.22500001)
+                    {
+                        int bx = (int)Math.Floor(x), by2 = (int)Math.Floor(y), bz = (int)Math.Floor(z);
+                        var block = BlockAt(bx, by2, bz);
+                        if (Inside(bx, by2, bz) && block.Solid)
+                        {
+                            intensity -= (block.BlastResistance + 0.3) * 0.3;
+                            if (intensity > 0 && block.Breakable) destroyed.Add((bx, by2, bz));
+                        }
+                        x += dx * 0.3; y += dy * 0.3; z += dz * 0.3;
+                    }
+                }
+
+        var update = new WorldUpdate();
+        foreach (var (x, y, z) in destroyed.OrderBy(b => b.z)) Set(x, y, z, "air", by, on, update);
+        foreach (var column in destroyed.GroupBy(b => (b.x, b.y))) Settle(column.Key.x, column.Key.y, column.Min(b => b.z), update);
+        return update;
+    }
+
+    /// <summary>
+    /// What an explosion does to a player, as Minecraft works it out: within twice the power, impact is
+    /// (1 − distance / (2 × power)) × the share of the hitbox the centre can see; damage is
+    /// ⌊(impact² + impact) / 2 × 7 × 2 × power + 1⌋ and the player is thrown away from the centre with the impact.
+    /// </summary>
+    public (double Damage, double Nx, double Ny, double Impact)? Blast(double cx, double cy, double cz, double power, Hitbox p, double eye)
+    {
+        double fx = p.X - cx, fy = p.Y - cy, fz = p.Z - cz;
+        var distance = Math.Sqrt(fx * fx + fy * fy + fz * fz) / (2 * power);
+        if (distance > 1) return null;
+        double dx = p.X - cx, dy = p.Y - cy, dz = p.Z + eye - cz;
+        var length = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if (length < 1e-9) (dx, dy, length) = (0, 0, 1);
+        var impact = (1 - distance) * Exposure(cx, cy, cz, p);
+        var damage = Math.Floor((impact * impact + impact) / 2 * 7 * (2 * power) + 1);
+        return (damage, dx / length, dy / length, impact);
+    }
+
+    /// <summary>The share of points spread through the hitbox from which the centre is in plain sight.</summary>
+    public double Exposure(double cx, double cy, double cz, Hitbox p)
+    {
+        var half = Spec.PlayerWidth / 2;
+        double sx = 1 / (Spec.PlayerWidth * 2 + 1), sz = 1 / (p.Height * 2 + 1);
+        var offset = (1 - Math.Floor(1 / sx) * sx) / 2;
+        int seen = 0, all = 0;
+        for (var a = 0.0; a <= 1; a += sx)
+            for (var b = 0.0; b <= 1; b += sx)
+                for (var c = 0.0; c <= 1; c += sz)
+                {
+                    all++;
+                    double x = p.X - half + a * Spec.PlayerWidth + offset, y = p.Y - half + b * Spec.PlayerWidth + offset, z = p.Z + c * p.Height;
+                    if (Clear(x, y, z, cx, cy, cz)) seen++;
+                }
+        return all == 0 ? 0 : seen / (double)all;
+    }
+
+    private bool Clear(double x, double y, double z, double tx, double ty, double tz)
+    {
+        double dx = tx - x, dy = ty - y, dz = tz - z;
+        var steps = (int)Math.Ceiling(Math.Sqrt(dx * dx + dy * dy + dz * dz) / 0.1);
+        for (var i = 0; i < steps; i++)
+        {
+            var t = i / (double)steps;
+            if (IsSolid((int)Math.Floor(x + dx * t), (int)Math.Floor(y + dy * t), (int)Math.Floor(z + dz * t))) return false;
+        }
+        return true;
+    }
+
     public static bool Intersects(Hitbox p, int x, int y, int z)
     {
         var half = Spec.PlayerWidth / 2;

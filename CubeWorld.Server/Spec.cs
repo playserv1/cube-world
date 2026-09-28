@@ -1,7 +1,7 @@
 namespace CubeWorld.Server;
 
 /// <summary>One block kind and the properties Minecraft gives it (SPEC.md names the wiki page for each number).</summary>
-public sealed record Block(string Kind, double Hardness, bool NeedsTool, bool Transparent, bool Gravity, string? Drop)
+public sealed record Block(string Kind, double Hardness, bool NeedsTool, bool Transparent, bool Gravity, string? Drop, double BlastResistance)
 {
     public bool Solid => Kind != "air";
     public bool Breakable => Hardness >= 0;
@@ -38,19 +38,29 @@ public static class Spec
 
     public const int StackSize = 64, StartingStack = 64;
 
+    // A bomb flies as Minecraft's thrown projectiles do: each tick it moves, its motion is multiplied by 0.99 and
+    // gravity takes 0.05, a thrown potion's. It leaves the hand at 1 block a tick (a snowball's 1.5 would cross the
+    // whole world), so it lands some 15 to 20 blocks away. It explodes where it hits, with a creeper's power of 3.
+    public const double ThrowSpeed = 1.0, ProjectileDrag = 0.99, ProjectileGravity = 0.05, BombPower = 3;
+    public const int BombFlightTicks = 200, OwnerImmunityTicks = 4;
+
+    // A dropped bomb comes down under a parachute at 0.1 blocks a tick (2 m/s) from 32 blocks up. A player
+    // picks it up as Minecraft players pick up items: the bomb within the hitbox grown by 1 sideways, 0.5 up and down.
+    public const double ParachuteSpeed = 0.1, DropHeight = 32, PickupReach = 1.0, PickupReachUp = 0.5;
+
     public static readonly Block[] Blocks =
     [
-        new("air", 0, false, true, false, null),
-        new("bedrock", -1, true, false, false, null),
-        new("grass", 0.6, false, false, false, "dirt"),
-        new("dirt", 0.5, false, false, false, "dirt"),
-        new("sand", 0.5, false, false, true, "sand"),
-        new("stone", 1.5, true, false, false, null),
-        new("wood", 2.0, false, false, false, "wood"),
-        new("brick", 2.0, true, false, false, null),
-        new("glass", 0.3, false, true, false, null),
-        new("gold", 3.0, true, false, false, null),
-        new("leaves", 0.2, false, true, false, null),
+        new("air", 0, false, true, false, null, 0),
+        new("bedrock", -1, true, false, false, null, 3_600_000),
+        new("grass", 0.6, false, false, false, "dirt", 0.6),
+        new("dirt", 0.5, false, false, false, "dirt", 0.5),
+        new("sand", 0.5, false, false, true, "sand", 0.5),
+        new("stone", 1.5, true, false, false, null, 6),
+        new("wood", 2.0, false, false, false, "wood", 2),
+        new("brick", 2.0, true, false, false, null, 6),
+        new("glass", 0.3, false, true, false, null, 0.3),
+        new("gold", 3.0, true, false, false, null, 6),
+        new("leaves", 0.2, false, true, false, null, 0.2),
     ];
 
     public static readonly Dictionary<string, Block> ByKind = Blocks.ToDictionary(b => b.Kind);

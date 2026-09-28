@@ -5,9 +5,12 @@ import { createBody, tick as physicsTick, knockback, pushAway, bodyHeight, eyeHe
 import { buildAtlas, blockIcon } from "./textures.js";
 import { buildPlayerModel, animatePlayer } from "./skin.js";
 import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlocks, raycastPlayers, buildTreeMap, TREES } from "./voxels.js";
+import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
+import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tickEffects } from "./bombfx.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
 const toClient = p => ({ x: p.x, y: p.z, z: p.y });
+const toServer = p => ({ x: p.x, y: p.z, z: p.y });
 const cfg = window.CUBEWORLD;
 const OFFLINE = new URLSearchParams(location.search).has("offline") || !cfg;
 const SERVER_COLORS = { red: "#ef4444", blue: "#3b82f6", green: "#22c55e", grey: "#9ca3af" };
@@ -16,12 +19,13 @@ const $ = id => document.getElementById(id);
 
 const state = { player: null, socket: null, room: null, server: null, color: "grey", region: -1, regions: [],
   regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, placed: false,
-  health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV };
+  health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null };
 const world = new VoxelWorld();
 const chunks = new Map();
 const avatars = new Map();
 const cracks = new Map();
 const falling = [];
+const bombs = new Map();
 const me = createBody(36, 0, 12);
 
 function log(text) {
@@ -126,6 +130,10 @@ function onFrame(frame, teleport) {
       for (const crack of cracks.values()) scene.remove(crack);
       cracks.clear();
       if (teleport) spawn(frame.you);
+      for (const id of [...bombs.keys()]) removeBomb(id);
+      for (const bomb of frame.bombs ?? []) onBomb(bomb);
+      // This client can show a bomb in the hand and throw it; the server hands bombs only to clients that say so.
+      send({ op: "bombs" });
       $("banner").textContent = `you are on server ${frame.color}-${frame.server}`;
       $("banner").style.borderLeft = `6px solid ${SERVER_COLORS[frame.color]}`;
       $("death").hidden = true;
@@ -163,6 +171,9 @@ function onFrame(frame, teleport) {
     case "death":
       if (frame.player === state.player?.player_id) { state.dead = true; state.health = 0; renderHearts(); $("death").hidden = false; controls.unlock(); }
       log(`${nameOf(frame.player)} died${frame.by ? ` to ${nameOf(frame.by)}` : ""}`);
+      break;
+    case "bomb":
+      onBomb(frame);
       break;
     case "respawn":
       state.dead = false;
@@ -212,6 +223,98 @@ function overlapsBlocks() {
   return false;
 }
 
+// ── bombs ────────────────────────────────────────────────────────────────────────────────────────
+// A free bomb comes down under its parachute, a held one sits in its holder's hand, a thrown one flies the
+// path the server flies it. The server says when one is picked up, thrown, explodes or fizzles out.
+
+function onBomb({ bomb: b, age = 0, z }) {
+  const at = toClient(b);
+  let e = bombs.get(b.bomb_id);
+  if (b.state === "exploded") {
+    spawnExplosion(scene, new THREE.Vector3(at.x, at.y, at.z));
+    log(`${nameOf(b.holder)} blew up a bomb`);
+    removeBomb(b.bomb_id);
+    return;
+  }
+  if (b.state === "fizzled") {
+    if (e || age < 5000) spawnSmoke(scene, e ? e.mesh.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(at.x, z ?? at.y, at.z));
+    removeBomb(b.bomb_id);
+    return;
+  }
+  if (!e) {
+    e = { id: b.bomb_id, mesh: buildBomb(), parachute: buildParachute(), pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), landed: false };
+    e.mesh.add(e.parachute);
+    bombs.set(b.bomb_id, e);
+  }
+  e.state = b.state;
+  e.holder = b.holder;
+  e.mesh.removeFromParent();
+  e.mesh.position.set(0, 0, 0);
+  e.mesh.scale.setScalar(1);
+  e.parachute.visible = false;
+  if (b.state === "free") {
+    e.pos.set(at.x, z ?? at.y, at.z);
+    e.landed = false;
+    scene.add(e.mesh);
+  } else if (b.state === "flying") {
+    e.pos.set(at.x, at.y, at.z);
+    e.vel.set(b.vx, b.vz, b.vy);
+    e.stopped = 0;
+    for (let t = 0; t < Math.min(200, Math.floor(age / S.TICK_MS)) && !e.stopped; t++) tickBomb(e);
+    scene.add(e.mesh);
+  }
+  e.prev.copy(e.pos);
+  if (b.state !== "held") e.mesh.position.copy(e.pos);
+  const mine = [...bombs.values()].find(x => x.state === "held" && x.holder === state.player?.player_id);
+  state.holding = mine?.id ?? null;
+  renderHotbar();
+}
+
+function removeBomb(id) {
+  const e = bombs.get(id);
+  if (!e) return;
+  e.mesh.removeFromParent();
+  bombs.delete(id);
+  if (state.holding === id) { state.holding = null; renderHotbar(); }
+}
+
+function tickBomb(e) {
+  e.prev.copy(e.pos);
+  if (e.state === "free") {
+    e.pos.y = descend(world.isSolidForPhysics, e.pos.x, e.pos.y, e.pos.z);
+    e.landed = e.pos.y === e.prev.y;
+  } else if (e.state === "flying" && !e.stopped) {
+    if (fly(world.isSolid.bind(world), bounds(), e.pos, e.vel) !== "flying") e.stopped = state.tick;
+  } else if (e.state === "flying" && state.tick - e.stopped > 60) {
+    removeBomb(e.id);
+  }
+}
+
+function bounds() { return { width: world.width, depth: world.depth, minY: world.minY }; }
+
+// Where a held bomb goes: in front of the camera for the holder, in the right hand of anyone else's model.
+function handOf(e) {
+  if (e.holder === state.player?.player_id) return camera;
+  return avatars.get(e.holder)?.model.userData.parts.rightArm ?? null;
+}
+
+function placeHeld(e) {
+  const hand = handOf(e);
+  if (e.mesh.parent === hand) return;
+  e.mesh.removeFromParent();
+  if (!hand) return;
+  hand.add(e.mesh);
+  const own = hand === camera;
+  e.mesh.scale.setScalar(own ? 0.32 : 1);
+  if (own) e.mesh.position.set(0.22, -0.22, -0.5);
+  else e.mesh.position.set(0, -0.95, 0.02);
+}
+
+function throwBomb() {
+  camera.getWorldDirection(look);
+  send({ op: "throw", x: look.x, y: look.z, z: look.y });
+}
+
 // ── HUD ──────────────────────────────────────────────────────────────────────────────────────────
 
 const icons = {};
@@ -232,7 +335,8 @@ function renderHotbar() {
     slot.onclick = () => { state.slot = i; renderHotbar(); };
     $("hotbar").append(slot);
   }
-  $("held").textContent = state.hotbar[state.slot] ?? "";
+  $("held").textContent = state.holding ? "bomb · right click throws it" : state.hotbar[state.slot] ?? "";
+  $("hud").classList.toggle("holding", !!state.holding);
 }
 
 function renderHearts() {
@@ -250,6 +354,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color("#78a7ff");
 scene.fog = new THREE.Fog("#78a7ff", 40, 90);
 const camera = new THREE.PerspectiveCamera(S.FOV, 1, 0.05, 300);
+scene.add(camera);
 scene.add(new THREE.HemisphereLight("#ffffff", "#8d8d8d", 1.6));
 const sun = new THREE.DirectionalLight("#ffffff", 1.2);
 sun.position.set(20, 40, 10);
@@ -372,7 +477,7 @@ renderer.domElement.addEventListener("wheel", e => {
 renderer.domElement.addEventListener("mousedown", e => {
   if (!controls.isLocked || state.dead) return;
   if (e.button === 0) { mouse.left = true; attackIfAimed(); }
-  if (e.button === 2) place();
+  if (e.button === 2) { if (state.holding) throwBomb(); else place(); }
 });
 addEventListener("mouseup", e => { if (e.button === 0) mouse.left = false; });
 renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());
@@ -420,6 +525,7 @@ let lastPose = "";
 function gameTick() {
   state.tick++;
   tickFalling();
+  for (const e of [...bombs.values()]) tickBomb(e);
   if (!state.placed) return;
 
   if (!state.dead) {
@@ -467,6 +573,16 @@ function frame() {
   if (target?.block) highlight.position.set(target.block.x + 0.5, target.block.y + 0.5, target.block.z + 0.5);
   $("hurt").style.opacity = state.hurtUntil > now ? "1" : "0";
 
+  for (const e of bombs.values()) {
+    if (e.state === "held") placeHeld(e);
+    else e.mesh.position.lerpVectors(e.prev, e.pos, partial);
+    e.parachute.visible = e.state === "free" && !e.landed;
+    if (e.parachute.visible) e.parachute.rotation.z = Math.sin(now / 700 + e.pos.x) * 0.08;
+    animateBomb(e.mesh, now);
+  }
+  tickEffects(Math.min(0.1, (now - (frame.last ?? now)) / 1000));
+  frame.last = now;
+
   for (const avatar of avatars.values()) {
     avatar.model.position.lerp(avatar.target, 0.35);
     avatar.model.rotation.y = -avatar.yaw;
@@ -512,16 +628,77 @@ function enterOffline() {
   const emit = f => onFrame(f, true);
   const setBlock = (x, y, z, kind) => {
     const cube = { key: `${x}:${y}:${z}`, x, y, z, kind, placed_by: "you", placed_on: "local" };
-    const generated = kindAt(x, y, z) === kind && !overrides.has(cube.key);
-    if (generated) return;
+    const unchanged = kindAt(x, y, z) === kind && !overrides.has(cube.key);
+    if (unchanged) return;
     if (kind === generated(x, y, z)) { overrides.delete(cube.key); emit({ type: "cube", op: "delete", cube, remote: false }); }
     else { overrides.set(cube.key, kind); emit({ type: "cube", op: "upsert", cube, remote: false }); }
   };
+  // Bombs as the drop function and the server handle them: one dropped every 15 seconds (two to start, near the
+  // spawn), at most five free, picked up by walking into them, thrown with right click.
+  const offBombs = new Map();
+  const RESISTANCE = { grass: 0.6, dirt: 0.5, sand: 0.5, stone: 6, wood: 2, brick: 6, glass: 0.3, gold: 6, leaves: 0.2, bedrock: 3600000 };
+  const record = (b, p, extra = {}) => ({ bomb_id: b.id, state: b.state, holder: b.holder ?? "", ...toServer(p), vx: 0, vy: 0, vz: 0, dropped_at: b.dropped, at: Date.now(), ...extra });
+  const emitBomb = (b, p, extra) => emit({ type: "bomb", bomb: record(b, p, extra), age: 0, z: p.y });
+  const dropBomb = (x, z) => {
+    const free = [...offBombs.values()].filter(b => b.state === "free").sort((a, b) => a.dropped - b.dropped);
+    while (free.length >= 5) { const old = free.shift(); old.state = "fizzled"; offBombs.delete(old.id); emitBomb(old, old.p); }
+    const b = { id: `bomb-${Date.now()}-${offBombs.size}`, state: "free", p: new THREE.Vector3(x, S.DROP_HEIGHT, z), dropped: Date.now() };
+    offBombs.set(b.id, b);
+    emitBomb(b, b.p);
+  };
+  const hurtOffline = (id, damage, dir, impact) => {
+    if (id === "offline-you") {
+      const health = Math.max(0, state.health - damage);
+      emit({ type: "hurt", player: id, health, kx: dir.x * impact, ky: dir.z * impact, strength: impact });
+      if (health === 0) emit({ type: "death", player: id, by: "offline-you" });
+    } else {
+      dummy.health = Math.max(0, dummy.health - damage);
+      emit({ type: "hurt", player: id, health: dummy.health, kx: 0, ky: 0, strength: 0 });
+      if (dummy.health === 0) { emit({ type: "death", player: id, by: "offline-you" }); dummy.health = 20; }
+    }
+  };
+  const blowUp = b => {
+    const block = (x, y, z) => {
+      const kind = world.inside(x, y, z) ? world.kindAt(x, y, z) : "air";
+      return kind === "air" ? null : { resistance: RESISTANCE[kind] ?? 1, breakable: kind !== "bedrock" };
+    };
+    for (const [x, y, z] of explode(block, b.p.x, b.p.y, b.p.z, S.BOMB_POWER)) setBlock(x, z, y, "air");
+    const targets = [{ id: "offline-you", x: me.x, y: me.y, z: me.z }, { id: dummy.player_id, ...toClient(dummy) }];
+    for (const t of targets) {
+      const d = new THREE.Vector3(t.x - b.p.x, t.y - b.p.y, t.z - b.p.z);
+      const hit = blastDamage(d.length(), S.BOMB_POWER);
+      if (hit) hurtOffline(t.id, hit.damage, d.setY(d.y + S.EYE_HEIGHT).normalize(), hit.impact);
+    }
+    b.state = "exploded";
+    offBombs.delete(b.id);
+    emitBomb(b, b.p);
+  };
+  setInterval(() => dropBomb(1 + Math.random() * 70, 1 + Math.random() * 22), 15000);
+  setInterval(() => {
+    for (const b of [...offBombs.values()]) {
+      if (b.state === "free") {
+        b.p.y = descend(world.isSolidForPhysics, b.p.x, b.p.y, b.p.z);
+        const holding = [...offBombs.values()].some(o => o.state === "held");
+        if (!holding && !state.dead && inPickupReach(me, bodyHeight(me), b.p.x, b.p.y, b.p.z)) { b.state = "held"; b.holder = "offline-you"; emitBomb(b, b.p); }
+      } else if (b.state === "flying") {
+        const players = [{ id: dummy.player_id, ...toClient(dummy) }, { id: "offline-you", x: me.x, y: me.y, z: me.z }];
+        const result = b.age++ > 200 ? "exploded" : fly(world.isSolid.bind(world), bounds(), b.p, b.v, players, "offline-you", b.age);
+        if (result === "exploded") blowUp(b);
+        else if (result === "gone") { b.state = "fizzled"; offBombs.delete(b.id); emitBomb(b, b.p); }
+      }
+    }
+  }, S.TICK_MS);
   state.socket = {
     readyState: WebSocket.OPEN,
     send(text) {
       const m = JSON.parse(text);
-      if (m.op === "dig") {
+      if (m.op === "throw") {
+        const b = [...offBombs.values()].find(o => o.state === "held");
+        if (!b) return;
+        const v = new THREE.Vector3(m.x, m.z, m.y).normalize().multiplyScalar(S.THROW_SPEED);
+        Object.assign(b, { state: "flying", age: 0, p: new THREE.Vector3(me.x, me.y + eyeHeight(me), me.z), v });
+        emitBomb(b, b.p, { vx: v.x, vy: v.z, vz: v.y });
+      } else if (m.op === "dig") {
         if (dig) { clearInterval(dig.timer); emit({ type: "dig", player: "offline-you", x: dig.x, y: dig.y, z: dig.z, stage: -1 }); dig = null; }
         if (m.state !== "start") return;
         const kind = kindAt(m.x, m.y, m.z), block = blocks.find(b => b.kind === kind);
@@ -565,6 +742,8 @@ function enterOffline() {
   emit({ type: "welcome", server: "local", color: "grey", region: 1, regions: [], you: { x: 36, y: 12, z: 0, health: 20 },
     width: 72, depth: 24, regionSize: 24, minZ: -4, maxZ: 64, layers: [{ z: -4, kind: "bedrock" }, { z: -3, kind: "dirt" }, { z: -2, kind: "dirt" }, { z: -1, kind: "grass" }], trees: TREES,
     blocks, hotbar, world: [], inventory: Object.fromEntries(hotbar.map(k => [k, 64])), tick: 0 });
+  dropBomb(38.5, 14.5);
+  dropBomb(33.5, 9.5);
   let t = 0;
   setInterval(() => {
     t += 0.1;
@@ -594,4 +773,4 @@ $("join").onsubmit = async e => {
     log(err.message);
   }
 };
-window.cubeworld = { state, enter, send, world, avatars, me, camera, aim, controls, keys, mouse };
+window.cubeworld = { state, enter, send, world, avatars, me, camera, aim, controls, keys, mouse, bombs };
