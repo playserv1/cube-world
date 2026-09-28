@@ -35,7 +35,7 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
 {
     public const int MaxFree = 5, DropsPerFire = 4, Width = 72, Depth = 24;
     public const double DropHeight = 32;
-    public static readonly TimeSpan Interval = TimeSpan.FromSeconds(15);
+    public static readonly TimeSpan Interval = TimeSpan.FromSeconds(15), Late = TimeSpan.FromSeconds(10);
 
     // A thrown bomb whose server went away never lands; it goes after half a minute. Finished bombs are swept
     // after two: every server has heard them by then.
@@ -48,9 +48,15 @@ public sealed class DropBombs : PlatformFunction<DropRequest>
         var random = new Random();
         int dropped = 0, fizzled = 0, swept = 0;
 
+        // The drops keep to the fire's own clock (0, 15, 30 and 45 s after it began), not to the end of the last drop:
+        // a fire that ran past the minute would make the platform skip the next one, and a whole minute of bombs.
+        var began = DateTimeOffset.UtcNow;
         for (var i = 0; i < drops; i++)
         {
-            if (i > 0) await Task.Delay(Interval, ct);
+            var due = began + i * Interval;
+            var wait = due - DateTimeOffset.UtcNow;
+            if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
+            else if (-wait > Late) continue;
             var rows = await LoadAsync(table, ct);
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var plan = Plan(rows.Select(r => r.Fields!), now, random);
