@@ -48,6 +48,9 @@ public static class Spec
     // picks it up as Minecraft players pick up items: the bomb within the hitbox grown by 1 sideways, 0.5 up and down.
     public const double ParachuteSpeed = 0.1, DropHeight = 32, PickupReach = 1.0, PickupReachUp = 0.5;
 
+    // At most five bombs lie free; the drop function keeps to it and every server holds it too.
+    public const int MaxFreeBombs = 5;
+
     public static readonly Block[] Blocks =
     [
         new("air", 0, false, true, false, null, 0),

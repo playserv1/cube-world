@@ -155,6 +155,16 @@ public class BombTests
     }
 
     [Fact]
+    public void Beyond_five_free_bombs_the_oldest_are_the_surplus()
+    {
+        var bombs = Enumerable.Range(0, 8).Select(i => new Server.WorldBomb { bomb_id = $"b{i}", state = Bomb.Free, dropped_at = 1000 + i })
+            .Append(new Server.WorldBomb { bomb_id = "held", state = Bomb.Held, dropped_at = 1 });
+
+        Assert.Equal(["b2", "b1", "b0"], Bomb.Surplus(bombs, Spec.MaxFreeBombs).Select(b => b.bomb_id));
+        Assert.Empty(Bomb.Surplus(bombs.Take(5), Spec.MaxFreeBombs));
+    }
+
+    [Fact]
     public void A_bomb_only_moves_forward_through_its_states()
     {
         Assert.True(Bomb.Rank(Bomb.Held) > Bomb.Rank(Bomb.Free));
