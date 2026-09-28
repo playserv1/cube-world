@@ -51,11 +51,13 @@ public sealed class CubeWorldServer : PlatformGameServer
                 // instead of being missed (applying one that the load already holds changes nothing).
                 Subscribe();
                 _world.Load(await LoadCubesAsync());
-                foreach (var bomb in await LoadBombsAsync()) lock (_world) OnBomb(bomb, owned: false);
+                // The bombs are an extra: a world whose bombs cannot be read still opens, without them.
+                try { foreach (var bomb in await LoadBombsAsync()) lock (_world) OnBomb(bomb, owned: false); }
+                catch (Exception e) { _ = Platform.Log($"bombs not loaded, the world opens without them: {e.Message}"); }
                 _region = await ClaimRegionAsync();
                 if (_region >= 0) break;
             }
-            catch { }
+            catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5 s: {e.Message}"); }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
         await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, {_bombs.Count} bombs, world ready");
