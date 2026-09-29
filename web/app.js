@@ -220,12 +220,6 @@ function onFrame(frame, teleport) {
     case "hurt":
       onHurt(frame);
       break;
-    case "resetting":
-      log(`${nameOf(frame.by)} asked for the world to start over`);
-      break;
-    case "reset":
-      log(`the world was reset (epoch ${frame.epoch}): every room reopens fresh in a moment`);
-      break;
     case "death":
       if (frame.player === state.player?.player_id) { state.dead = true; state.health = 0; renderHearts(); $("death").hidden = false; controls.unlock(); }
       log(`${nameOf(frame.player)} died${frame.by ? ` to ${nameOf(frame.by)}` : ""}`);
@@ -662,10 +656,6 @@ renderer.domElement.addEventListener("mousedown", e => {
 addEventListener("mouseup", e => { if (e.button === 0) mouse.left = false; });
 renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());
 $("respawn").onclick = () => send({ op: "respawn" });
-$("reset").onclick = () => {
-  if (OFFLINE) { log("offline: there is no shared world to reset"); return; }
-  if (confirm("Reset the whole world to its default state, for everyone on every server?")) send({ op: "reset" });
-};
 
 const look = new THREE.Vector3();
 const eye = new THREE.Vector3();

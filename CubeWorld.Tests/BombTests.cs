@@ -132,8 +132,7 @@ public class BombTests
     public void A_bomb_lands_on_what_it_meets_and_climbs_out_of_a_block_put_on_it()
     {
         var world = new World();
-        world.Load(WorldTests.SeededOaks());
-        var (x, y) = CubeWorld.Reset.Seed.Trees[0];
+        var (x, y) = Spec.Trees[0];
         var z = Spec.DropHeight;
         for (var t = 0; t < 1000; t++) z = Bomb.Descend(world, x + 0.5, y + 0.5, z);
         Assert.Equal(7, z);

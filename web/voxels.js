@@ -44,7 +44,7 @@ export class VoxelWorld {
   constructor() {
     this.width = 72; this.depth = 24; this.minY = -4; this.maxY = 64;
     this.layers = new Map();
-    this.trees = new Map();   // the live servers send the oaks as records; only the offline world generates them
+    this.trees = buildTreeMap(TREES);
     this.blocks = new Map();
     this.overrides = new Map();
     this.hidden = new Set();
@@ -55,7 +55,7 @@ export class VoxelWorld {
   configure({ width, depth, minY, maxY, layers, blocks, trees, regionSize, regionColors }) {
     this.width = width; this.depth = depth; this.minY = minY; this.maxY = maxY;
     this.layers = new Map(layers.map(l => [l.z, l.kind]));
-    this.trees = buildTreeMap(trees ?? []);
+    this.trees = buildTreeMap(trees ?? TREES);
     this.blocks = new Map(blocks.map(b => [b.kind, b]));
     this.regionSize = regionSize ?? this.regionSize;
     this.regionColors = regionColors ?? this.regionColors;

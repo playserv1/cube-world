@@ -21,7 +21,6 @@
     <ProjectReference Include="../CubeWorld.Server/CubeWorld.Server.csproj" />
     <ProjectReference Include="../CubeWorld.Refill/CubeWorld.Refill.csproj" />
     <ProjectReference Include="../CubeWorld.Drop/CubeWorld.Drop.csproj" />
-    <ProjectReference Include="../CubeWorld.Reset/CubeWorld.Reset.csproj" />
   </ItemGroup>
 
 </Project>

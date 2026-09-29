@@ -30,8 +30,6 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private int _region = -1;
     private WorldRegion[] _regions = [];
     private long _tick;
-    private long _epoch;
-    private bool _newEpoch;
 
     private string Color => _region >= 0 ? World.RegionColors[_region] : "grey";
 
@@ -55,9 +53,8 @@ public sealed partial class CubeWorldServer : PlatformGameServer
         await LoadWorldAndClaimRegion();    // tries again every 5 s until the tables answer and a region is free
         StartTicking();                     // the game 20 times a second, player positions 5 times a second
         OpenRoom();
-        await KeepRoomOpen();               // until the operator closes the room or the world is reset
-        if (_newEpoch) await RestartForTheNewWorld();
-        else await ResetWorldAndRestart();
+        await KeepRoomOpen();               // until the operator closes the room
+        await ClearRegionAndRestart();
     }
 
     private async Task LoadWorldAndClaimRegion()
@@ -71,7 +68,6 @@ public sealed partial class CubeWorldServer : PlatformGameServer
                 Subscribe();
                 _world.Load(await LoadCubesAsync());
                 await LoadBombs();
-                _epoch = await ReadEpoch();
                 _region = await ClaimRegionAsync();
                 if (_region >= 0)
                 {
@@ -81,7 +77,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
             catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5 s: {e.Message}"); }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
-        await Platform.Log($"{RoomName}: {_world.Overrides.Count()} blocks loaded, {_bombs.Count} bombs, epoch {_epoch}, world ready");
+        await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, {_bombs.Count} bombs, world ready");
     }
 
     private void StartTicking()
@@ -92,13 +88,10 @@ public sealed partial class CubeWorldServer : PlatformGameServer
 
     private void OpenRoom() => _rooms.GetOrCreate(RoomName);
 
-    /// <summary>
-    /// Until the room is gone (the operator closed it, or it reached its lifetime) or the world was reset under it
-    /// (the epoch moved).
-    /// </summary>
+    /// <summary>The room is gone only when the platform ended it: the operator closed it, or it reached its lifetime.</summary>
     private async Task KeepRoomOpen()
     {
-        while (_rooms.Find(RoomName) is { IsDisposed: false } && !_newEpoch)
+        while (_rooms.Find(RoomName) is { IsDisposed: false })
         {
             await SayThisServerIsAlive();
             await Task.Delay(TimeSpan.FromSeconds(5));
@@ -168,7 +161,6 @@ public sealed partial class CubeWorldServer : PlatformGameServer
                 case "attack": Attack(player, command); break;
                 case "respawn": Respawn(player); break;
                 case "throw": Throw(player, command); break;
-                case "reset": RequestReset(player); break;
             }
         }
         return Task.CompletedTask;

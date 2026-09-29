@@ -77,6 +77,32 @@ public static class Spec
     /// <summary>Superflat "Classic Flat": one bedrock, two dirt, one grass block. The player stands at z = 0.</summary>
     public static readonly (int z, string kind)[] Layers = [(-4, "bedrock"), (-3, "dirt"), (-2, "dirt"), (-1, "grass")];
 
-    // The oaks are not generated here: they are the world's default records, which the reset function
-    // (CubeWorld.Reset, Seed) writes into WorldCube in bulk. The servers load them like any other block.
+    /// <summary>Where the oaks stand: four per region, clear of the spawn at the region's centre. Mirrored in web/voxels.js.</summary>
+    public static readonly (int x, int y)[] Trees =
+        Enumerable.Range(0, 3).SelectMany(r => new[] { (r * 24 + 4, 5), (r * 24 + 18, 4), (r * 24 + 6, 18), (r * 24 + 19, 17) }).ToArray();
+
+    /// <summary>
+    /// An oak: a trunk of five logs, two 5 × 5 layers of leaves without their corners around the top two logs,
+    /// a 3 × 3 layer above the trunk and a cross on top. Keyed "x:y:z", z from 0 (the ground).
+    /// </summary>
+    public static readonly Dictionary<string, string> TreeBlocks = BuildTrees();
+
+    private static Dictionary<string, string> BuildTrees()
+    {
+        var blocks = new Dictionary<string, string>();
+        foreach (var (tx, ty) in Trees)
+        {
+            for (var dz = 0; dz < 5; dz++) blocks[$"{tx}:{ty}:{dz}"] = "wood";
+            for (var dx = -2; dx <= 2; dx++)
+                for (var dy = -2; dy <= 2; dy++)
+                {
+                    var corner = Math.Abs(dx) == 2 && Math.Abs(dy) == 2;
+                    var trunk = dx == 0 && dy == 0;
+                    for (var dz = 3; dz <= 4; dz++) if (!corner && !trunk) blocks.TryAdd($"{tx + dx}:{ty + dy}:{dz}", "leaves");
+                    if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1) blocks.TryAdd($"{tx + dx}:{ty + dy}:5", "leaves");
+                    if (Math.Abs(dx) + Math.Abs(dy) <= 1) blocks.TryAdd($"{tx + dx}:{ty + dy}:6", "leaves");
+                }
+        }
+        return blocks;
+    }
 }
