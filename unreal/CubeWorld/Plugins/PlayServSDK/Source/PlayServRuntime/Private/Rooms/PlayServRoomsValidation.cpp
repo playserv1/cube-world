@@ -147,6 +147,7 @@ const TCHAR* PlayServRoomsValidation::TransportToWire(EPlayServRoomTransport Tra
 	{
 	case EPlayServRoomTransport::Tcp: return TEXT("tcp");
 	case EPlayServRoomTransport::Ws:  return TEXT("ws");
+	case EPlayServRoomTransport::Wss: return TEXT("wss");
 	case EPlayServRoomTransport::Udp:
 	default:                          return TEXT("udp");
 	}
@@ -168,6 +169,11 @@ bool PlayServRoomsValidation::TransportFromWire(const FString& Wire, EPlayServRo
 	if (Lower == TEXT("ws"))
 	{
 		OutTransport = EPlayServRoomTransport::Ws;
+		return true;
+	}
+	if (Lower == TEXT("wss"))
+	{
+		OutTransport = EPlayServRoomTransport::Wss;
 		return true;
 	}
 	return false;

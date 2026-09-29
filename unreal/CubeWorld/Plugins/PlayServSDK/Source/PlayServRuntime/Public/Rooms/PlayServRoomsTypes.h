@@ -10,7 +10,9 @@ enum class EPlayServRoomTransport : uint8
 {
 	Udp,
 	Tcp,
-	Ws
+	Ws,
+	/** WebSocket over TLS: what a platform pool machine's front offers, and what the C# servers register. */
+	Wss
 };
 
 /** Where players connect to a room: the dedicated server declares it, and players read it from Browse and join results. */

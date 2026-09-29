@@ -69,6 +69,7 @@ namespace PlayServRoomsWire
 	static const TCHAR* AdmissionPush = TEXT("push");
 	static const TCHAR* AdmissionConsume = TEXT("consume");
 	static const TCHAR* CapabilityAdmissionPush = TEXT("admission_push");
+	static const TCHAR* CapabilityRoomCreate = TEXT("room_create");
 	static const TCHAR* RosterCheckMismatch = TEXT("mismatch");
 	static constexpr int32 ProtocolVersion = 1;
 

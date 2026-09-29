@@ -17,6 +17,8 @@
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
 #include "TimerManager.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
 
 namespace
 {
@@ -241,11 +243,6 @@ void ACubeWorldGameMode::OpenRoom()
 		Room.RoomName = Self->RoomName();
 		Room.State = TEXT("open");
 		Room.Attributes.Add(TEXT("engine"), TEXT("unreal"));
-		// A pool machine's firewall passes only the platform's TCP front: Iris's UDP port is unreachable there, so the
-		// clients are told to come through the door. CUBEWORLD_IRIS_PUBLIC=1 says the UDP port is open after all.
-		const bool bPool = !FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_PUBLIC_HOST")).IsEmpty();
-		const bool bUdpOpen = FPlatformMisc::GetEnvironmentVariable(TEXT("CUBEWORLD_IRIS_PUBLIC")) == TEXT("1");
-		Room.Attributes.Add(TEXT("iris"), bPool && !bUdpOpen ? TEXT("off") : TEXT("udp"));
 		if (Self->Web.IsValid()) Room.Attributes.Add(TEXT("ws"), Self->WebAddress());
 		Room.Attributes.Add(PlayServ::Rooms::Attributes::Name, FString::Printf(TEXT("Cube World %s"), *Self->Color()));
 		Room.Attributes.Add(TEXT("color"), Self->Color());
@@ -256,10 +253,36 @@ void ACubeWorldGameMode::OpenRoom()
 			const FString Value = FPlatformMisc::GetEnvironmentVariable(Var);
 			if (!Value.IsEmpty()) Room.Attributes.Add(FString(Var).ToLower(), Value);
 		}
-		Room.Connect.Host = Self->ResolveHost();
-		Room.Connect.Port = Self->GetWorld()->URL.Port;
-		Room.Connect.Transport = EPlayServRoomTransport::Udp;
-		Self->ServerLog(FString::Printf(TEXT("registering at %s:%d"), *Room.Connect.Host, Room.Connect.Port));
+		// Iris plays over UDP on the game port. On a pool machine the platform's front offers wss on a public port and
+		// forwards it to the door (PLAYSERV_PORTS_MAPPING), and the machine's certificate follows a room that registers
+		// that front as its connect, as the C# servers do; the UDP address then rides in the attribute udp, which the
+		// Unreal client reads. Elsewhere the connect is the UDP address itself.
+		const FString Udp = FString::Printf(TEXT("%s:%d"), *Self->ResolveHost(), Self->GetWorld()->URL.Port);
+		Room.Attributes.Add(TEXT("udp"), Udp);
+		int32 FrontPort = 0;
+		{
+			const FString Mapping = FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_PORTS_MAPPING"));
+			TArray<TSharedPtr<FJsonValue>> Entries;
+			if (!Mapping.IsEmpty() && FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Mapping), Entries))
+				for (const TSharedPtr<FJsonValue>& Entry : Entries)
+				{
+					const TSharedPtr<FJsonObject>* Object;
+					if (Entry->TryGetObject(Object) && (*Object)->GetStringField(TEXT("protocol")) == TEXT("wss")) FrontPort = (int32)(*Object)->GetNumberField(TEXT("external_port"));
+				}
+		}
+		if (FrontPort > 0)
+		{
+			Room.Connect.Host = FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_PUBLIC_HOST"));
+			Room.Connect.Port = FrontPort;
+			Room.Connect.Transport = EPlayServRoomTransport::Wss;
+		}
+		else
+		{
+			Room.Connect.Host = Self->ResolveHost();
+			Room.Connect.Port = Self->GetWorld()->URL.Port;
+			Room.Connect.Transport = EPlayServRoomTransport::Udp;
+		}
+		Self->ServerLog(FString::Printf(TEXT("registering at %s:%d (%s), iris at %s"), *Room.Connect.Host, Room.Connect.Port, FrontPort > 0 ? TEXT("wss") : TEXT("udp"), *Udp));
 		PlayServ::Rooms::StartRoom(Room, FPlayServSimpleCallback::CreateLambda([Weak](bool bRegistered, const FPlayServError& RegisterError)
 		{
 			if (!Weak.IsValid()) return;

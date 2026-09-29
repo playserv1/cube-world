@@ -184,12 +184,14 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		// An Unreal server says so in its attributes and is reached over Iris; any other room is a C# server, reached
 		// over the JSON socket, plain or TLS (the SDK reads wss as anything but ws).
 		const bool bUnreal = Result.Ticket.Attributes.FindRef(TEXT("engine")) == TEXT("unreal");
-		// An Unreal server whose UDP port the world cannot reach (a pool machine behind the platform's TCP front) says
-		// iris=off: it is entered through its JSON door instead, like a C# server. -forcews does the same anywhere.
-		const bool bDoorOnly = Result.Ticket.Attributes.FindRef(TEXT("iris")) == TEXT("off") || FParse::Param(FCommandLine::Get(), TEXT("forcews"));
+		// -forcews enters an Unreal server through its JSON door instead of Iris, for testing the door.
+		const bool bDoorOnly = FParse::Param(FCommandLine::Get(), TEXT("forcews"));
 		if (bUnreal && !bDoorOnly)
 		{
-			Self->TravelToUnrealServer(RoomName, PlayServ::Rooms::BuildTravelUrl(Result.Ticket), bTeleport);
+			// A pool room's connect is the platform's wss front; Iris's UDP address rides in the attribute udp.
+			const FString Udp = Result.Ticket.Attributes.FindRef(TEXT("udp"));
+			const FString Url = Udp.IsEmpty() ? PlayServ::Rooms::BuildTravelUrl(Result.Ticket) : FString::Printf(TEXT("%s?rsv=%s"), *Udp, *Result.Ticket.ReservationToken);
+			Self->TravelToUnrealServer(RoomName, Url, bTeleport);
 			return;
 		}
 		FString Host = C.Host, Override;

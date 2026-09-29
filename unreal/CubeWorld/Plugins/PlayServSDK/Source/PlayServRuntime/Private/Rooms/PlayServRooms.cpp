@@ -286,6 +286,10 @@ void UPlayServRooms::OpenUplink()
 	Hello.ExecutorSlug = RoomDefaultSlug;
 	Hello.InstanceId = InstanceId;
 	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityAdmissionPush);
+	// A platform pool puts a machine into rotation only for a hello that declares room_create (the platform may ask it
+	// for a room); without it the machine stays "ready" and is replaced after the start timeout. A server that opens
+	// its rooms itself declares it too; a room request it does not serve is answered by the platform's own timeout.
+	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityRoomCreate);
 	const FString Credential = ResolveCredential(UPlayServSettings::GetDeploymentToken(), UPlayServSettings::GetServerKey());
 	Uplink->Start(PlayServRoomsPaths::UplinkUrl(UPlayServSettings::GetBaseURL()), Credential, Hello);
 }
