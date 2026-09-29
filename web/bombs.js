@@ -58,9 +58,9 @@ export function explode(block, cx, cy, cz, power, random = Math.random) {
   return [...destroyed.values()];
 }
 
-// Damage without cover, for the offline world: ⌊(impact² + impact) / 2 × 7 × 2 × power + 1⌋.
+// Damage without cover, for the offline world: within BLAST_REACH, ⌊(impact² + impact) / 2 × 7 × 2 × power + 1⌋.
 export function blastDamage(distance, power) {
-  const d = distance / (2 * power);
+  const d = distance / S.BLAST_REACH;
   if (d > 1) return null;
   const impact = 1 - d;
   return { damage: Math.floor((impact * impact + impact) / 2 * 7 * 2 * power + 1), impact };

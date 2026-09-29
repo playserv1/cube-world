@@ -59,6 +59,8 @@ export const THROW_SPEED = 1.0;
 export const PROJECTILE_DRAG = 0.99;
 export const PROJECTILE_GRAVITY = 0.05;
 export const BOMB_POWER = 3;
+// The blast hurts players within 3 blocks, half of Minecraft's 2 × power; the craters stay a creeper's.
+export const BLAST_REACH = 3;
 export const OWNER_IMMUNITY_TICKS = 4;
 export const PARACHUTE_SPEED = 0.1;
 export const DROP_HEIGHT = 32;

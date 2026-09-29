@@ -33,7 +33,38 @@ ECubeFlight CubeBombs::Fly(const FCubeVoxelWorld& World, FVector& P, FVector& V)
 
 namespace
 {
-	constexpr float Radius = 25.f;   // a quarter of a block
+	constexpr float Radius = 25.f;   // a quarter of a block: the head is half a block wide
+
+	// The creeper head as web/bombfx.js paints it: 8 × 8 × 8 pixels of mottled green, the face on one side.
+	const TCHAR* Greens[] = { TEXT("#4c9a3a"), TEXT("#5cb247"), TEXT("#6fc452"), TEXT("#3f8a31"), TEXT("#85d16b") };
+	const TCHAR* Face[] = {
+		TEXT("........"),
+		TEXT("........"),
+		TEXT(".##..##."),
+		TEXT(".##..##."),
+		TEXT("...##..."),
+		TEXT("..####.."),
+		TEXT("..####.."),
+		TEXT("..#..#.."),
+	};
+
+	FLinearColor Pixel(int32 X, int32 Y, bool bFace)
+	{
+		if (bFace && Face[Y][X] == '#') return FCubeShape::Hex(TEXT("#101410"));
+		return FCubeShape::Hex(Greens[(X * 7 + Y * 13 + (bFace ? 3 : 0)) % UE_ARRAY_COUNT(Greens)]);
+	}
+
+	/** One side of the head around the origin, 8 × 8 pixels from the corner Origin, Right and Down one pixel each. */
+	void Side(FCubeShape& Shape, const FVector& Origin, const FVector& Right, const FVector& Down, bool bFace)
+	{
+		const FVector Out = (Origin + (Right + Down) * 4).GetSafeNormal();
+		for (int32 Y = 0; Y < 8; Y++)
+			for (int32 X = 0; X < 8; X++)
+			{
+				const FVector A = Origin + Right * X + Down * Y;
+				Shape.Quad(A, A + Right, A + Right + Down, A + Down, Out, Pixel(X, Y, bFace));
+			}
+	}
 
 	UProceduralMeshComponent* NewPart(AActor* Owner, USceneComponent* Parent, const TCHAR* Name)
 	{
@@ -57,21 +88,27 @@ ACubeBomb::ACubeBomb()
 void ACubeBomb::BeginPlay()
 {
 	Super::BeginPlay();
-	// The ball rests on the actor's origin: the band and the fuse on top, the spark at the fuse's end.
-	Ball = NewPart(this, RootComponent, TEXT("Ball"));
+	// The head rests on the actor's origin, its face looking along −X, at the holder's camera.
+	Head = NewPart(this, RootComponent, TEXT("Head"));
 	FCubeShape Body;
-	Body.Sphere(FVector(0, 0, Radius), Radius, 16, 12, FCubeShape::Hex(TEXT("#1d1f24")));
-	Body.Cylinder(FVector(0, 0, Radius * 1.95f), FVector::ZAxisVector, Radius * 0.42f, Radius * 0.3f, 12, FCubeShape::Hex(TEXT("#6b7280")));
-	Body.Cylinder(FVector(Radius * 0.08f, 0, Radius * 2.3f), FQuat(FVector::YAxisVector, 0.35f).RotateVector(FVector::ZAxisVector),
-		Radius * 0.08f, Radius * 0.5f, 6, FCubeShape::Hex(TEXT("#c9a26b")));
-	Body.Commit(Ball);
+	const float S = Radius * 2 / 8, H = Radius;
+	const FVector X = FVector::XAxisVector * S, Y = FVector::YAxisVector * S, Z = FVector::ZAxisVector * S;
+	Side(Body, FVector(-H, -H, H), Y, -Z, true);     // the face, −X
+	Side(Body, FVector(H, -H, H), Y, -Z, false);     // the back, +X
+	Side(Body, FVector(-H, -H, H), X, -Z, false);    // −Y
+	Side(Body, FVector(H, H, H), -X, -Z, false);     // +Y
+	Side(Body, FVector(H, H, H), -Y, -X, false);     // the top
+	Side(Body, FVector(-H, H, -H), -Y, X, false);    // the bottom
+	Body.Commit(Head);
+	Head->SetRelativeLocation(FVector(0, 0, Radius));
 
-	Spark = NewPart(this, RootComponent, TEXT("Spark"));
-	FCubeShape Glow;
-	Glow.bShaded = false;
-	Glow.Octahedron(FVector::ZeroVector, Radius * 0.18f, FCubeShape::Hex(TEXT("#ffd166")));
-	Glow.Commit(Spark);
-	Spark->SetRelativeLocation(FVector(Radius * 0.2f, 0, Radius * 2.58f));
+	// The white a creeper flashes before it blows, a shade bigger than the head; Animate shows it in turns.
+	Flash = NewPart(this, Head, TEXT("Flash"));
+	FCubeShape White;
+	White.bShaded = false;
+	White.Box(FVector::ZeroVector, FVector(Radius * 1.02f), FCubeShape::Hex(TEXT("#f4f4f5")));
+	White.Commit(Flash);
+	Flash->SetVisibility(false);
 
 	// A canopy of eight red and white stripes over eight lines down to the bomb.
 	Parachute = NewPart(this, RootComponent, TEXT("Parachute"));
@@ -91,9 +128,12 @@ void ACubeBomb::BeginPlay()
 
 void ACubeBomb::Animate(double Now)
 {
-	if (!Spark) return;
-	Spark->SetRelativeScale3D(FVector(0.7 + 0.5 * FMath::Abs(FMath::Sin(Now * 1000 / 45))));
-	Spark->SetRelativeRotation(FRotator(0, FMath::RadiansToDegrees(Now * 1000 / 120), 0));
+	if (!Head) return;
+	// The browser tints the head white and back; these materials are unlit vertex colours, so the white shell
+	// shows at the top of each swell.
+	const double Swell = FMath::Max(0.0, FMath::Sin(Now * 1000 / 160));
+	Head->SetRelativeScale3D(FVector(1 + 0.06 * Swell));
+	Flash->SetVisibility(Swell > 0.6);
 	const bool bOpen = State == TEXT("free") && !bLanded;
 	Parachute->SetVisibility(bOpen);
 	if (bOpen) Parachute->SetRelativeRotation(FRotator(0, 0, FMath::RadiansToDegrees(FMath::Sin(Now * 1000 / 700 + Pos.X) * 0.08)));

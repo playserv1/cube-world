@@ -68,7 +68,7 @@ Every mechanic below follows the [Minecraft Wiki](https://minecraft.wiki). The c
 | Pickup | walking into it, within the hitbox grown by 1 sideways and 0.5 up and down, as items are picked up | [Item (entity)](https://minecraft.wiki/w/Item_(entity)) |
 | Explosion | power 3, a creeper's: 16 × 16 × 16 rays of intensity power × (0.7–1.3), 0.3 blocks a step, each step −0.225 and in a block −(blast resistance + 0.3) × 0.3 | [Explosion](https://minecraft.wiki/w/Explosion), [Creeper](https://minecraft.wiki/w/Creeper) |
 | Blast resistance | grass block 0.6, dirt 0.5, sand 0.5, stone 6, oak log 2, bricks 6, glass 0.3, block of gold 6, leaves 0.2, bedrock 3,600,000 | [Explosion § Blast resistance](https://minecraft.wiki/w/Explosion) |
-| Damage | within 2 × power: impact = (1 − distance / (2 × power)) × the share of the hitbox in sight, damage ⌊(impact² + impact) / 2 × 7 × 2 × power + 1⌋, thrown back by the impact | [Explosion § Damage](https://minecraft.wiki/w/Explosion) |
+| Damage | within 3 blocks, half of 2 × power (see the deviations): impact = (1 − distance / 3) × the share of the hitbox in sight, damage ⌊(impact² + impact) / 2 × 7 × 2 × power + 1⌋, thrown back by the impact | [Explosion § Damage](https://minecraft.wiki/w/Explosion) |
 
 ## Player model
 
@@ -95,4 +95,4 @@ and death. Every world change goes through platform data so the other servers se
 - The world is a small flat slab with a ceiling at 64, and its floor colours mark the three servers.
 - Every player starts with 64 of each block and a cloud function adds one of each per minute.
 - A dead player leaves the map until they respawn; a tombstone with their name stands where they fell (Minecraft lets the body fall over and vanish). Every server knows from the player's presence (health 0), so the tombstone shows wherever you stand.
-- Bombs are this world's own: Minecraft has none to throw. One falls under a parachute at 2 m/s from 32 blocks up every 15 seconds, at most five lie free (the oldest fizzles out, harmlessly, for a new one), a player carries one at a time and can only throw it. It is thrown at 1 block a tick, not a snowball's 1.5, which would cross the whole world; it lands some 15 to 20 blocks away. An explosion drops nothing.
+- Bombs are this world's own: Minecraft has none to throw. One falls under a parachute at 2 m/s from 32 blocks up every 15 seconds, at most five lie free (the oldest fizzles out, harmlessly, for a new one), a player carries one at a time and can only throw it. It is thrown at 1 block a tick, not a snowball's 1.5, which would cross the whole world; it lands some 15 to 20 blocks away. An explosion drops nothing. The bomb is a creeper head, half a block wide, that flashes white as a creeper does before it blows. Its blast breaks blocks with a creeper's power of 3 but hurts players only within 3 blocks, half of Minecraft's 6.

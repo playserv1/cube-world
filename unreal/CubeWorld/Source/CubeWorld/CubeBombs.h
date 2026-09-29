@@ -1,6 +1,6 @@
 // Bombs, as web/bombs.js and web/bombfx.js draw them. A free bomb comes down under its parachute, a held one
 // sits in its holder's hand, a thrown one flies the path the server flies it; the server says when one is
-// picked up, thrown, explodes or fizzles out. A black ball with a fuse and a flickering spark, a striped
+// picked up, thrown, explodes or fizzles out. A creeper head that flashes white as it swells, a striped
 // parachute, an explosion of fire, debris and smoke, and the light puff of a bomb that fizzles out.
 #pragma once
 
@@ -39,7 +39,7 @@ public:
 	ACubeBomb();
 	virtual void BeginPlay() override;
 
-	/** The spark flickers, the parachute sways while it is open. */
+	/** The head swells and flashes, the parachute sways while it is open. */
 	void Animate(double Now);
 
 	FString Id, State, Holder;
@@ -49,8 +49,8 @@ public:
 	/** The tick a thrown bomb came to rest on this client, 0 while it still flies. */
 	int64 Stopped = 0;
 
-	UPROPERTY() UProceduralMeshComponent* Ball = nullptr;
-	UPROPERTY() UProceduralMeshComponent* Spark = nullptr;
+	UPROPERTY() UProceduralMeshComponent* Head = nullptr;
+	UPROPERTY() UProceduralMeshComponent* Flash = nullptr;
 	UPROPERTY() UProceduralMeshComponent* Parachute = nullptr;
 };
 

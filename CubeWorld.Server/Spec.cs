@@ -44,6 +44,9 @@ public static class Spec
     public const double ThrowSpeed = 1.0, ProjectileDrag = 0.99, ProjectileGravity = 0.05, BombPower = 3;
     public const int BombFlightTicks = 200, OwnerImmunityTicks = 4;
 
+    // The blast hurts players within 3 blocks, half of Minecraft's 2 × power; the craters stay a creeper's.
+    public const double BlastReach = 3;
+
     // A dropped bomb comes down under a parachute at 0.1 blocks a tick (2 m/s) from 32 blocks up. A player
     // picks it up as Minecraft players pick up items: the bomb within the hitbox grown by 1 sideways, 0.5 up and down.
     public const double ParachuteSpeed = 0.1, DropHeight = 32, PickupReach = 1.0, PickupReachUp = 0.5;

@@ -1,25 +1,48 @@
-// What a bomb looks like: a black ball with a fuse and a spark, a striped parachute while it comes down,
-// an explosion of fire, debris and smoke, and the light puff of smoke of a bomb that fizzles out.
+// What a bomb looks like: a creeper head that flashes white as a creeper does before it blows, a striped
+// parachute while it comes down, an explosion of fire, debris and smoke, and the light puff of smoke of a bomb
+// that fizzles out.
 
 import * as THREE from "three";
 
-const ballMaterial = new THREE.MeshLambertMaterial({ color: "#1d1f24" });
-const bandMaterial = new THREE.MeshLambertMaterial({ color: "#6b7280" });
-const fuseMaterial = new THREE.MeshLambertMaterial({ color: "#c9a26b" });
-const sparkMaterial = new THREE.MeshBasicMaterial({ color: "#ffd166" });
+// The head is 8 × 8 × 8 pixels: mottled green all round, the face on one side (the unreal client paints the same).
+const GREENS = ["#4c9a3a", "#5cb247", "#6fc452", "#3f8a31", "#85d16b"];
+const FACE = [
+  "........",
+  "........",
+  ".##..##.",
+  ".##..##.",
+  "...##...",
+  "..####..",
+  "..####..",
+  "..#..#..",
+];
+
+function headTexture(face) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 8;
+  const g = canvas.getContext("2d");
+  for (let y = 0; y < 8; y++)
+    for (let x = 0; x < 8; x++) {
+      g.fillStyle = face && FACE[y][x] === "#" ? "#101410" : GREENS[(x * 7 + y * 13 + (face ? 3 : 0)) % GREENS.length];
+      g.fillRect(x, y, 1, 1);
+    }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  return texture;
+}
+
+let headMaterials;
 
 export function buildBomb(radius = 0.25) {
-  const bomb = new THREE.Group();
-  const ball = new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 12), ballMaterial);
-  const band = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.42, radius * 0.42, radius * 0.3, 12), bandMaterial);
-  band.position.y = radius * 0.95;
-  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.08, radius * 0.08, radius * 0.5, 6), fuseMaterial);
-  fuse.position.set(radius * 0.08, radius * 1.3, 0);
-  fuse.rotation.z = -0.35;
-  const spark = new THREE.Mesh(new THREE.OctahedronGeometry(radius * 0.18), sparkMaterial);
-  spark.position.set(radius * 0.2, radius * 1.58, 0);
-  bomb.add(ball, band, fuse, spark);
-  bomb.userData.spark = spark;
+  if (!headMaterials) {
+    const skin = new THREE.MeshLambertMaterial({ map: headTexture(false) });
+    const face = new THREE.MeshLambertMaterial({ map: headTexture(true) });
+    // BoxGeometry's faces: +x, −x, +y, −y, +z, −z; the face looks along +z, at the holder's camera.
+    headMaterials = [skin, skin, skin, skin, face, skin];
+  }
+  const bomb = new THREE.Mesh(new THREE.BoxGeometry(radius * 2, radius * 2, radius * 2), headMaterials);
   bomb.position.y = radius;
   const holder = new THREE.Group();
   holder.add(bomb);
@@ -55,11 +78,11 @@ export function buildParachute() {
   return parachute;
 }
 
-// A spark on the fuse that flickers.
+// The head flashes white and swells a little, as a creeper about to blow.
 export function animateBomb(holder, now) {
-  const spark = holder.userData.bomb.userData.spark;
-  spark.scale.setScalar(0.7 + 0.5 * Math.abs(Math.sin(now / 45)));
-  spark.rotation.y = now / 120;
+  const flash = Math.max(0, Math.sin(now / 160));
+  holder.userData.bomb.scale.setScalar(1 + 0.06 * flash);
+  for (const m of new Set(headMaterials)) m.emissive.setScalar(0.55 * flash * flash);
 }
 
 // ── effects ──────────────────────────────────────────────────────────────────────────────────────

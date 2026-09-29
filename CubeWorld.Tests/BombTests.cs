@@ -49,28 +49,28 @@ public class BombTests
     }
 
     [Fact]
-    public void A_blast_hurts_most_up_close_and_not_at_all_beyond_twice_its_power()
+    public void A_blast_hurts_most_up_close_and_not_at_all_beyond_its_reach()
     {
         var world = new World();
         Hitbox At(double x) => new(x, 12.5, 0, Spec.PlayerHeight);
 
         var close = world.Blast(30, 12.5, 0.5, Spec.BombPower, At(30.5), Spec.EyeHeight)!.Value;
-        var far = world.Blast(30, 12.5, 0.5, Spec.BombPower, At(34), Spec.EyeHeight)!.Value;
+        var far = world.Blast(30, 12.5, 0.5, Spec.BombPower, At(32.5), Spec.EyeHeight)!.Value;
 
         Assert.True(close.Damage > far.Damage);
         Assert.True(close.Damage >= Spec.MaxHealth);
         Assert.True(far.Nx > 0.5);
-        Assert.Null(world.Blast(30, 12.5, 0.5, Spec.BombPower, At(36.5), Spec.EyeHeight));
+        Assert.Null(world.Blast(30, 12.5, 0.5, Spec.BombPower, At(33.1), Spec.EyeHeight));
     }
 
     [Fact]
     public void A_wall_shields_a_player_from_the_blast()
     {
         var world = new World();
-        var player = new Hitbox(34.5, 12.5, 0, Spec.PlayerHeight);
+        var player = new Hitbox(32.5, 12.5, 0, Spec.PlayerHeight);
         var open = world.Blast(30.5, 12.5, 0.5, Spec.BombPower, player, Spec.EyeHeight)!.Value;
         Assert.Equal(1, world.Exposure(30.5, 12.5, 0.5, player));
-        for (var y = 10; y <= 15; y++) for (var z = 0; z <= 3; z++) world.Place(32, y, z - 1, 0, 0, 1, "stone", "p", "a", []);
+        for (var y = 10; y <= 15; y++) for (var z = 0; z <= 3; z++) world.Place(31, y, z - 1, 0, 0, 1, "stone", "p", "a", []);
 
         var behind = world.Blast(30.5, 12.5, 0.5, Spec.BombPower, player, Spec.EyeHeight)!.Value;
 

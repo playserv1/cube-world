@@ -34,7 +34,7 @@ function tops up each player's blocks once a minute; another drops a bomb on a p
 | `CubeWorld.Refill/` | The refill function. |
 | `CubeWorld.Drop/` | The bomb drop function: at most five free bombs, the oldest fizzles out for a new one. |
 | `CubeWorld.Tests/` | The world's rules. |
-| `web/` | The browser client, a static page; `bombs.js` flies bombs as the server does, `bombfx.js` draws them, `rooms.js` decides what to tell the player and when to try again after an operator's close or removal. |
+| `web/` | The browser client, a static page; `bombs.js` flies bombs as the server does, `bombfx.js` draws them as creeper heads, `rooms.js` decides what to tell the player and when to try again after an operator's close or removal. |
 
 ## Build and test
 

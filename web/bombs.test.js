@@ -40,8 +40,8 @@ test("an explosion breaks dirt but not bedrock", () => {
   assert.ok(destroyed.every(([, y]) => y > -4));
 });
 
-test("a blast hurts least at twice its power and not beyond", () => {
+test("a blast hurts least at its reach and not beyond", () => {
   assert.equal(blastDamage(0, S.BOMB_POWER).damage, 43);
-  assert.equal(blastDamage(2 * S.BOMB_POWER, S.BOMB_POWER).damage, 1);
-  assert.equal(blastDamage(2 * S.BOMB_POWER + 0.1, S.BOMB_POWER), null);
+  assert.equal(blastDamage(S.BLAST_REACH, S.BOMB_POWER).damage, 1);
+  assert.equal(blastDamage(S.BLAST_REACH + 0.1, S.BOMB_POWER), null);
 });

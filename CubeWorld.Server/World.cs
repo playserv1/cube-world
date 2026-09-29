@@ -191,14 +191,14 @@ public sealed class World
     }
 
     /// <summary>
-    /// What an explosion does to a player, as Minecraft works it out: within twice the power, impact is
-    /// (1 − distance / (2 × power)) × the share of the hitbox the centre can see; damage is
+    /// What an explosion does to a player, as Minecraft works it out but within Spec.BlastReach, not twice the
+    /// power: impact is (1 − distance / reach) × the share of the hitbox the centre can see; damage is
     /// ⌊(impact² + impact) / 2 × 7 × 2 × power + 1⌋ and the player is thrown away from the centre with the impact.
     /// </summary>
     public (double Damage, double Nx, double Ny, double Impact)? Blast(double cx, double cy, double cz, double power, Hitbox p, double eye)
     {
         double fx = p.X - cx, fy = p.Y - cy, fz = p.Z - cz;
-        var distance = Math.Sqrt(fx * fx + fy * fy + fz * fz) / (2 * power);
+        var distance = Math.Sqrt(fx * fx + fy * fy + fz * fz) / Spec.BlastReach;
         if (distance > 1) return null;
         double dx = p.X - cx, dy = p.Y - cy, dz = p.Z + eye - cz;
         var length = Math.Sqrt(dx * dx + dy * dy + dz * dz);
