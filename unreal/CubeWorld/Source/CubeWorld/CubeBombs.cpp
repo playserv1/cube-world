@@ -104,10 +104,10 @@ void ACubeBomb::BeginPlay()
 
 	// The white a creeper flashes before it blows, a shade bigger than the head; Animate shows it in turns.
 	Flash = NewPart(this, Head, TEXT("Flash"));
-	FCubeShape White;
-	White.bShaded = false;
-	White.Box(FVector::ZeroVector, FVector(Radius * 1.02f), FCubeShape::Hex(TEXT("#f4f4f5")));
-	White.Commit(Flash);
+	FCubeShape FlashShape;
+	FlashShape.bShaded = false;
+	FlashShape.Box(FVector::ZeroVector, FVector(Radius * 1.02f), FCubeShape::Hex(TEXT("#f4f4f5")));
+	FlashShape.Commit(Flash);
 	Flash->SetVisibility(false);
 
 	// A canopy of eight red and white stripes over eight lines down to the bomb.
