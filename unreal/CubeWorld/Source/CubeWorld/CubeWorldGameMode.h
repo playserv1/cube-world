@@ -55,6 +55,10 @@ struct FCubeServerPlayer
 {
 	TWeakObjectPtr<ACubePlayerPawn> Pawn;
 	TWeakObjectPtr<AController> Controller;
+	/** The WebSocket client this player is, when they came in through that door; 0 for an Unreal client. */
+	int32 WebClient = 0;
+	/** The client shows bombs and reads batched cube frames (every Unreal client; a browser once it says so). */
+	bool bThrows = true;
 	FString Id, Name;
 	double X = 0, Y = 0, Z = 0, Yaw = 0, Pitch = 0, Health = 20;
 	bool bSneaking = false, bSprinting = false;
@@ -97,12 +101,26 @@ public:
 
 	// ---- what the players ask (from the pawn's server RPCs) ---------------------------------
 	void OnHello(ACubePlayerPawn* Pawn, const FString& Name, bool bCross, double X, double Y, double Z);
-	void OnMove(ACubePlayerPawn* Pawn, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
-	void OnDig(ACubePlayerPawn* Pawn, int32 X, int32 Y, int32 Z, bool bStart);
-	void OnPlace(ACubePlayerPawn* Pawn, int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind);
-	void OnAttack(ACubePlayerPawn* Pawn, const FString& Target);
-	void OnRespawn(ACubePlayerPawn* Pawn);
-	void OnThrow(ACubePlayerPawn* Pawn, double DX, double DY, double DZ);
+	void OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	void OnDig(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, bool bStart);
+	void OnPlace(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind);
+	void OnAttack(FCubeServerPlayer* P, const FString& Target);
+	void OnRespawn(FCubeServerPlayer* P);
+	void OnThrow(FCubeServerPlayer* P, double DX, double DY, double DZ);
+	FCubeServerPlayer* PlayerOf(ACubePlayerPawn* Pawn);
+
+	// ---- the WebSocket door: browser clients, in the C# server's JSON frames ---------------------------
+	void OpenWebSocket();
+	void OnWebText(int32 Client, const FString& Text);
+	void OnWebClosed(int32 Client);
+	void WebWelcome(FCubeServerPlayer& P);
+	void WebSend(const FCubeServerPlayer& P, const TSharedRef<FJsonObject>& Frame);
+	void WebBroadcast(const TSharedRef<FJsonObject>& Frame);
+	void WebBroadcastPlayers();
+	void WebBroadcastRegions();
+	FCubeServerPlayer* PlayerOfWeb(int32 Client);
+	int32 WebPort() const;
+	FString WebAddress() const;
 
 private:
 	// ---- startup ----------------------------------------------------------------------------
@@ -145,10 +163,19 @@ private:
 
 	// ---- the rules --------------------------------------------------------------------------
 	void Welcome(FCubeServerPlayer& Player);
+	void LoadInventoryAndWelcome(const FString& Id);
 	void Hurt(FCubeServerPlayer& Victim, double Damage, bool bDirected, double DX, double DY, double Strength, const FString& By);
 	void Publish(const FCubeWorldUpdate& Update);
 	void BroadcastCubes(const TArray<FCubeChange>& Changes, const TArray<FCubeFall>& Falls, bool bRemote);
+	void WebBroadcastCubes(const TArray<FCubeChange>& Changes, const TArray<FCubeFall>& Falls, bool bRemote);
 	void ShareInventory(FCubeServerPlayer& Player);
+	void SendInventory(FCubeServerPlayer& Player, bool bRefused = false);
+	void SendRespawn(FCubeServerPlayer& Player);
+	void RemovePlayer(const FString& Id);
+	void BroadcastDig(const FString& PlayerId, int32 X, int32 Y, int32 Z, int32 Stage);
+	void BroadcastHurt(const FString& PlayerId, double Health, double KX, double KY, double Strength, const FString& By);
+	void BroadcastDeath(const FString& PlayerId, const FString& By);
+	void BroadcastBomb(const FCubeBombRep& Frame);
 	void Spawn(FCubeServerPlayer& Player);
 	TArray<FCubeHitbox> Hitboxes() const;
 	TArray<TPair<FString, FCubeHitbox>> Targets() const;
@@ -156,7 +183,6 @@ private:
 	static FCubeHitbox HitboxOf(const FCubeServerPlayer& P);
 	static double EyeHeightOf(bool bSneaking) { return bSneaking ? CubeSpec::SneakEyeHeight : CubeSpec::EyeHeight; }
 	FCubePresenceRep PoseOf(const FCubeServerPlayer& P) const;
-	FCubeServerPlayer* PlayerOf(ACubePlayerPawn* Pawn);
 	FCubeServerPlayer* PlayerOfController(AController* Controller);
 	FCubeServerPlayer* PlayerById(const FString& Id);
 	void PublishPlayers();
@@ -206,6 +232,7 @@ private:
 	bool bDedicated = false, bServing = false, bClosing = false;
 	bool bCubesBusy = false, bPresenceBusy = false, bHitsBusy = false, bBombsBusy = false, bRegionsBusy = false;
 	TSharedPtr<FCubeLiveTables> LiveTables;
+	TSharedPtr<class FCubeWebSocketServer> Web;
 	int32 LiveCubes = 0, LivePresence = 0, LiveHits = 0, LiveBombs = 0, LiveRegions = 0;
 	int64 LivePresenceSince = 0, LiveHitsSince = 0;
 	int32 RegionTry = 0;

@@ -19,6 +19,7 @@
 #include "Materials/Material.h"
 #include "EngineUtils.h"
 #include "Net/UnrealNetwork.h"
+#include "Dom/JsonObject.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "TimerManager.h"
@@ -190,7 +191,7 @@ void ACubePlayerPawn::OnSlot(int32 Index) { if (Game) Game->Slot = FMath::Clamp(
 void ACubePlayerPawn::OnConfirm()
 {
 	if (!Game) return;
-	if (Game->bDead) { ServerRespawn(); return; }
+	if (Game->bDead) { CmdRespawn(); return; }
 	if (!Game->IsConnected() && !Game->IsSigningIn()) { Game->StartPlay(Game->PlayerName); return; }
 	if (Game->IsConnected()) CaptureMouse(true);
 }
@@ -213,7 +214,7 @@ void ACubePlayerPawn::OnDig(bool bHeld)
 	}
 	// A click on a player is a hit; digging is handled on the tick while the button stays down.
 	UpdateAim();
-	if (Aim.bPlayer) ServerAttack(Aim.PlayerId);
+	if (Aim.bPlayer) CmdAttack(Aim.PlayerId);
 }
 
 void ACubePlayerPawn::OnPlace()
@@ -224,7 +225,7 @@ void ACubePlayerPawn::OnPlace()
 	if (!Aim.bBlock) return;
 	const FName Kind = Game->Hotbar.IsValidIndex(Slot()) ? Game->Hotbar[Slot()] : NAME_None;
 	if (Kind == NAME_None || Game->Inventory.FindRef(Kind) <= 0) return;
-	ServerPlace(Aim.Hit.Block.X, Aim.Hit.Block.Y, Aim.Hit.Block.Z, Aim.Hit.Normal.X, Aim.Hit.Normal.Y, Aim.Hit.Normal.Z, CubeSpec::KindIndex(Kind));
+	CmdPlace(Aim.Hit.Block.X, Aim.Hit.Block.Y, Aim.Hit.Block.Z, Aim.Hit.Normal.X, Aim.Hit.Normal.Y, Aim.Hit.Normal.Z, Kind);
 }
 
 void ACubePlayerPawn::Spawn(double X, double Y, double Z)
@@ -267,7 +268,7 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 			int32 Z = FMath::FloorToInt32(Body.Z) + 1;
 			while (Z > CubeSpec::MinZ && !Game->World.IsSolid(X, Y, Z)) Z--;
 			TestPlaced = FIntVector(X, Y, Z + 1);
-			ServerPlace(X, Y, Z, 0, 0, 1, CubeSpec::KindIndex(TEXT("gold")));
+			CmdPlace(X, Y, Z, 0, 0, 1, TEXT("gold"));
 			Game->Log(FString::Printf(TEXT("selftest: placed gold at %d %d %d"), X, Y, Z + 1));
 		}), 5.f, false);
 		GetWorldTimerManager().SetTimer(H4, FTimerDelegate::CreateWeakLambda(this, [this]()
@@ -275,14 +276,14 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 			const FIntVector& P = TestPlaced;
 			Game->Log(FString::Printf(TEXT("selftest: world says %s at %d %d %d, gold left %d"), *Game->World.KindAt(P.X, P.Y, P.Z).ToString(), P.X, P.Y, P.Z, Game->Inventory.FindRef(TEXT("gold"))));
 			TestDug = FIntVector(FMath::FloorToInt32(Body.X), FMath::FloorToInt32(Body.Y), FMath::FloorToInt32(Body.Z) - 1);
-			ServerDig(TestDug.X, TestDug.Y, TestDug.Z, true);
+			CmdDig(TestDug.X, TestDug.Y, TestDug.Z, true);
 			Game->Log(FString::Printf(TEXT("selftest: digging %s under the feet at %d %d %d"), *Game->World.KindAt(TestDug.X, TestDug.Y, TestDug.Z).ToString(), TestDug.X, TestDug.Y, TestDug.Z));
 		}), 6.f, false);
 		GetWorldTimerManager().SetTimer(H5, FTimerDelegate::CreateWeakLambda(this, [this]()
 		{
 			const FIntVector& D = TestDug;
 			Game->Log(FString::Printf(TEXT("selftest: after dig %s at %d %d %d, dirt %d, players seen %d"), *Game->World.KindAt(D.X, D.Y, D.Z).ToString(), D.X, D.Y, D.Z, Game->Inventory.FindRef(TEXT("dirt")), Game->Players.Num()));
-			for (const FCubePresence& P : Game->Players) if (P.Id != Game->PlayerId) { ServerAttack(P.Id); Game->Log(FString::Printf(TEXT("selftest: hit %s"), *P.Name)); }
+			for (const FCubePresence& P : Game->Players) if (P.Id != Game->PlayerId) { CmdAttack(P.Id); Game->Log(FString::Printf(TEXT("selftest: hit %s"), *P.Name)); }
 		}), 9.f, false);
 		Game->OnCube.AddLambda([this](int32 X, int32 Y, int32 Z, FName Kind) { Game->Log(FString::Printf(TEXT("cube %d %d %d -> %s"), X, Y, Z, *Kind.ToString())); });
 		Game->OnDig.AddLambda([this](const FString&, int32 X, int32 Y, int32 Z, int32 Stage) { if (Stage <= 0 || Stage == 9) Game->Log(FString::Printf(TEXT("dig %d %d %d stage %d"), X, Y, Z, Stage)); });
@@ -312,7 +313,7 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 			else if (Phase == 1 && !Game->Holding.IsEmpty())
 			{
 				Game->Log(FString::Printf(TEXT("bombtest: holding %s, throwing"), *Game->Holding));
-				ServerThrow(0.9f, 0.f, 0.44f);
+				CmdThrow(FVector(0.9, 0, 0.44));
 				Phase = 2;
 			}
 			else if (Phase == 2)
@@ -428,10 +429,10 @@ void ACubePlayerPawn::DigTick()
 	const bool bWant = bDigHeld && bMouseCaptured && !Game->bDead && Aim.bBlock;
 	const FIntVector Target = bWant ? Aim.Hit.Block : FIntVector::ZeroValue;
 	if (bWant == bDigging && (!bWant || Target == DigTarget)) return;
-	if (bDigging) ServerDig(DigTarget.X, DigTarget.Y, DigTarget.Z, false);
+	if (bDigging) CmdDig(DigTarget.X, DigTarget.Y, DigTarget.Z, false);
 	bDigging = bWant;
 	DigTarget = Target;
-	if (bWant) ServerDig(Target.X, Target.Y, Target.Z, true);
+	if (bWant) CmdDig(Target.X, Target.Y, Target.Z, true);
 }
 
 void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
@@ -439,7 +440,7 @@ void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
 	const FString Pose = FString::Printf(TEXT("%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d"), Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
 	if (Pose == LastPose) return;
 	LastPose = Pose;
-	ServerMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
+	CmdMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
 }
 
 void ACubePlayerPawn::GameTick()
@@ -533,32 +534,32 @@ void ACubePlayerPawn::ServerHello_Implementation(const FString& Name, bool bCros
 
 void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(this, X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting);
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(S->PlayerOf(this), X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting);
 }
 
 void ACubePlayerPawn::ServerDig_Implementation(int32 X, int32 Y, int32 Z, bool bStart)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnDig(this, X, Y, Z, bStart);
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnDig(S->PlayerOf(this), X, Y, Z, bStart);
 }
 
 void ACubePlayerPawn::ServerPlace_Implementation(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, uint8 Kind)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnPlace(this, X, Y, Z, NX, NY, NZ, CubeSpec::KindOf(Kind));
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnPlace(S->PlayerOf(this), X, Y, Z, NX, NY, NZ, CubeSpec::KindOf(Kind));
 }
 
 void ACubePlayerPawn::ServerAttack_Implementation(const FString& Target)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnAttack(this, Target);
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnAttack(S->PlayerOf(this), Target);
 }
 
 void ACubePlayerPawn::ServerRespawn_Implementation()
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnRespawn(this);
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnRespawn(S->PlayerOf(this));
 }
 
 void ACubePlayerPawn::ServerThrow_Implementation(float DX, float DY, float DZ)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnThrow(this, DX, DY, DZ);
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnThrow(S->PlayerOf(this), DX, DY, DZ);
 }
 
 // ── from the server ──────────────────────────────────────────────────────────────────────────────
@@ -709,7 +710,7 @@ void ACubePlayerPawn::PlaceHeld(ACubeBomb* Bomb)
 void ACubePlayerPawn::ThrowBomb()
 {
 	const FVector Look = Camera->GetForwardVector();
-	ServerThrow(Look.X, Look.Y, Look.Z);
+	CmdThrow(Look);
 }
 
 // A dead player leaves the map, you too: your tombstone stands where you fell until you respawn.
@@ -723,4 +724,67 @@ void ACubePlayerPawn::ShowMyTomb()
 	if (!MyTomb) return;
 	if (!Game->bDead) MyTomb->Show(false);
 	else if (MyTomb->IsHidden()) MyTomb->Show(true, FVector(Body.X, Body.Y, Body.Z), FMath::DegreesToRadians(GetControlRotation().Yaw - 90.f));
+}
+
+// ── the same requests, by whichever door the server is behind ────────────────────────────────────
+
+namespace
+{
+	TSharedRef<FJsonObject> Op(const TCHAR* Name)
+	{
+		TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
+		F->SetStringField(TEXT("op"), Name);
+		return F;
+	}
+}
+
+void ACubePlayerPawn::CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+{
+	if (!Game->IsViaSocket()) { ServerMove(X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting); return; }
+	const TSharedRef<FJsonObject> F = Op(TEXT("move"));
+	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
+	F->SetNumberField(TEXT("yaw"), Yaw); F->SetNumberField(TEXT("pitch"), Pitch);
+	F->SetBoolField(TEXT("onGround"), bOnGround); F->SetBoolField(TEXT("sneaking"), bSneaking); F->SetBoolField(TEXT("sprinting"), bSprinting);
+	Game->Send(F);
+}
+
+void ACubePlayerPawn::CmdDig(int32 X, int32 Y, int32 Z, bool bStart)
+{
+	if (!Game->IsViaSocket()) { ServerDig(X, Y, Z, bStart); return; }
+	const TSharedRef<FJsonObject> F = Op(TEXT("dig"));
+	F->SetStringField(TEXT("state"), bStart ? TEXT("start") : TEXT("stop"));
+	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
+	Game->Send(F);
+}
+
+void ACubePlayerPawn::CmdPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind)
+{
+	if (!Game->IsViaSocket()) { ServerPlace(X, Y, Z, NX, NY, NZ, CubeSpec::KindIndex(Kind)); return; }
+	const TSharedRef<FJsonObject> F = Op(TEXT("place"));
+	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
+	F->SetNumberField(TEXT("nx"), NX); F->SetNumberField(TEXT("ny"), NY); F->SetNumberField(TEXT("nz"), NZ);
+	F->SetStringField(TEXT("kind"), Kind.ToString());
+	Game->Send(F);
+}
+
+void ACubePlayerPawn::CmdAttack(const FString& Target)
+{
+	if (!Game->IsViaSocket()) { ServerAttack(Target); return; }
+	const TSharedRef<FJsonObject> F = Op(TEXT("attack"));
+	F->SetStringField(TEXT("target"), Target);
+	Game->Send(F);
+}
+
+void ACubePlayerPawn::CmdRespawn()
+{
+	if (!Game->IsViaSocket()) { ServerRespawn(); return; }
+	Game->Send(Op(TEXT("respawn")));
+}
+
+void ACubePlayerPawn::CmdThrow(const FVector& Direction)
+{
+	if (!Game->IsViaSocket()) { ServerThrow(Direction.X, Direction.Y, Direction.Z); return; }
+	const TSharedRef<FJsonObject> F = Op(TEXT("throw"));
+	F->SetNumberField(TEXT("x"), Direction.X); F->SetNumberField(TEXT("y"), Direction.Y); F->SetNumberField(TEXT("z"), Direction.Z);
+	Game->Send(F);
 }

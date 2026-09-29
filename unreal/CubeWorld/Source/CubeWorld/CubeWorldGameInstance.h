@@ -13,6 +13,9 @@
 #include "Engine/EngineTypes.h"
 #include "CubeWorldGameInstance.generated.h"
 
+class FCubeSocket;
+class FJsonObject;
+
 struct FCubePresence
 {
 	FString Id, Name, Server, Color;
@@ -72,6 +75,10 @@ public:
 
 	/** True once this server's welcome arrived and until the connection goes. */
 	bool IsConnected() const { return bWelcomed; }
+	/** True while the server is a C# one, reached over the JSON socket; false on an Unreal server, reached over Iris. */
+	bool IsViaSocket() const { return bViaSocket; }
+	/** A JSON frame to the C# server (nothing while on an Unreal server). */
+	void Send(const TSharedRef<FJsonObject>& Frame);
 	/** "you", or the name another player goes by. */
 	FString NameOf(const FString& Id) const;
 	bool IsSigningIn() const { return bSigningIn; }
@@ -130,6 +137,12 @@ public:
 private:
 	void Browse();
 	void Reconnect();
+	void TravelToUnrealServer(const FString& RoomName, const FString& Url, bool bTeleport);
+	void ConnectSocket(const FString& RoomName, const FString& Host, int32 Port, bool bSecure, const FString& ReservationToken, bool bTeleport);
+	void OnSocketFrame(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport);
+	void OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport);
+	void CloseSockets();
+	bool IsInNetworkedWorld() const;
 	void HandleNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
 	void HandlePostLoadMap(UWorld* LoadedWorld);
 	FString RoomOfRegion(int32 InRegion) const;
@@ -141,6 +154,12 @@ private:
 
 	bool bSigningIn = false;
 	bool bSwitching = false;
+	bool bViaSocket = false;
+	TSharedPtr<FCubeSocket> Socket;
+	TSharedPtr<FCubeSocket> PendingSocket;
+	/** A socket connection that waits for the client to leave an Unreal server's world first. */
+	struct FSocketPlan { bool bSet = false; FString RoomName, Host, ReservationToken; int32 Port = 0; bool bSecure = false, bTeleport = true; };
+	FSocketPlan SocketPlan;
 	bool bWelcomed = false;
 	bool bWorldLoaded = false;
 	/** The room travelled to, until its welcome names it. */

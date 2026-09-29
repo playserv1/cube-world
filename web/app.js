@@ -106,7 +106,9 @@ async function enter(roomName, teleport = true) {
   try {
     const ticket = await api("POST", `/rooms/${cfg.slug}/${roomName}:join`, {});
     const c = ticket.connect;
-    const url = c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${cfg.api.replace(/^http/, "ws")}/games/${cfg.slug}`;
+    // An Unreal server plays Unreal clients on its own port and browsers on a WebSocket one, named in its attributes.
+    const door = ticket.attributes && ticket.attributes.ws;
+    const url = door ? door : c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${cfg.api.replace(/^http/, "ws")}/games/${cfg.slug}`;
     const socket = new WebSocket(url);
     socket.onopen = () => socket.send(JSON.stringify({
       playerId: state.player.player_id, displayName: state.player.name,

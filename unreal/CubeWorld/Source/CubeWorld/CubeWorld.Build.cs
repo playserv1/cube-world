@@ -15,5 +15,9 @@ public class CubeWorld : ModuleRules
 
 		// The dedicated server replicates over Iris (net.Iris.UseIrisReplication=1 in DefaultEngine.ini).
 		SetupIrisSupport(Target);
+
+		// The game socket to a C# server runs over OpenSSL's connect BIO, plain or TLS; the SSL module owns the certificate store.
+		PrivateDependencyModuleNames.Add("SSL");
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 	}
 }

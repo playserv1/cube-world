@@ -10,4 +10,4 @@ createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": types[extname(path)] ?? "application/octet-stream", "Cache-Control": "no-store" });
     res.end(data);
   } catch { res.writeHead(404); res.end("not found"); }
-}).listen(5173, () => console.log("serving", root, "on 5173"));
+}).listen(process.env.PORT ?? 5173, () => console.log("serving", root, "on", process.env.PORT ?? 5173));

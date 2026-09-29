@@ -1,6 +1,7 @@
 #include "CubeWorldGameInstance.h"
 #include "CubeWorld.h"
 #include "CubeWorldActor.h"
+#include "CubeSocket.h"
 #include "PlayServ.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -20,6 +21,7 @@ void UCubeWorldGameInstance::Init()
 
 void UCubeWorldGameInstance::Shutdown()
 {
+	CloseSockets();
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 	if (GEngine) GEngine->OnNetworkFailure().RemoveAll(this);
 	Super::Shutdown();
@@ -30,6 +32,13 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 {
 	if (!LoadedWorld || IsRunningDedicatedServer() || LoadedWorld->GetNetMode() == NM_DedicatedServer) return;
 	LoadedWorld->SpawnActor<ACubeWorldActor>();
+	// Back in the local map after an Unreal server: the C# server waiting for us is reached now.
+	if (SocketPlan.bSet && LoadedWorld->GetNetMode() == NM_Standalone)
+	{
+		const FSocketPlan Plan = SocketPlan;
+		SocketPlan = FSocketPlan();
+		ConnectSocket(Plan.RoomName, Plan.Host, Plan.Port, Plan.bSecure, Plan.ReservationToken, Plan.bTeleport);
+	}
 }
 
 void UCubeWorldGameInstance::Log(const FString& Text)
@@ -145,24 +154,49 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 			}
 			return;
 		}
-		APlayerController* PC = Self->GetFirstLocalPlayerController();
-		if (!PC) { Self->bSwitching = false; return; }
-		// A crossing keeps the body where it is; a fresh join takes the server's spawn.
-		Self->Crossing = bTeleport ? FCubeCrossing() : Self->LastBody;
-		Self->Crossing.bSet = !bTeleport && Self->bPlaced;
-		Self->bWelcomed = false;
-		Self->bWorldLoaded = false;
-		Self->Travelling = RoomName;
-		Self->Players.Empty();
-		const FString Url = PlayServ::Rooms::BuildTravelUrl(Result.Ticket);
-		Self->Log(FString::Printf(TEXT("travelling to %s at %s:%d"), *RoomName, *Result.Ticket.Connect.Host, Result.Ticket.Connect.Port));
-		PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
+		const FPlayServRoomConnect& C = Result.Ticket.Connect;
+		// An Unreal server says so in its attributes and is reached over Iris; any other room is a C# server, reached
+		// over the JSON socket, plain or TLS (the SDK reads wss as anything but ws).
+		if (Result.Ticket.Attributes.FindRef(TEXT("engine")) == TEXT("unreal"))
+		{
+			Self->TravelToUnrealServer(RoomName, PlayServ::Rooms::BuildTravelUrl(Result.Ticket), bTeleport);
+			return;
+		}
+		FString Host = C.Host, Override;
+		int32 Port = C.Port;
+		bool bSecure = C.Transport != EPlayServRoomTransport::Ws;
+		if (FParse::Param(FCommandLine::Get(), TEXT("wsplain"))) bSecure = false;
+		if (FParse::Param(FCommandLine::Get(), TEXT("wssecure"))) bSecure = true;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-wshost="), Override) && !Override.IsEmpty())
+		{
+			FString PortText;
+			if (Override.Split(TEXT(":"), &Host, &PortText)) Port = FCString::Atoi(*PortText); else Host = Override;
+		}
+		Self->ConnectSocket(RoomName, Host, Port, bSecure, Result.Ticket.ReservationToken, bTeleport);
 	}));
+}
+
+void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const FString& Url, bool bTeleport)
+{
+	APlayerController* PC = GetFirstLocalPlayerController();
+	if (!PC) { bSwitching = false; return; }
+	CloseSockets();
+	bViaSocket = false;
+	// A crossing keeps the body where it is; a fresh join takes the server's spawn.
+	Crossing = bTeleport ? FCubeCrossing() : LastBody;
+	Crossing.bSet = !bTeleport && bPlaced;
+	bWelcomed = false;
+	bWorldLoaded = false;
+	Travelling = RoomName;
+	Players.Empty();
+	Log(FString::Printf(TEXT("travelling to %s (Unreal) at %s"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
+	PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
 }
 
 void UCubeWorldGameInstance::HandleNetworkFailure(UWorld* InWorld, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString)
 {
 	if (IsRunningDedicatedServer()) return;
+	if (SocketPlan.bSet) return;   // leaving an Unreal server on purpose, for a C# one
 	Disconnected(ErrorString.IsEmpty() ? FString(ENetworkFailure::ToString(FailureType)) : ErrorString);
 }
 
@@ -176,6 +210,8 @@ void UCubeWorldGameInstance::ReturnToMainMenu()
 void UCubeWorldGameInstance::Disconnected(const FString& Why)
 {
 	if (!bWelcomed && !bSwitching && Travelling.IsEmpty()) return;
+	if (Socket.IsValid()) { Socket->Close(); Socket.Reset(); }
+	bViaSocket = false;
 	const FString Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Why);
 	Log(Turned.IsEmpty() ? FString::Printf(TEXT("disconnected: %s"), *Why) : Turned);
 	bWelcomed = false;

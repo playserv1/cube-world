@@ -5,6 +5,7 @@
 #include "CubeEntities.h"
 #include "CubeBombs.h"
 #include "CubeLiveTables.h"
+#include "CubeWebSocketServer.h"
 #include "PlayServ.h"
 #include "Engine/World.h"
 #include "GameFramework/GameSession.h"
@@ -222,9 +223,12 @@ void ACubeWorldGameMode::OpenRoom()
 		if (!Weak.IsValid()) return;
 		ACubeWorldGameMode* Self = Weak.Get();
 		if (!bOk) { Self->RetryStartup(FString::Printf(TEXT("hosting refused: %s (%s)"), *Error.Message, *Error.ProblemCode)); return; }
+		Self->OpenWebSocket();
 		FPlayServRoomSnapshot Room;
 		Room.RoomName = Self->RoomName();
 		Room.State = TEXT("open");
+		Room.Attributes.Add(TEXT("engine"), TEXT("unreal"));
+		if (Self->Web.IsValid()) Room.Attributes.Add(TEXT("ws"), Self->WebAddress());
 		Room.Attributes.Add(PlayServ::Rooms::Attributes::Name, FString::Printf(TEXT("Cube World %s"), *Self->Color()));
 		Room.Attributes.Add(TEXT("color"), Self->Color());
 		Room.Attributes.Add(TEXT("region"), FString::FromInt(Self->Region));
@@ -261,6 +265,7 @@ void ACubeWorldGameMode::Serve()
 void ACubeWorldGameMode::EndPlay(const EEndPlayReason::Type Reason)
 {
 	if (LiveTables.IsValid()) { LiveTables->Shutdown(); LiveTables.Reset(); }
+	if (Web.IsValid()) { Web->Shutdown(); Web.Reset(); }
 	if (bDedicated && Reason != EEndPlayReason::LevelTransition) PlayServ::Rooms::StopHosting();
 	Super::EndPlay(Reason);
 }
@@ -292,17 +297,7 @@ void ACubeWorldGameMode::Logout(AController* Exiting)
 {
 	// The pawn is already unpossessed here: the player is found by their controller.
 	if (bDedicated)
-		if (FCubeServerPlayer* Player = PlayerOfController(Exiting))
-		{
-			StopDig(*Player);
-			ServerLog(FString::Printf(TEXT("%s left"), *Player->Name));
-			const FString Id = Player->Id;
-			UWorldPresence* Row = Player->PresenceRow.Get();
-			TStrongObjectPtr<UWorldPresence> Keep(Row);
-			Players.Remove(Id);
-			if (Row) DeletePresence(Id, Row);
-			PublishPlayers();
-		}
+		if (FCubeServerPlayer* Player = PlayerOfController(Exiting)) RemovePlayer(Player->Id);
 	Super::Logout(Exiting);
 }
 
@@ -354,10 +349,13 @@ void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, boo
 	}
 	Players.Add(Player->Id, Player);
 	ServerLog(FString::Printf(TEXT("%s %s"), *Player->Name, bCross ? TEXT("crossed in") : TEXT("joined")));
+	LoadInventoryAndWelcome(Player->Id);
+}
 
-	// The inventory is theirs from wherever they last played; a first-timer gets a full stack of everything.
+// The inventory is theirs from wherever they last played; a first-timer gets a full stack of everything.
+void ACubeWorldGameMode::LoadInventoryAndWelcome(const FString& Id)
+{
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	const FString Id = Player->Id;
 	PlayServ::Data::LoadAll<UCubeInventory>(FPlayServFilter::Where(TEXT("player_id")).EqualTo(Id), [Weak, Id](bool bOk, TArray<UCubeInventory*> Rows, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
@@ -379,6 +377,7 @@ void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, boo
 
 void ACubeWorldGameMode::Welcome(FCubeServerPlayer& P)
 {
+	if (P.WebClient) { WebWelcome(P); return; }
 	ACubePlayerPawn* Pawn = P.Pawn.Get();
 	if (!Pawn) return;
 	P.bWelcomed = true;
@@ -415,6 +414,7 @@ void ACubeWorldGameMode::Welcome(FCubeServerPlayer& P)
 void ACubeWorldGameMode::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (Web.IsValid()) Web->Tick();
 	if (!bServing) return;
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { GameTick(); Accumulator -= CubeSpec::TickSeconds; }
@@ -450,6 +450,7 @@ void ACubeWorldGameMode::ShareMoves()
 			if (P.bWelcomed && (P.bMoved || Now() - P.PresenceWrittenAt > 2000)) WritePresence(P);
 		}
 	PublishPlayers();
+	WebBroadcastPlayers();
 }
 
 FCubePresenceRep ACubeWorldGameMode::PoseOf(const FCubeServerPlayer& P) const
@@ -476,6 +477,7 @@ void ACubeWorldGameMode::PublishPlayers()
 // row's older version, and the next write would be refused.
 void ACubeWorldGameMode::Heartbeat()
 {
+	WebBroadcastRegions();
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	if (RegionRow.IsValid()) WriteRegionClaim([Weak](bool) { if (Weak.IsValid()) Weak->PollRegions(); });
 	else PollRegions();
@@ -498,13 +500,13 @@ void ACubeWorldGameMode::TickDig(FCubeServerPlayer& P)
 	if (Stage != Dig.Stage)
 	{
 		Dig.Stage = Stage;
-		State->MulticastDig(P.Id, Dig.X, Dig.Y, Dig.Z, Stage);
+		BroadcastDig(P.Id, Dig.X, Dig.Y, Dig.Z, Stage);
 	}
 	if (Elapsed < Dig.Ticks) return;
 
 	const int32 X = Dig.X, Y = Dig.Y, Z = Dig.Z;
 	P.Dig.Reset();
-	State->MulticastDig(P.Id, X, Y, Z, -1);
+	BroadcastDig(P.Id, X, Y, Z, -1);
 	FCubeWorldUpdate Update;
 	FBlockDef Broken;
 	if (!World.Break(X, Y, Z, P.Id, ServerName, Update, Broken)) return;
@@ -517,14 +519,13 @@ void ACubeWorldGameMode::StopDig(FCubeServerPlayer& P)
 	if (!P.Dig.IsSet()) return;
 	const FCubeDig Dig = P.Dig.GetValue();
 	P.Dig.Reset();
-	if (State) State->MulticastDig(P.Id, Dig.X, Dig.Y, Dig.Z, -1);
+	if (State) BroadcastDig(P.Id, Dig.X, Dig.Y, Dig.Z, -1);
 }
 
 // ── what the players ask ─────────────────────────────────────────────────────────────────────────
 
-void ACubeWorldGameMode::OnMove(ACubePlayerPawn* Pawn, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
 {
-	FCubeServerPlayer* P = PlayerOf(Pawn);
 	if (!P || P->bDead) return;
 	P->X = FMath::Clamp(X, 0.0, (double)CubeSpec::Width_);
 	P->Y = FMath::Clamp(Y, 0.0, (double)CubeSpec::Depth);
@@ -550,9 +551,8 @@ void ACubeWorldGameMode::OnMove(ACubePlayerPawn* Pawn, double X, double Y, doubl
 	}
 }
 
-void ACubeWorldGameMode::OnDig(ACubePlayerPawn* Pawn, int32 X, int32 Y, int32 Z, bool bStart)
+void ACubeWorldGameMode::OnDig(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, bool bStart)
 {
-	FCubeServerPlayer* P = PlayerOf(Pawn);
 	if (!P) return;
 	StopDig(*P);
 	if (!bStart || P->bDead) return;
@@ -561,33 +561,25 @@ void ACubeWorldGameMode::OnDig(ACubePlayerPawn* Pawn, int32 X, int32 Y, int32 Z,
 	if (!FCubeServerWorld::Inside(X, Y, Z) || !Block.IsSolid() || !Block.IsBreakable()
 		|| FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) > CubeSpec::BlockReach + CubeSpec::ReachTolerance) return;
 	P->Dig = FCubeDig{ X, Y, Z, TickCount, Block.BreakTicks, 0 };
-	State->MulticastDig(P->Id, X, Y, Z, 0);
+	BroadcastDig(P->Id, X, Y, Z, 0);
 }
 
-void ACubeWorldGameMode::OnPlace(ACubePlayerPawn* Pawn, int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind)
+void ACubeWorldGameMode::OnPlace(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind)
 {
-	FCubeServerPlayer* P = PlayerOf(Pawn);
 	if (!P || P->bDead) return;
 	const double Ex = P->X, Ey = P->Y, Ez = P->Z + EyeHeightOf(P->bSneaking);
 	const bool bReachable = FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) <= CubeSpec::BlockReach + CubeSpec::ReachTolerance;
 	FCubeWorldUpdate Update;
 	const bool bPlaced = bReachable && P->Inventory.Count(Kind) > 0 && World.Place(X, Y, Z, NX, NY, NZ, Kind, P->Id, ServerName, Hitboxes(), Update);
-	if (!bPlaced)
-	{
-		TArray<FCubeStackRep> Stacks;
-		for (const auto& Pair : P->Inventory.Stacks) Stacks.Add({ CubeSpec::KindIndex(Pair.Key), Pair.Value });
-		Pawn->ClientInventory(Stacks);
-		return;
-	}
+	if (!bPlaced) { SendInventory(*P, true); return; }
 	P->Inventory.Take(Kind);
 	ShareInventory(*P);
 	Publish(Update);
 }
 
 /** A hit on whoever is within reach: a player on this server, or one another server hosts. */
-void ACubeWorldGameMode::OnAttack(ACubePlayerPawn* Pawn, const FString& Target)
+void ACubeWorldGameMode::OnAttack(FCubeServerPlayer* P, const FString& Target)
 {
-	FCubeServerPlayer* P = PlayerOf(Pawn);
 	if (!P || P->bDead || Target.IsEmpty() || Target == P->Id) return;
 	FCubeServerPlayer* Local = PlayerById(Target);
 	const FCubeElsewhere* Remote = Local ? nullptr : Elsewhere.Find(Target);
@@ -620,22 +612,21 @@ void ACubeWorldGameMode::Hurt(FCubeServerPlayer& Victim, double Damage, bool bDi
 	Victim.LastHurtTick = TickCount;
 	Victim.Health = FMath::Max(0.0, Victim.Health - Damage);
 	Victim.bMoved = true;
-	State->MulticastHurt(Victim.Id, Victim.Health, bDirected ? DX * Strength : 0, bDirected ? DY * Strength : 0, bDirected ? Strength : 0, By);
+	BroadcastHurt(Victim.Id, Victim.Health, bDirected ? DX * Strength : 0, bDirected ? DY * Strength : 0, bDirected ? Strength : 0, By);
 	if (Victim.Health > 0) return;
 	Victim.bDead = true;
 	StopDig(Victim);
-	State->MulticastDeath(Victim.Id, By);
+	BroadcastDeath(Victim.Id, By);
 }
 
-void ACubeWorldGameMode::OnRespawn(ACubePlayerPawn* Pawn)
+void ACubeWorldGameMode::OnRespawn(FCubeServerPlayer* P)
 {
-	FCubeServerPlayer* P = PlayerOf(Pawn);
 	if (!P || !P->bDead) return;
 	Spawn(*P);
 	P->bDead = false;
 	P->bAirborne = false;
 	P->bMoved = true;
-	Pawn->ClientRespawn(P->X, P->Y, P->Z);
+	SendRespawn(*P);
 }
 
 void ACubeWorldGameMode::Publish(const FCubeWorldUpdate& Update)
@@ -652,17 +643,13 @@ void ACubeWorldGameMode::BroadcastCubes(const TArray<FCubeChange>& Changes, cons
 	TArray<FCubeFallRep> FallReps;
 	for (const FCubeFall& F : Falls) FallReps.Add({ CubeSpec::KindIndex(F.Kind), (int16)F.X, (int16)F.Y, (int16)F.FromZ, (int16)F.ToZ });
 	State->MulticastCubes(ChangeReps, FallReps, bRemote);
+	WebBroadcastCubes(Changes, Falls, bRemote);
 }
 
 void ACubeWorldGameMode::ShareInventory(FCubeServerPlayer& P)
 {
 	WriteInventory(P);
-	if (ACubePlayerPawn* Pawn = P.Pawn.Get())
-	{
-		TArray<FCubeStackRep> Stacks;
-		for (const auto& Pair : P.Inventory.Stacks) Stacks.Add({ CubeSpec::KindIndex(Pair.Key), Pair.Value });
-		Pawn->ClientInventory(Stacks);
-	}
+	SendInventory(P);
 }
 
 TArray<FCubeHitbox> ACubeWorldGameMode::Hitboxes() const
@@ -790,9 +777,8 @@ void ACubeWorldGameMode::TickBombs()
 	}
 }
 
-void ACubeWorldGameMode::OnThrow(ACubePlayerPawn* Pawn, double DX, double DY, double DZ)
+void ACubeWorldGameMode::OnThrow(FCubeServerPlayer* P, double DX, double DY, double DZ)
 {
-	FCubeServerPlayer* P = PlayerOf(Pawn);
 	if (!P || P->bDead || P->Bomb.IsEmpty()) return;
 	const FString Id = P->Bomb;
 	P->Bomb.Empty();
@@ -913,7 +899,7 @@ void ACubeWorldGameMode::OnBomb(const FCubeBombRecord& Bomb, bool bOwned)
 		if (P.Bomb == Bomb.Id && (Bomb.State != TEXT("held") || Bomb.Holder != P.Id)) P.Bomb.Empty();
 	}
 	if (Bomb.State == TEXT("held")) if (FCubeServerPlayer* Holder = PlayerById(Bomb.Holder)) Holder->Bomb = Bomb.Id;
-	if (State) State->MulticastBomb(BombFrame(Bomb, Bombs.Find(Bomb.Id)));
+	BroadcastBomb(BombFrame(Bomb, Bombs.Find(Bomb.Id)));
 }
 
 // ── platform data: writes ────────────────────────────────────────────────────────────────────────
@@ -1157,6 +1143,8 @@ void ACubeWorldGameMode::PollRegions()
 
 void ACubeWorldGameMode::TurnAway(FCubeServerPlayer& P, const FString& Reason)
 {
+	// A browser client hears the reason on the close, as the C# server says it.
+	if (P.WebClient) { if (Web.IsValid()) Web->Close(P.WebClient, 1008, Reason); return; }
 	ACubePlayerPawn* Pawn = P.Pawn.Get();
 	if (!Pawn) return;
 	Pawn->ClientTurnedAway(Reason);

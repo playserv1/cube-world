@@ -79,6 +79,14 @@ public:
 	UFUNCTION(Server, Reliable) void ServerRespawn();
 	UFUNCTION(Server, Reliable) void ServerThrow(float DX, float DY, float DZ);
 
+	// ---- the same requests, by whichever door the server is behind: an RPC on an Unreal server, a JSON frame on a C# one
+	void CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	void CmdDig(int32 X, int32 Y, int32 Z, bool bStart);
+	void CmdPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind);
+	void CmdAttack(const FString& Target);
+	void CmdRespawn();
+	void CmdThrow(const FVector& Direction);
+
 	// ---- from the server --------------------------------------------------------------------
 	UFUNCTION(Client, Reliable) void ClientWelcome(const FCubeWelcomeRep& Welcome, const TArray<FCubeStackRep>& Stacks);
 	UFUNCTION(Client, Reliable) void ClientWorldChunk(const TArray<FCubeCellRep>& Cells, bool bLast);

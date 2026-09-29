@@ -71,7 +71,7 @@ the C# server's, ported (`Source/CubeWorld/CubeWorldGameMode.cpp` is `CubeWorldS
 replication system (`net.Iris.UseIrisReplication=1` in `Config/DefaultEngine.ini`,
 `SetupIrisSupport` in the module's `Build.cs`). The Unreal servers play in the project's `ue`
 environment, a copy of `dev`, so the C# servers and the browser client in `dev` are untouched; the two
-do not share a world, because a browser cannot speak Unreal's netcode.
+can share one world: the Unreal server also opens a WebSocket door that speaks the C# server's JSON protocol, and the Unreal client speaks either protocol, by the room it enters.
 
 | Piece | Where |
 |---|---|
@@ -81,7 +81,8 @@ do not share a world, because a browser cannot speak Unreal's netcode.
 | Servers share the world through the platform | the SDK entity classes in `CubeEntities.h` (`WorldCube`, `WorldPresence`, `WorldHit`, `WorldRegion`, `WorldBomb`, `CubeInventory`) for the writes; the other servers' writes arrive over the platform's realtime socket as collection subscriptions (`CubeLiveTables.cpp`, `CubeWorldGameMode_Live.cpp`): each table is watched through a window on its timestamp (`at` / `seen_at`), the platform pushes the matching rows the moment one changes, and a window that fills up moves forward. The SDK's own realtime client subscribes to single records only and signs the socket with the client key, which the platform refuses for a server, so the server speaks the SDK's wire itself with its server credential. Slow polls stay behind as the fallback while the socket is down |
 | What every client sees, over Iris | `CubeWorldState.cpp`: the presence list and the regions as replicated properties; block batches, digs, hits, deaths and bombs as multicast RPCs |
 | What one player sends and gets | `CubePlayerPawn.cpp`: server RPCs for moves (client-simulated, as Minecraft's), digs, placements, hits, throws; client RPCs for the welcome, the world in chunks, the inventory |
-| The client's session and the crossing | `CubeWorldGameInstance.cpp`: sign-in, `Browse`, `JoinRoom` with the ticket, `ClientTravel` to the room's address; a border crossing travels to the next server and hands it the position |
+| The client's session and the crossing | `CubeWorldGameInstance.cpp`: sign-in, `Browse`, `JoinRoom` with the ticket; an Unreal room (attribute `engine=unreal`) is entered with `ClientTravel` over Iris, a C# room over the JSON socket (`CubeSocket.cpp`, `CubeWorldGameInstance_Socket.cpp`), so one client walks between both kinds of server; a border crossing hands the next server the position |
+| A second door on the Unreal server, for browsers | `CubeWebSocketServer.cpp` listens ten ports above the game port (`-wsport=`, or `CUBEWORLD_WS_PORT`) and `CubeWorldGameMode_Web.cpp` speaks the C# server's JSON frames on it, admitting a player by the same platform ticket; the room's attribute `ws` names the door (`-wsaddress=` or `CUBEWORLD_WS_ADDRESS` when the machine's public address differs), and the browser client (`web/app.js`) takes it from the join ticket. Every change the server replicates over Iris is also sent as a JSON frame from the same place |
 
 Needs Unreal Engine 5.8 (`D:\EpicGames\UE_5.8`) and Visual Studio 2022 or later with the C++ workload.
 The platform settings are in `Config/DefaultGame.ini` (`BaseURL`, the public `pk_` client key of environment
