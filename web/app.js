@@ -9,6 +9,7 @@ import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
 import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tickEffects } from "./bombfx.js";
 import { buildTombstone } from "./tombstone.js";
 import { refusal } from "./rooms.js";
+import { createFollower, hear, follow } from "./follow.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
 const toClient = p => ({ x: p.x, y: p.z, z: p.y });
@@ -465,7 +466,7 @@ function makeAvatar(p) {
   model.add(tag);
   scene.add(model);
   const tomb = makeTomb(p.name);
-  return { model, tag, tomb, target: new THREE.Vector3(), yaw: 0, pitch: 0, info: p, hurtUntil: 0, last: new THREE.Vector3() };
+  return { model, tag, tomb, walk: null, info: p, hurtUntil: 0, last: new THREE.Vector3() };
 }
 
 // A dead player leaves the map; a tombstone with their name stands where they fell until they respawn.
@@ -488,12 +489,10 @@ function syncAvatars(players) {
     if (p.player_id === state.player?.player_id) continue;
     seen.add(p.player_id);
     const avatar = avatars.get(p.player_id) || avatars.set(p.player_id, makeAvatar(p)).get(p.player_id);
-    const c = toClient(p);
-    if (!avatar.info.seen) { avatar.model.position.set(c.x, c.y, c.z); avatar.last.copy(avatar.model.position); }
-    avatar.target.set(c.x, c.y, c.z);
-    avatar.yaw = p.yaw;
-    avatar.pitch = p.pitch ?? 0;
-    avatar.info = { ...p, seen: true };
+    const pose = { ...toClient(p), yaw: p.yaw, pitch: p.pitch ?? 0 }, now = performance.now();
+    if (avatar.walk) hear(avatar.walk, pose, now);
+    else { avatar.walk = createFollower(pose, now); avatar.model.position.set(pose.x, pose.y, pose.z); avatar.last.copy(avatar.model.position); }
+    avatar.info = p;
   }
   for (const [id, avatar] of avatars) if (!seen.has(id)) { scene.remove(avatar.model, avatar.tomb); avatars.delete(id); }
   $("players").innerHTML = [...avatars.values()].map(a => a.info)
@@ -749,16 +748,18 @@ function frame() {
   frame.last = now;
 
   for (const avatar of avatars.values()) {
-    avatar.model.position.lerp(avatar.target, 0.35);
-    avatar.model.rotation.y = -avatar.yaw;
+    const walk = avatar.walk;
+    follow(walk, now);
+    avatar.model.position.set(walk.x, walk.y, walk.z);
+    avatar.model.rotation.y = -walk.yaw;
     const distance = Math.hypot(avatar.model.position.x - avatar.last.x, avatar.model.position.z - avatar.last.z);
     avatar.last.copy(avatar.model.position);
-    animatePlayer(avatar.model, { distance, pitch: avatar.pitch, sneaking: !!avatar.info.sneaking, hurt: avatar.hurtUntil > now });
+    animatePlayer(avatar.model, { distance, pitch: walk.pitch, sneaking: !!avatar.info.sneaking, hurt: avatar.hurtUntil > now });
     avatar.tag.visible = !avatar.info.sneaking;
     const dead = isDead(avatar.info);
     avatar.model.visible = !dead;
     avatar.tomb.visible = dead;
-    if (dead) { avatar.tomb.position.copy(avatar.target); avatar.tomb.rotation.y = -avatar.yaw; }
+    if (dead) { avatar.tomb.position.set(walk.to.x, walk.to.y, walk.to.z); avatar.tomb.rotation.y = -walk.to.yaw; }
   }
   if (state.dead && state.player) {
     myTomb ??= makeTomb(state.player.name);
