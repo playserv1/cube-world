@@ -1,0 +1,10 @@
+{
+  "name": "cubeworld-reset",
+  "kind": "cloud_function",
+  "language": "csharp",
+  "entry": "CubeWorld.Reset.ResetWorld",
+  "description": "Puts the whole world back to its default state: deletes every changed block, 16 at a time.",
+  "sdk_version": "1.0.*",
+  "auth": "none",
+  "execute": { "client": false }
+}

@@ -15,15 +15,16 @@ Everything below runs against the dev platform, `https://dev.platform.playserv.i
 
 `$SLUG` must be unique across the organisation: `cubeworld-<suffix of $PROJECT>`.
 
-## Part B — the refill and drop functions
+## Part B — the refill, drop and reset functions
 
 ```bash
 playserv login $SK
 playserv functions deploy --slug cubeworld-refill-<suffix> --kind cloud_function --src CubeWorld.Refill
 playserv functions deploy --slug cubeworld-drop-<suffix> --kind cloud_function --src CubeWorld.Drop
+playserv functions deploy --slug cubeworld-reset-<suffix> --kind cloud_function --src CubeWorld.Reset
 ```
 
-Live in about 150 s. Both crons in `platform.json` fire every minute. A drop fire drops four bombs, 15 s apart, and ends.
+Live in about 150 s. Both crons in `platform.json` fire every minute. A drop fire drops four bombs, 15 s apart, and ends. The reset has no trigger and takes the server key (a player's `pk_` is refused `403`): `curl -X POST $PLAYSERV_HOST/fn/cubeworld-reset-<suffix> -H "Authorization: Bearer $SK" -d '{}'` puts the world back to its default state and answers `{"ok":true,"deleted":N,"regions":{"0":…,"1":…,"2":…}}`.
 
 ## Part C — the servers on Vultr
 
@@ -76,7 +77,8 @@ Needs Docker with `buildx` (Docker Desktop on macOS and Windows) and the CLI ses
 | D7 | A bomb comes down on a parachute, a player picks it up and throws it across a border | walk into a bomb in tab 1: it is in the hand in tab 1 and in the figure's hand in tabs 2 and 3; right click throws it; the crater and the damage show on every server; `list_function_logs` of the drop shows `dropped bomb` every 15 s |
 | D8 | Never more than five bombs | leave the bombs lying: the sixth drop makes the oldest go up in a puff of smoke |
 | D9 | The operator removes a player | admin → the room → **Remove player** (or `remove_room_participant`): that tab says an operator removed it; walking back into that region is refused, the other regions still let it in |
-| D10 | The operator closes a room, and it comes back fresh | build something in a region, then admin → **Delete room** (or `close_room`): its tabs say the room was closed; within a minute or two the room is back under the same name, empty, and the region's floor is as generated — what was built there is gone. `list_function_logs` of the server shows `region N cleared` |
+| D10 | The operator closes a room, and it comes back | build something in a region, then admin → **Delete room** (or `close_room`): its tabs say the room was closed; within a minute or two the room is back under the same name, empty, and what was built there is still there. `list_function_logs` of the server shows `was closed: restarting` |
+| D11 | The world goes back to its default state | build and dig in every region, then `curl -X POST $PLAYSERV_HOST/fn/cubeworld-reset-<suffix> -H "Authorization: Bearer $SK" -d '{}'`: in every tab the changed blocks of all three regions disappear a few at a time, together, until the terrain and the oaks are as generated; the answer counts the deleted blocks, in all and per region |
 
 To take a region away for good, remove its machine: `remove_pool_machine` closes its room, destroys the
 machine and lowers the pool's size by one, so no replacement is requested. Closing the room alone brings it

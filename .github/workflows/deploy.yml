@@ -91,6 +91,7 @@ on:
     paths:
       - 'CubeWorld.Server/**'
       - 'CubeWorld.Drop/**'
+      - 'CubeWorld.Reset/**'
       - 'CubeWorld.Refill/**'
       - 'nuget.config'
       - '.github/workflows/deploy.yml'

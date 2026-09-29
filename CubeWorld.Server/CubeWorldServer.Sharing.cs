@@ -160,35 +160,22 @@ public sealed partial class CubeWorldServer
     // ── when the operator closes the room ───────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The room was closed. Its region goes back to the generated terrain (every change in it is deleted, and every
-    /// server and client hears the deletes), the bombs over it go up in smoke, and the process ends. Docker starts it
-    /// again on the same machine, where it claims its region again and opens the room fresh.
+    /// The room was closed. The bombs over its region go up in smoke and the process ends; Docker starts it again on
+    /// the same machine, where it claims its region again and opens the room fresh. The blocks stay as they are:
+    /// the world goes back to its default state only through the cubeworld-reset function.
     /// </summary>
-    private async Task ClearRegionAndRestart()
+    private async Task Restart()
     {
         try
         {
-            await Platform.Log($"{RoomName} was closed: clearing region {_region} and restarting");
+            await Platform.Log($"{RoomName} was closed: restarting");
             FizzleBombsOverRegion();
-            var deleted = await DeleteChangedBlocksInRegion();
-            await Platform.Log($"{RoomName}: region {_region} cleared, {deleted} changed blocks deleted");
         }
-        catch (Exception e) { await Platform.Log($"{RoomName}: region {_region} not fully cleared: {e.Message}"); }
+        catch (Exception e) { await Platform.Log($"{RoomName}: bombs over region {_region} not fizzled: {e.Message}"); }
 
         // The platform has its answer and the players their close code already; this gives the smoke and the logs
         // time to leave before the process does.
         await Task.Delay(TimeSpan.FromSeconds(3));
         Environment.Exit(0);
-    }
-
-    private async Task<int> DeleteChangedBlocksInRegion()
-    {
-        var (from, to) = World.Columns(_region);
-        var cubes = Platform.Table<WorldCube>();
-        var rows = await ReadAll(cubes.Where(c => c.x >= from && c.x < to));
-        // 16 at a time: one by one, a well-built region takes a minute and a half to come back.
-        await Parallel.ForEachAsync(rows, new ParallelOptions { MaxDegreeOfParallelism = 16 },
-            async (row, ct) => await cubes.DeleteAsync(row.Id, ct));
-        return rows.Count;
     }
 }
