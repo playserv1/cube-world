@@ -4,6 +4,7 @@
 #include "CubeHUD.h"
 #include "CubeEntities.h"
 #include "CubeBombs.h"
+#include "CubeLiveTables.h"
 #include "PlayServ.h"
 #include "Engine/World.h"
 #include "GameFramework/GameSession.h"
@@ -247,16 +248,19 @@ void ACubeWorldGameMode::Serve()
 	State->Color = Color();
 	State->Region = Region;
 	ServerLog(TEXT("world ready"));
+	// The other servers' writes arrive over the live tables; the polls behind them are the fallback while the socket is down.
+	OpenLiveTables();
 	GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, 0.1f, true);
-	GetWorldTimerManager().SetTimer(CubeTimer, this, &ACubeWorldGameMode::PollCubes, 0.5f, true, 0.2f);
-	GetWorldTimerManager().SetTimer(PresenceTimer, this, &ACubeWorldGameMode::PollPresence, 0.25f, true, 0.1f);
-	GetWorldTimerManager().SetTimer(HitTimer, this, &ACubeWorldGameMode::PollHits, 0.5f, true, 0.3f);
-	GetWorldTimerManager().SetTimer(BombTimer, this, &ACubeWorldGameMode::PollBombs, 0.5f, true, 0.4f);
+	GetWorldTimerManager().SetTimer(CubeTimer, this, &ACubeWorldGameMode::PollCubes, 5.f, true, 1.2f);
+	GetWorldTimerManager().SetTimer(PresenceTimer, this, &ACubeWorldGameMode::PollPresence, 2.f, true, 1.1f);
+	GetWorldTimerManager().SetTimer(HitTimer, this, &ACubeWorldGameMode::PollHits, 5.f, true, 1.3f);
+	GetWorldTimerManager().SetTimer(BombTimer, this, &ACubeWorldGameMode::PollBombs, 5.f, true, 1.4f);
 	GetWorldTimerManager().SetTimer(RegionTimer, this, &ACubeWorldGameMode::Heartbeat, 5.f, true, 0.f);
 }
 
 void ACubeWorldGameMode::EndPlay(const EEndPlayReason::Type Reason)
 {
+	if (LiveTables.IsValid()) { LiveTables->Shutdown(); LiveTables.Reset(); }
 	if (bDedicated && Reason != EEndPlayReason::LevelTransition) PlayServ::Rooms::StopHosting();
 	Super::EndPlay(Reason);
 }

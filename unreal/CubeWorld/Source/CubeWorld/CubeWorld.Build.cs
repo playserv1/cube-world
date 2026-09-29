@@ -9,7 +9,7 @@ public class CubeWorld : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core", "CoreUObject", "Engine", "InputCore", "NetCore",
-			"ProceduralMeshComponent", "Json", "JsonUtilities", "Sockets", "Networking",
+			"ProceduralMeshComponent", "Json", "JsonUtilities", "Sockets", "Networking", "WebSockets",
 			"RenderCore", "RHI", "PlayServRuntime",
 		});
 

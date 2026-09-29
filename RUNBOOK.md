@@ -95,7 +95,7 @@ regions. What that environment has, and how it was set up (all through the agent
 |---|---|
 | The environment | `create_env(name="ue", copy_from_env_id=<dev>)`; then `set_env_local_development(env_id=<ue>, true)` so a server on a developer's machine may register a private address |
 | The room type | the copy carried `cubeworld` (`game_server`, multi-room, never deployed: no build is needed, a server with an `sk_` key registers rooms by itself); `set_room_configuration(capacity=16, reservation_ttl=10, room_lifetime=2592000, max_rooms=10)`, no idle close |
-| The schema | the copy carried every table; `WorldCube` got one extra field, `at` (integer, indexed), the time of the last change, which the servers poll by |
+| The schema | the copy carried every table; `WorldCube` got one extra field, `at` (integer, indexed), the time of the last change, which the servers' live subscriptions and fallback polls window by |
 | The keys | a client key for `Config/DefaultGame.ini` and a server key for each developer's `Config/DedicatedServerGame.ini` (dashboard → API keys → environment `ue`; never in git) |
 | The functions | the copy carried `cubeworld-refill` and `cubeworld-drop`; they run against `ue` like against `dev` |
 

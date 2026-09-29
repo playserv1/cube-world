@@ -13,9 +13,11 @@
 #include "CubeEntities.h"
 #include "Rooms/PlayServRoomsTypes.h"
 #include "UObject/StrongObjectPtr.h"
+#include "Dom/JsonObject.h"
 #include "CubeWorldGameMode.generated.h"
 
 class ACubePlayerPawn;
+class FCubeLiveTables;
 struct FPlayServError;
 
 /** A WorldBomb row as the server follows it. */
@@ -128,6 +130,19 @@ private:
 	void PollRegions();
 	void Heartbeat();
 
+	// ---- the live tables: what the other servers write, the moment they write it ------------------
+	void OpenLiveTables();
+	void SubscribeLiveCubes();
+	void SubscribeLivePresence();
+	void SubscribeLiveHits();
+	void SubscribeLiveBombs();
+	void SubscribeLiveRegions();
+	void OnLiveCubes(const TArray<TSharedPtr<FJsonObject>>& Rows);
+	void OnLivePresence(const TArray<TSharedPtr<FJsonObject>>& Rows);
+	void OnLiveHits(const TArray<TSharedPtr<FJsonObject>>& Rows);
+	void OnLiveBombs(const TArray<TSharedPtr<FJsonObject>>& Rows);
+	void OnLiveRegions(const TArray<TSharedPtr<FJsonObject>>& Rows);
+
 	// ---- the rules --------------------------------------------------------------------------
 	void Welcome(FCubeServerPlayer& Player);
 	void Hurt(FCubeServerPlayer& Victim, double Damage, bool bDirected, double DX, double DY, double Strength, const FString& By);
@@ -190,6 +205,9 @@ private:
 	int32 LocalIds = 0;
 	bool bDedicated = false, bServing = false, bClosing = false;
 	bool bCubesBusy = false, bPresenceBusy = false, bHitsBusy = false, bBombsBusy = false, bRegionsBusy = false;
+	TSharedPtr<FCubeLiveTables> LiveTables;
+	int32 LiveCubes = 0, LivePresence = 0, LiveHits = 0, LiveBombs = 0, LiveRegions = 0;
+	int64 LivePresenceSince = 0, LiveHitsSince = 0;
 	int32 RegionTry = 0;
 	float Accumulator = 0;
 	FTimerHandle MoveTimer, CubeTimer, PresenceTimer, HitTimer, BombTimer, RegionTimer;
