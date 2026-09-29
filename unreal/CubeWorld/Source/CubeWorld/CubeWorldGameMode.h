@@ -194,7 +194,7 @@ private:
 	TMap<FString, FCubeElsewhere> Elsewhere;
 	TMap<FString, FCubeLiveBomb> Bombs;
 	TArray<FCubeChange> Heard;
-	TSet<FString> HitsApplied;
+	TSet<FString> HitsApplied, BombsOver;
 	TArray<FCubeRegionRep> Regions;
 	TStrongObjectPtr<UWorldRegion> RegionRow;
 	UPROPERTY() ACubeWorldState* State = nullptr;

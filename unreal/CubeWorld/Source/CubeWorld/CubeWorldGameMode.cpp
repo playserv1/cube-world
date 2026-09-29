@@ -879,6 +879,14 @@ void ACubeWorldGameMode::OnBomb(const FCubeBombRecord& Bomb, bool bOwned)
 	const FCubeLiveBomb* Known = Bombs.Find(Bomb.Id);
 	if (Known && FCubeBombRecord::Rank(Bomb.State) <= FCubeBombRecord::Rank(Known->Record.State)) return;
 	if (!Known && Bomb.IsOver() && Now() - Bomb.At > 5000) return;
+	// A finished bomb's record comes round again with every push of the live table: it went off once.
+	if (Bomb.IsOver())
+	{
+		if (BombsOver.Contains(Bomb.Id)) return;
+		BombsOver.Add(Bomb.Id);
+		if (BombsOver.Num() > 1000) BombsOver.Empty();
+		ServerLog(FString::Printf(TEXT("bomb %s %s at %.1f %.1f %.1f (%s)"), *Bomb.Id, *Bomb.State, Bomb.X, Bomb.Y, Bomb.Z, *Bomb.Holder));
+	}
 
 	if (Bomb.IsOver()) Bombs.Remove(Bomb.Id);
 	else
