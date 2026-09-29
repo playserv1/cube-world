@@ -45,8 +45,8 @@ public static class Spec
     public const int BombFlightTicks = 200, OwnerImmunityTicks = 4;
 
     // The blast hurts players within 3 blocks, half of Minecraft's 2 × power. It breaks blocks with a power
-    // of 2.2, not 3, so a crater takes half the blocks a creeper's does (some 25 of 50 on flat ground).
-    public const double BlastReach = 3, CraterPower = 2.2;
+    // of 1, not 3: the block under it and one around, a 3 × 3 patch of the top layer on flat ground.
+    public const double BlastReach = 3, CraterPower = 1;
 
     // A dropped bomb comes down under a parachute at 0.1 blocks a tick (2 m/s) from 32 blocks up. A player
     // picks it up as Minecraft players pick up items: the bomb within the hitbox grown by 1 sideways, 0.5 up and down.

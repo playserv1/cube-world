@@ -60,9 +60,9 @@ export const PROJECTILE_DRAG = 0.99;
 export const PROJECTILE_GRAVITY = 0.05;
 export const BOMB_POWER = 3;
 // The blast hurts players within 3 blocks, half of Minecraft's 2 × power. It breaks blocks with a power
-// of 2.2, not 3, so a crater takes half the blocks a creeper's does (some 25 of 50 on flat ground).
+// of 1, not 3: the block under it and one around, a 3 × 3 patch of the top layer on flat ground.
 export const BLAST_REACH = 3;
-export const CRATER_POWER = 2.2;
+export const CRATER_POWER = 1;
 export const OWNER_IMMUNITY_TICKS = 4;
 export const PARACHUTE_SPEED = 0.1;
 export const DROP_HEIGHT = 32;

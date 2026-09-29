@@ -33,11 +33,11 @@ test("a bomb is picked up within a block of the hitbox", () => {
   assert.ok(!inPickupReach(body, S.HEIGHT, 31.5, 0, 12));
 });
 
-test("an explosion breaks dirt but not bedrock", () => {
+test("an explosion breaks the block under it and one around, no deeper", () => {
   const block = (x, y, z) => y === -4 ? { resistance: 3600000, breakable: false } : y < 0 ? { resistance: 0.5, breakable: true } : null;
-  const destroyed = explode(block, 30.5, 0, 12.5, S.CRATER_POWER, () => 0.5);
-  assert.ok(destroyed.length > 10);
-  assert.ok(destroyed.every(([, y]) => y > -4));
+  const destroyed = explode(block, 30.5, 0.3, 12.5, S.CRATER_POWER, () => 0.5);
+  assert.equal(destroyed.length, 9);
+  assert.ok(destroyed.every(([x, y, z]) => y === -1 && Math.abs(x - 30) <= 1 && Math.abs(z - 12) <= 1));
 });
 
 test("a blast hurts least at its reach and not beyond", () => {

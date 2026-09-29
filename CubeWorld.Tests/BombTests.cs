@@ -8,17 +8,18 @@ public class BombTests
     private static readonly (string, Hitbox)[] Nobody = [];
 
     [Fact]
-    public void An_explosion_digs_a_crater_but_never_through_bedrock()
+    public void An_explosion_breaks_the_block_under_it_and_one_around_but_no_deeper()
     {
         var world = new World();
 
-        var update = world.Explode(30.5, 12.5, 0, Spec.CraterPower, new Random(1), "p", "a");
+        var update = world.Explode(30.5, 12.5, 0.3, Spec.CraterPower, new Random(1), "p", "a");
 
         Assert.Equal("air", world.KindAt(30, 12, -1));
-        Assert.Equal("bedrock", world.KindAt(30, 12, -4));
+        Assert.Equal("air", world.KindAt(31, 13, -1));
+        Assert.NotEqual("air", world.KindAt(30, 12, -2));
+        Assert.Equal("grass", world.KindAt(32, 12, -1));
         Assert.All(update.Changes, c => Assert.Equal("air", c.Cube.kind));
-        Assert.InRange(update.Changes.Count, 10, 100);
-        Assert.Equal("grass", world.KindAt(36, 12, -1));
+        Assert.Equal(9, update.Changes.Count);
     }
 
     [Fact]
@@ -63,26 +64,25 @@ public class BombTests
     public void Stone_stands_up_to_a_blast_that_takes_dirt()
     {
         var world = new World();
-        for (var x = 27; x <= 29; x++) world.Place(x, 12, -1, 0, 0, 1, "stone", "p", "a", []);
-        world.Place(33, 12, -1, 0, 0, 1, "dirt", "p", "a", []);
+        world.Place(29, 12, -1, 0, 0, 1, "stone", "p", "a", []);
+        world.Place(31, 12, -1, 0, 0, 1, "dirt", "p", "a", []);
 
-        world.Explode(31, 12.5, 0.5, Spec.CraterPower, new Random(1), "p", "a");
+        world.Explode(30.5, 12.5, 0.5, Spec.CraterPower, new Random(1), "p", "a");
 
-        Assert.Equal("stone", world.KindAt(28, 12, 0));
-        Assert.Equal("air", world.KindAt(33, 12, 0));
+        Assert.Equal("stone", world.KindAt(29, 12, 0));
+        Assert.Equal("air", world.KindAt(31, 12, 0));
     }
 
     [Fact]
     public void Sand_over_a_crater_falls_into_it()
     {
         var world = new World();
-        world.Place(30, 12, -1, 0, 0, 1, "stone", "p", "a", []);
-        for (var z = 0; z < 6; z++) world.Place(30, 12, z, 0, 0, 1, "sand", "p", "a", []);
+        for (var z = -1; z < 5; z++) world.Place(30, 12, z, 0, 0, 1, "sand", "p", "a", []);
 
-        var update = world.Explode(30.5, 12.5, 0.5, Spec.CraterPower, new Random(1), "p", "a");
+        var update = world.Explode(31.5, 12.5, 0.3, Spec.CraterPower, new Random(1), "p", "a");
 
         Assert.NotEmpty(update.Falls);
-        Assert.True(world.IsSolid(30, 12, -4));
+        Assert.True(world.IsSolid(30, 12, 0));
     }
 
     [Fact]

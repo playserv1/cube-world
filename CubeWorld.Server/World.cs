@@ -191,7 +191,8 @@ public sealed class World
 
         var update = new WorldUpdate();
         foreach (var (x, y, z) in destroyed.OrderBy(b => b.z)) Set(x, y, z, "air", by, on, update);
-        foreach (var column in destroyed.GroupBy(b => (b.x, b.y))) Settle(column.Key.x, column.Key.y, column.Min(b => b.z), update);
+        // Each broken block of a column settles what stands on it: a blast can break a column in more than one place.
+        foreach (var (x, y, z) in destroyed.OrderBy(b => b.z)) Settle(x, y, z, update);
         return update;
     }
 
