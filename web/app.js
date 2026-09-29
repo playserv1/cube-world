@@ -3,7 +3,7 @@ import { PointerLockControls } from "three/addons/controls/PointerLockControls.j
 import * as S from "./spec.js";
 import { createBody, tick as physicsTick, knockback, pushAway, bodyHeight, eyeHeight } from "./physics.js";
 import { buildAtlas, blockIcon } from "./textures.js";
-import { buildPlayerModel, animatePlayer } from "./skin.js";
+import { buildPlayerModel, animatePlayer, paintSkin } from "./skin.js";
 import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlocks, raycastPlayers, buildTreeMap, TREES } from "./voxels.js";
 import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
 import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tickEffects } from "./bombfx.js";
@@ -22,6 +22,7 @@ const $ = id => document.getElementById(id);
 const state = { player: null, socket: null, room: null, server: null, color: "grey", region: -1, regions: [],
   regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, placed: false,
   health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null,
+  stash: [], carry: null, inventoryOpen: false,
   // A room that turned the player away is not tried again before this time (performance.now()), per room name.
   notBefore: {} };
 const world = new VoxelWorld();
@@ -158,7 +159,8 @@ function onFrame(frame, teleport) {
   switch (frame.type) {
     case "welcome": {
       Object.assign(state, { server: frame.server, color: frame.color, region: frame.region ?? -1, regions: frame.regions ?? [],
-        regionSize: frame.regionSize, hotbar: frame.hotbar, inventory: frame.inventory, health: frame.you.health, dead: false });
+        regionSize: frame.regionSize, hotbar: [...frame.hotbar], inventory: frame.inventory, health: frame.you.health, dead: false });
+      loadLayout(frame.hotbar);
       world.configure({ width: frame.width, depth: frame.depth, minY: frame.minZ, maxY: frame.maxZ, layers: frame.layers, blocks: frame.blocks,
         trees: frame.trees, regionSize: frame.regionSize, regionColors: REGION_COLORS });
       for (const c of frame.world) world.set(c.x, c.z, c.y, c.kind);
@@ -529,16 +531,123 @@ function avatarBoxes() {
 // ── input ────────────────────────────────────────────────────────────────────────────────────────
 
 const controls = new PointerLockControls(camera, renderer.domElement);
-renderer.domElement.addEventListener("click", () => { if (!controls.isLocked && !state.dead) controls.lock(); });
+renderer.domElement.addEventListener("click", () => { if (!controls.isLocked && !state.dead && !state.inventoryOpen) controls.lock(); });
 const keys = new Set();
 const mouse = { left: false };
 addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
+  if (e.code === "KeyI" && state.placed) { toggleInventory(); return; }
+  if (e.code === "Escape" && state.inventoryOpen) { closeInventory(); return; }
+  if (state.inventoryOpen) return;
   keys.add(e.code);
   const n = Number(e.key);
   if (n >= 1 && n <= 9) { state.slot = n - 1; renderHotbar(); }
   if (e.code === "Space") e.preventDefault();
 });
+
+// ── the inventory screen (I), as Minecraft's: the player, 27 slots, the hotbar ────────────────────
+
+const STASH_SLOTS = 27;
+
+function toggleInventory() { if (state.inventoryOpen) closeInventory(); else openInventory(); }
+
+function openInventory() {
+  if (state.dead) return;
+  state.inventoryOpen = true;
+  keys.clear();
+  mouse.left = false;
+  controls.unlock();
+  $("inventory").hidden = false;
+  drawDoll();
+  renderInventoryScreen();
+}
+
+function closeInventory() {
+  if (state.carry) dropCarry();
+  state.inventoryOpen = false;
+  $("inventory").hidden = true;
+  $("carry").hidden = true;
+  if (!state.dead) controls.lock();
+}
+
+// The layout (which stack sits in which slot) is the player's own and stays in this browser.
+function loadLayout(kinds) {
+  state.stash = Array(STASH_SLOTS).fill(null);
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("cubeworld.layout") || "null"); } catch {}
+  const placed = new Set([...(saved?.hotbar ?? []), ...(saved?.stash ?? [])].filter(Boolean));
+  const same = saved && kinds.length === placed.size && kinds.every(k => placed.has(k));
+  if (same) { state.hotbar = saved.hotbar.slice(0, 9); state.stash = saved.stash.slice(0, STASH_SLOTS); }
+  while (state.hotbar.length < 9) state.hotbar.push(null);
+  while (state.stash.length < STASH_SLOTS) state.stash.push(null);
+}
+
+function saveLayout() {
+  try { localStorage.setItem("cubeworld.layout", JSON.stringify({ hotbar: state.hotbar, stash: state.stash })); } catch {}
+}
+
+// A click on a slot: pick the stack up, put the carried one down, or swap the two.
+function slotClick(list, i) {
+  const kind = list[i] ?? null;
+  if (!state.carry) { if (!kind) return; state.carry = kind; list[i] = null; }
+  else if (!kind) { list[i] = state.carry; state.carry = null; }
+  else { list[i] = state.carry; state.carry = kind; }
+  saveLayout();
+  renderInventoryScreen();
+  renderHotbar();
+}
+
+function dropCarry() {
+  const lists = [state.hotbar, state.stash];
+  for (const list of lists) { const free = list.indexOf(null); if (free >= 0) { list[free] = state.carry; break; } }
+  state.carry = null;
+  saveLayout();
+  renderHotbar();
+}
+
+function renderInventoryScreen() {
+  const grid = (id, list, hotbar) => {
+    const el = $(id);
+    el.innerHTML = "";
+    list.forEach((kind, i) => {
+      const count = kind ? state.inventory[kind] ?? 0 : 0;
+      const slot = document.createElement("div");
+      slot.className = `slot${hotbar && i === state.slot ? " selected" : ""}${kind && count === 0 ? " empty" : ""}`;
+      slot.title = kind ?? "";
+      if (kind) { icons[kind] ??= blockIcon(atlas, kind); slot.innerHTML = `<img src="${icons[kind]}" alt="${kind}"><b>${count}</b>`; }
+      slot.onclick = () => slotClick(list, i);
+      el.append(slot);
+    });
+  };
+  grid("inv-main", state.stash, false);
+  grid("inv-bar", state.hotbar, true);
+  const carry = $("carry");
+  carry.hidden = !state.carry;
+  if (state.carry) { icons[state.carry] ??= blockIcon(atlas, state.carry); carry.src = icons[state.carry]; }
+}
+
+$("inventory").addEventListener("mousemove", e => {
+  const box = $("inventory").getBoundingClientRect();
+  $("carry").style.left = `${e.clientX - box.left}px`;
+  $("carry").style.top = `${e.clientY - box.top}px`;
+});
+$("inventory").addEventListener("click", e => { if (e.target === $("inventory")) closeInventory(); });
+$("inventory").addEventListener("contextmenu", e => e.preventDefault());
+
+// The player as the inventory shows them: the front of the skin, four pixels to the skin's one.
+function drawDoll() {
+  const skin = paintSkin(state.player?.player_id ?? "steve");
+  const g = $("doll").getContext("2d");
+  g.imageSmoothingEnabled = false;
+  g.clearRect(0, 0, 64, 128);
+  const part = (sx, sy, sw, sh, dx, dy) => g.drawImage(skin, sx, sy, sw, sh, dx, dy, sw * 4, sh * 4);
+  part(8, 8, 8, 8, 16, 0);      // head
+  part(20, 20, 8, 12, 16, 32);  // body
+  part(44, 20, 4, 12, 0, 32);   // right arm
+  part(36, 52, 4, 12, 48, 32);  // left arm
+  part(4, 20, 4, 12, 16, 80);   // right leg
+  part(20, 52, 4, 12, 32, 80);  // left leg
+}
 addEventListener("keyup", e => keys.delete(e.code));
 addEventListener("blur", () => keys.clear());
 renderer.domElement.addEventListener("wheel", e => {

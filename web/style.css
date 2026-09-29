@@ -23,6 +23,24 @@ main { flex: 1; position: relative; overflow: hidden; }
 #hotbar .slot b { position: absolute; right: 2px; bottom: 0; font-size: 13px; color: #fff; text-shadow: 1px 1px 0 #000; }
 #hud.holding #hotbar { opacity: .55; }
 #held { align-self: center; color: #fff; text-shadow: 1px 1px 0 #000; font-weight: 600; height: 18px; }
+#inventory { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); cursor: default; }
+#inventory[hidden] { display: none; }
+.inv { background: #c6c6c6; border: 3px solid; border-color: #fff #555 #555 #fff; padding: 8px; box-shadow: 0 0 0 2px #000; color: #3f3f3f; user-select: none; }
+.inv-head { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 8px; }
+.inv-doll { width: 104px; height: 168px; background: #000; border: 2px solid; border-color: #373737 #fff #fff #373737; display: flex; align-items: center; justify-content: center; }
+.inv-doll canvas { width: 64px; height: 128px; image-rendering: pixelated; }
+.inv-title { font-size: 14px; font-weight: 600; padding-top: 4px; }
+.inv-title small { display: block; font-weight: 400; font-size: 11px; color: #5a5a5a; margin-top: 4px; max-width: 300px; }
+.inv-grid { display: grid; grid-template-columns: repeat(9, 44px); gap: 2px; }
+#inv-main { margin-bottom: 8px; }
+.inv-grid .slot { width: 44px; height: 44px; position: relative; background: #8b8b8b; border: 2px solid; border-color: #373737 #fff #fff #373737; cursor: pointer; }
+.inv-grid .slot:hover { background: #a8a8a8; }
+.inv-grid .slot.selected { outline: 2px solid #fff; outline-offset: -2px; }
+.inv-grid .slot img { width: 100%; height: 100%; image-rendering: pixelated; }
+.inv-grid .slot.empty img { opacity: .3; }
+.inv-grid .slot b { position: absolute; right: 2px; bottom: 0; font-size: 13px; color: #fff; text-shadow: 1px 1px 0 #000; }
+#carry { position: absolute; width: 40px; height: 40px; pointer-events: none; image-rendering: pixelated; transform: translate(-50%, -50%); z-index: 2; }
+#carry[hidden] { display: none; }
 #death { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: rgba(120,0,0,.55); }
 #death[hidden] { display: none; }
 #death h2 { font-size: 36px; margin: 0; color: #fff; text-shadow: 2px 2px 0 #000; }

@@ -49,6 +49,17 @@
       <div id="hotbar"></div>
       <div id="held"></div>
     </div>
+    <div id="inventory" hidden>
+      <div class="inv">
+        <div class="inv-head">
+          <div class="inv-doll"><canvas id="doll" width="64" height="128"></canvas></div>
+          <div class="inv-title">Inventory<small>click a stack to pick it up, click a slot to put it down · I or Esc closes</small></div>
+        </div>
+        <div id="inv-main" class="inv-grid"></div>
+        <div id="inv-bar" class="inv-grid"></div>
+      </div>
+      <img id="carry" alt="" hidden>
+    </div>
     <div id="death" hidden>
       <h2>You died!</h2>
       <button id="respawn">Respawn</button>
