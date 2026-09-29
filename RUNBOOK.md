@@ -87,31 +87,40 @@ back, because the server's process restarts on the same machine.
 
 ## Part E — the Unreal dedicated server
 
-The Unreal servers (`unreal/CubeWorld`, README "The Unreal dedicated server and client") play in the
-project's `ue` environment, a copy of `dev` made on 2026-09-29, so they never race the C# servers for the
-regions. What that environment has, and how it was set up (all through the agent's MCP tools):
+The Unreal servers (`unreal/CubeWorld`, README "The Unreal dedicated server and client") play in `dev` beside
+the C# servers, as a second game server `cubeworld-ue` with its own pool: the world is six regions, the C#
+pool takes the upper row and the Unreal pool the lower, so they never race for a region while both rows are
+up. What `dev` got for it, and how (all through the agent's MCP tools; the `ue` environment, a copy of `dev`
+from 2026-09-29, remains for Unreal-only tests):
 
 | Step | How |
 |---|---|
-| The environment | `create_env(name="ue", copy_from_env_id=<dev>)`; then `set_env_local_development(env_id=<ue>, true)` so a server on a developer's machine may register a private address |
-| The room type | the copy carried `cubeworld` (`game_server`, multi-room, never deployed: no build is needed, a server with an `sk_` key registers rooms by itself); `set_room_configuration(capacity=16, reservation_ttl=10, room_lifetime=2592000, max_rooms=10)`, no idle close |
-| The schema | the copy carried every table; `WorldCube` got one extra field, `at` (integer, indexed), the time of the last change, which the servers' live subscriptions and fallback polls window by |
-| The keys | a client key for `Config/DefaultGame.ini` and a server key for each developer's `Config/DedicatedServerGame.ini` (dashboard → API keys → environment `ue`; never in git) |
-| The functions | the copy carried `cubeworld-refill` and `cubeworld-drop`; they run against `ue` like against `dev` |
+| The room type | `create_function(slug="cubeworld-ue", kind="game_server", hosting_mode="multi-room")`; `set_room_configuration(capacity=16, reservation_ttl=20, room_lifetime=2592000, max_rooms=10)`, no idle close. A server with an `sk_` key registers rooms under it by itself (`RoomDefaultSlug` in `Config/DefaultGame.ini`, or `PLAYSERV_EXECUTOR_SLUG` from the platform) |
+| The schema | `WorldRegion` got `slug` (string): the room type of the room the claim names, so the clients join a neighbour under the right type. `WorldCube` got `at` (integer, indexed), the time of the last change, which the servers' live subscriptions and fallback polls window by |
+| The keys | a client key for `Config/DefaultGame.ini` and a server key for each developer's `Config/DedicatedServerGame.ini` (dashboard → API keys → environment `dev`; never in git) |
+| Local servers | `set_env_local_development(env_id=<dev>, true)`, so a server on a developer's machine may register a private address |
 
-**On a developer machine** the three servers are the editor run headless (`Scripts/RunServers.ps1`); the
-platform lists their rooms (`list_game_sessions(env="ue")`) exactly as it lists the C# servers', and the admin's
-**Remove player** and **Delete room** work the same way: the room's server turns the players away, clears its
-region and exits (start it again by hand, since no Docker restarts it there).
+**On a developer machine** the servers are the editor run headless (`Scripts/RunServers.ps1`); the platform
+lists their rooms (`list_game_sessions(env="dev")`) beside the C# servers', and the admin's **Remove player**
+and **Delete room** work the same way: the room's server turns the players away, clears its region and exits
+(start it again by hand, since no Docker restarts it there).
 
-**On the platform's machine pool** the server must be a Linux image, and that needs an engine built from
-source (the Launcher's engine has no Server target) with the Linux cross-toolchain installed:
+**On the platform's machine pool** the server is a Linux image. The Launcher's engine has no Server target, so
+the image is the Game target run headless as a listen server (`-cubeserver` in `Docker/entrypoint.sh`; the
+process is a server in every way but the spectator it keeps for itself; the SDK logs one error line at start,
+that a server credential is set in a process that is not a dedicated server, and then serves with it; the
+`DedicatedServerGame.ini` layer is not read in this mode, so the key comes from `PLAYSERV_SERVER_KEY` or, on
+the pool, the deployment token). It needs, once, in the Epic Games
+Launcher (Library → Engine Versions → 5.8 → Options), the **Linux** target platform ticked, and the Linux
+cross-toolchain for 5.8 installed (`v26_clang-20.1.8-rockylinux8`, the installer sets `LINUX_MULTIARCH_ROOT`).
 
-1. Build and package the server: `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -server -serverplatform=Linux -noclient -build -cook -stage -pak -archive -archivedirectory=<out>`.
-2. Push the image: `playserv image push --slug cubeworld --src <out>\LinuxServer --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag ue-1.0.0` (logged in with an `sk_` key of environment `ue`).
-3. The pool: `set_machine_pool(env="ue", executor_slug="cubeworld", desired_size=3, rooms_per_machine=1, image_version="ue-1.0.0")`. One process per machine, as the C# pool; each claims a region and opens `<colour>-<machine>`. The process reads `PLAYSERV_DEPLOYMENT_TOKEN` for its credential and `PLAYSERV_PUBLIC_IP` for the address it registers, and needs the machine's UDP port 7777 reachable (the image runs with host networking).
+1. Build and package: `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -platform=Linux -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>`.
+2. Push the image: `playserv image push --slug cubeworld-ue --src <out>\Linux --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag ue-1.0.0` (logged in with an `sk_` key of environment `dev`).
+3. The pool: `set_machine_pool(env="dev", executor_slug="cubeworld-ue", desired_size=3, rooms_per_machine=1, image_version="ue-1.0.0")`. One process per machine, as the C# pool; each claims a region of the lower row and opens `<colour>-<machine>`. The process reads `PLAYSERV_DEPLOYMENT_TOKEN` for its credential and `PLAYSERV_PUBLIC_IP` for the address it registers, and needs the machine's UDP port 7777 and TCP port 7787 (the WebSocket door) reachable (the image runs with host networking). The door is plain `ws`; a browser on an `https` page needs `wss`, which the C# pool gets from the platform's certificate for `*.pool.dev.playserv.com`; the same in front of the door is still to do.
+4. Taking the Unreal pool down (`destroy_machine_pool(executor_slug="cubeworld-ue")`, or `remove_pool_machine` one at a time) leaves the C# row playing: the rooms vanish from the browse within about fifteen seconds, the claims expire after thirty, and a C# server that restarts may then take a lower region.
 
-The room type may instead be declared `process-per-room` (`playserv functions declare cubeworld --kind game_server --hosting-mode process-per-room`): then the platform starts a process only when a player asks for a room, and the server registers with `StartRoomPlayServHosted`, which the game mode already does when the launch names a room. That is the platform's documented path for Unreal servers, but it is not the three standing regions the demo shows.
+With a source-built engine the Server target works instead (`-server -serverplatform=Linux -noclient`, the
+`CubeWorldServer` binary); `entrypoint.sh` runs whichever binary the archive holds.
 
 ## Tear-down
 

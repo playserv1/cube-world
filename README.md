@@ -15,7 +15,7 @@ function tops up each player's blocks once a minute; another drops a bomb on a p
 | Game servers on platform machines | `set_machine_pool`: three Vultr machines, one server process each, one room per machine. |
 | Servers share state through the platform | `Platform.RuntimeData.Write` / `Delete` on each change, `Platform.RuntimeData.Subscribe` + `Platform.OnRuntimeDataUpdate` to hear the other servers. |
 | Players on every server see each other | Each server writes its players' positions to `WorldPresence` five times a second and hears the other servers' players through the same subscription. |
-| One world, three servers | A server claims a free region (0, 1, 2) in `WorldRegion`; the region gives its colour (red, blue, green), its room is `<colour>-<machine>` and its stretch of floor takes that colour. |
+| One world, six servers | The world is 72 × 48 blocks, six regions of 24 × 24 laid out like the six of a die: the upper row (0, 1, 2) is the C# servers', the lower (3, 4, 5) the Unreal servers'. A server claims a free region of its own row first in `WorldRegion` (any free one when its row is full); the region gives its colour (red, blue, green above; yellow, purple, pink below), its room is `<colour>-<machine>` and its square of floor takes that colour. The claim names the room type the room is registered under (`slug`: `cubeworld` for the C# pool, `cubeworld-ue` for the Unreal pool), so a client joins a neighbour under the right type. |
 | Seamless crossing | When a player walks over a region border, the client joins the next server's room in the background and switches sockets once it answers; position and view are kept. |
 | Players enter through the platform | `POST /auth/players/anon` → `GET /rooms/{slug}:browse` → `POST /rooms/{slug}/{room}:join` → WebSocket to the machine the reservation names. |
 | Data a studio can read and edit | `WorldCube` and `CubeInventory` tables; `query_records` shows the world. |
@@ -65,13 +65,15 @@ Deploying the servers and the function is in `RUNBOOK.md`.
 ## The Unreal dedicated server and client
 
 `unreal/CubeWorld` is a UE 5.8 C++ project with the same game on Unreal's own dedicated server: the
-three servers, the three regions, the shared world through platform data and the seamless crossing are
+servers, the regions, the shared world through platform data and the seamless crossing are
 the C# server's, ported (`Source/CubeWorld/CubeWorldGameMode.cpp` is `CubeWorldServer.cs`,
 `CubeServerWorld.cpp` is `World.cs`), and the client replicates with the server over **Iris**, Unreal's
 replication system (`net.Iris.UseIrisReplication=1` in `Config/DefaultEngine.ini`,
-`SetupIrisSupport` in the module's `Build.cs`). The Unreal servers play in the project's `ue`
-environment, a copy of `dev`, so the C# servers and the browser client in `dev` are untouched; the two
-can share one world: the Unreal server also opens a WebSocket door that speaks the C# server's JSON protocol, and the Unreal client speaks either protocol, by the room it enters.
+`SetupIrisSupport` in the module's `Build.cs`). The Unreal servers play in `dev` beside the C# servers, as
+the second room type `cubeworld-ue`, and take the lower row of the world's six regions; the two kinds of server
+share the one world: the Unreal server also opens a WebSocket door that speaks the C# server's JSON protocol, and
+the Unreal client speaks either protocol, by the room it enters. Both clients list both room types and join a
+room under the type its region claim names.
 
 | Piece | Where |
 |---|---|
@@ -86,7 +88,7 @@ can share one world: the Unreal server also opens a WebSocket door that speaks t
 
 Needs Unreal Engine 5.8 (`D:\EpicGames\UE_5.8`) and Visual Studio 2022 or later with the C++ workload.
 The platform settings are in `Config/DefaultGame.ini` (`BaseURL`, the public `pk_` client key of environment
-`ue`, the room type `cubeworld`); the server's `sk_` key goes in `Config/DedicatedServerGame.ini`, which
+`dev`, the room type `cubeworld-ue`); the server's `sk_` key goes in `Config/DedicatedServerGame.ini`, which
 git ignores (copy `DedicatedServerGame.example.ini`).
 
 **The Launcher's engine cannot build a Server target** (it ships no `UnrealServer` binaries), so on a
@@ -100,14 +102,15 @@ powershell -File <repo>\unreal\CubeWorld\Scripts\RunServers.ps1          # alpha
 powershell -File <repo>\unreal\CubeWorld\Scripts\RunClient.ps1 -Name Ann
 ```
 
-Each server registers its room under this machine's address; the `ue` environment is flagged for local
+Each server registers its room under this machine's address; the `dev` environment is flagged for local
 development, so a private address is accepted. Players on another machine reach it only if that address
 routes to it (a LAN, or `-PublicHost=<address>` with the UDP ports forwarded). The servers' logs are
 `Saved/Logs/server-<name>.log`, a client's `Saved/Logs/client-<name>.log`. Keys: WASD, mouse, Space, Shift
 sprints, Ctrl sneaks, hold the left button to break, the right places (or throws the bomb in the hand; walk
 into a bomb to pick it up), 1-9 or the wheel pick a block, Enter plays, Esc frees the mouse. Command-line flags
 for unattended runs: `-name=`, `-autoplay`, `-screenshot=<seconds>`, `-quitafter=<seconds>`, `-selftest`,
-`-walkto=<x>`, `-debughud`.
+`-walkto=<x>` or `-walkto=<x>,<y>`, `-debughud`.
 
-Putting the server on the platform's machine pool takes a Linux server build, which needs an engine built from
-source and the Linux cross-toolchain: `RUNBOOK.md`, "Part E".
+Putting the server on the platform's machine pool takes a Linux build. The Launcher's engine has no Server
+target, so the image runs the Game target headless as a listen server (`-cubeserver`, `Docker/entrypoint.sh`):
+no picture, no sound, its own local player a spectator that is not a player of the world. `RUNBOOK.md`, "Part E".

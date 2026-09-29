@@ -16,16 +16,19 @@ const toClient = p => ({ x: p.x, y: p.z, z: p.y });
 const toServer = p => ({ x: p.x, y: p.z, z: p.y });
 const cfg = window.CUBEWORLD;
 const OFFLINE = new URLSearchParams(location.search).has("offline") || !cfg;
-const SERVER_COLORS = { red: "#ef4444", blue: "#3b82f6", green: "#22c55e", grey: "#9ca3af" };
-const REGION_COLORS = ["red", "blue", "green"];
+const SERVER_COLORS = { red: "#ef4444", blue: "#3b82f6", green: "#22c55e", yellow: "#eab308", purple: "#a855f7", pink: "#ec4899", grey: "#9ca3af" };
+const REGION_COLORS = ["red", "blue", "green", "yellow", "purple", "pink"];
 const $ = id => document.getElementById(id);
+
+// The room types the world's servers register under: the C# servers' (the config's) and the Unreal servers'.
+const ROOM_SLUGS = cfg.slugs ?? [cfg.slug, `${cfg.slug}-ue`];
 
 const state = { player: null, socket: null, room: null, server: null, color: "grey", region: -1, regions: [],
   regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, placed: false,
   health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null,
   stash: [], carry: null, inventoryOpen: false,
   // A room that turned the player away is not tried again before this time (performance.now()), per room name.
-  notBefore: {} };
+  notBefore: {}, roomSlugs: {} };
 const world = new VoxelWorld();
 const chunks = new Map();
 const avatars = new Map();
@@ -83,10 +86,14 @@ async function signIn(name) {
 
 async function refreshServers() {
   if (OFFLINE) return [];
-  const page = await api("GET", `/rooms/${cfg.slug}:browse`);
-  const rooms = page.data.sort((a, b) => a.room_name.localeCompare(b.room_name));
+  // The C# servers and the Unreal servers register under their own room types; both are listed. A type the
+  // project has not got is simply missing.
+  const pages = await Promise.all(ROOM_SLUGS.map(slug => api("GET", `/rooms/${slug}:browse`)
+    .then(page => page.data.map(room => ({ ...room, slug })), e => { if (e.status === 404) return []; throw e; })));
+  const rooms = pages.flat().sort((a, b) => a.room_name.localeCompare(b.room_name));
   $("servers").innerHTML = "";
   for (const room of rooms) {
+    state.roomSlugs[room.room_name] = room.slug;
     const li = document.createElement("li");
     li.className = room.room_name === state.room ? "current" : "";
     li.style.setProperty("--c", SERVER_COLORS[room.room_name.split("-")[0]] || SERVER_COLORS.grey);
@@ -104,11 +111,12 @@ async function enter(roomName, teleport = true) {
   if (roomName === state.room || state.switching) return;
   state.switching = true;
   try {
-    const ticket = await api("POST", `/rooms/${cfg.slug}/${roomName}:join`, {});
+    const slug = state.roomSlugs[roomName] ?? cfg.slug;
+    const ticket = await api("POST", `/rooms/${slug}/${roomName}:join`, {});
     const c = ticket.connect;
     // An Unreal server plays Unreal clients on its own port and browsers on a WebSocket one, named in its attributes.
     const door = ticket.attributes && ticket.attributes.ws;
-    const url = door ? door : c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${cfg.api.replace(/^http/, "ws")}/games/${cfg.slug}`;
+    const url = door ? door : c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${cfg.api.replace(/^http/, "ws")}/games/${slug}`;
     const socket = new WebSocket(url);
     socket.onopen = () => socket.send(JSON.stringify({
       playerId: state.player.player_id, displayName: state.player.name,
@@ -148,9 +156,13 @@ function send(message) {
   if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify(message));
 }
 
-function regionAt(x) { return Math.floor(x / state.regionSize); }
+function regionAt(x, z) { return world.regionOf(x, z); }
 
-function roomOfRegion(region) { return state.regions.find(r => Number(r.region) === region)?.room; }
+function roomOfRegion(region) {
+  const r = state.regions.find(r => Number(r.region) === region);
+  if (r?.slug) state.roomSlugs[r.room] = r.slug;
+  return r?.room;
+}
 
 // ── frames from the server ───────────────────────────────────────────────────────────────────────
 
@@ -713,7 +725,7 @@ function gameTick() {
 
   // A crossing that fails is tried again three seconds later, not on every tick; a room an operator closed, or
   // removed the player from, waits longer (rooms.js).
-  const here = roomOfRegion(regionAt(me.x));
+  const here = roomOfRegion(regionAt(me.x, me.z));
   const now = performance.now();
   if (!OFFLINE && here && here !== state.room && !state.switching && now >= (state.crossAfter ?? 0) && now >= (state.notBefore[here] ?? 0))
     enter(here, false).catch(e => {
@@ -918,7 +930,7 @@ function enterOffline() {
   };
   state.room = "offline";
   emit({ type: "welcome", server: "local", color: "grey", region: 1, regions: [], you: { x: 36, y: 12, z: 0, health: 20 },
-    width: 72, depth: 24, regionSize: 24, minZ: -4, maxZ: 64, layers: [{ z: -4, kind: "bedrock" }, { z: -3, kind: "dirt" }, { z: -2, kind: "dirt" }, { z: -1, kind: "grass" }], trees: TREES,
+    width: 72, depth: 48, regionSize: 24, minZ: -4, maxZ: 64, layers: [{ z: -4, kind: "bedrock" }, { z: -3, kind: "dirt" }, { z: -2, kind: "dirt" }, { z: -1, kind: "grass" }], trees: TREES,
     blocks, hotbar, world: [], inventory: Object.fromEntries(hotbar.map(k => [k, 64])), tick: 0 });
   dropBomb(38.5, 14.5);
   dropBomb(33.5, 9.5);

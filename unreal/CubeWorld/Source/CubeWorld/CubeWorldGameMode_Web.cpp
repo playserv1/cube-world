@@ -229,7 +229,7 @@ void ACubeWorldGameMode::WebWelcome(FCubeServerPlayer& P)
 	for (const FCubeRegionRep& R : Regions)
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("region"), FString::FromInt(R.Region)); J->SetStringField(TEXT("server"), R.Server); J->SetStringField(TEXT("color"), R.Color); J->SetStringField(TEXT("room"), R.Room);
+		J->SetStringField(TEXT("region"), FString::FromInt(R.Region)); J->SetStringField(TEXT("server"), R.Server); J->SetStringField(TEXT("color"), R.Color); J->SetStringField(TEXT("room"), R.Room); J->SetStringField(TEXT("slug"), R.Slug);
 		RegionsJson.Add(MakeShared<FJsonValueObject>(J));
 	}
 	W->SetArrayField(TEXT("regions"), RegionsJson);
@@ -385,7 +385,7 @@ void ACubeWorldGameMode::WebBroadcastRegions()
 	for (const FCubeRegionRep& R : Regions)
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("region"), FString::FromInt(R.Region)); J->SetStringField(TEXT("server"), R.Server); J->SetStringField(TEXT("color"), R.Color); J->SetStringField(TEXT("room"), R.Room);
+		J->SetStringField(TEXT("region"), FString::FromInt(R.Region)); J->SetStringField(TEXT("server"), R.Server); J->SetStringField(TEXT("color"), R.Color); J->SetStringField(TEXT("room"), R.Room); J->SetStringField(TEXT("slug"), R.Slug);
 		List.Add(MakeShared<FJsonValueObject>(J));
 	}
 	F->SetArrayField(TEXT("regions"), List);

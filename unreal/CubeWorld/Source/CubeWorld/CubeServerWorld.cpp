@@ -58,7 +58,7 @@ void FCubeServerWorld::Forget(const FIntVector& At)
 void FCubeServerWorld::Explode(double Cx, double Cy, double Cz, double Power, int32 Seed, const FString& By, const FString& On, int32 OnlyRegion, FCubeWorldUpdate& Out)
 {
 	// The same seed on every server: the rays, and so the crater, come out the same wherever they are worked out.
-	FRandomStream Random(Seed);
+	FDotNetRandom Random(Seed);
 	TSet<FIntVector> Destroyed;
 	for (int32 I = 0; I < 16; I++)
 		for (int32 J = 0; J < 16; J++)
@@ -69,7 +69,7 @@ void FCubeServerWorld::Explode(double Cx, double Cy, double Cz, double Power, in
 				const double Length = FMath::Sqrt(Dx * Dx + Dy * Dy + Dz * Dz);
 				Dx /= Length; Dy /= Length; Dz /= Length;
 				double X = Cx, Y = Cy, Z = Cz;
-				for (double Intensity = Power * (0.7 + Random.FRand() * 0.6); Intensity > 0; Intensity -= 0.22500001)
+				for (double Intensity = Power * (0.7 + Random.NextDouble() * 0.6); Intensity > 0; Intensity -= 0.22500001)
 				{
 					const int32 Bx = FMath::FloorToInt32(X), By2 = FMath::FloorToInt32(Y), Bz = FMath::FloorToInt32(Z);
 					if (Inside(Bx, By2, Bz))
@@ -86,7 +86,7 @@ void FCubeServerWorld::Explode(double Cx, double Cy, double Cz, double Power, in
 			}
 
 	TArray<FIntVector> Ordered;
-	for (const FIntVector& C : Destroyed) if (CubeSpec::RegionOf(C.X) == OnlyRegion) Ordered.Add(C);
+	for (const FIntVector& C : Destroyed) if (CubeSpec::RegionOf(C.X, C.Y) == OnlyRegion) Ordered.Add(C);
 	Ordered.Sort([](const FIntVector& A, const FIntVector& B) { return A.Z < B.Z; });
 	for (const FIntVector& C : Ordered) Set(C.X, C.Y, C.Z, TEXT("air"), By, On, Out);
 	// Each broken block of a column settles what stands on it: a blast can break a column in more than one place.

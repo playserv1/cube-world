@@ -20,7 +20,7 @@ public:
 	static constexpr int32 Chunk = 16;
 
 	int32 Width = CubeSpec::Width_, Depth = CubeSpec::Depth, MinZ = CubeSpec::MinZ, MaxZ = CubeSpec::MaxZ, RegionSize = CubeSpec::RegionSize;
-	TArray<FName> RegionColors = { TEXT("red"), TEXT("blue"), TEXT("green") };
+	TArray<FName> RegionColors = { TEXT("red"), TEXT("blue"), TEXT("green"), TEXT("yellow"), TEXT("purple"), TEXT("pink") };
 
 	FCubeVoxelWorld();
 
@@ -31,7 +31,7 @@ public:
 	bool IsSolid(int32 X, int32 Y, int32 Z) const { return Inside(X, Y, Z) && Block(KindAt(X, Y, Z)).IsSolid(); }
 	/** What the player's body collides with: blocks, and the world border and floor as walls. */
 	bool IsSolidForPhysics(int32 X, int32 Y, int32 Z) const;
-	FName RegionColor(int32 X) const;
+	FName RegionColor(int32 X, int32 Y) const;
 
 	/** Sets an override (None restores the generated block). Returns the chunk ids to rebuild. */
 	TSet<FIntPoint> Set(int32 X, int32 Y, int32 Z, FName Kind);

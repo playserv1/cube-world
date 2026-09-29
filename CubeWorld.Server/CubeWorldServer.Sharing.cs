@@ -14,7 +14,9 @@ public sealed partial class CubeWorldServer
     private async Task<int> ClaimRegionAsync()
     {
         var regions = Platform.Table<WorldRegion>();
-        for (var region = 0; region < World.RegionColors.Length; region++)
+        // The upper row first: the Unreal servers prefer the lower one, so the two kinds meet in the middle only when
+        // one kind is short of servers.
+        foreach (var region in Enumerable.Range(0, World.RegionColors.Length).OrderBy(r => r / World.Columns))
         {
             var holder = (await regions.FindByAsync(r => r.region, $"{region}"))?.Fields;
             if (holder is not null && holder.server != _server && Now - holder.seen_at < 30_000) continue;
@@ -29,6 +31,7 @@ public sealed partial class CubeWorldServer
     private WorldRegion Claim(int region) => new()
     {
         region = $"{region}", server = _server, color = World.RegionColors[region], room = $"{World.RegionColors[region]}-{_server}", seen_at = Now,
+        slug = Environment.GetEnvironmentVariable("PLAYSERV_EXECUTOR_SLUG") ?? "cubeworld",
     };
 
     /// <summary>Every 5 s: this server still holds its region, and the players learn which regions are up.</summary>

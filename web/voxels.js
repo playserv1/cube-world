@@ -10,7 +10,8 @@ const key = (x, y, z) => `${x},${y},${z}`;
 
 // Where the oaks stand, in the server's ground coordinates (x, y): four per region, clear of the spawn.
 // Mirrors Spec.Trees on the server; the server also sends the list in its welcome frame.
-export const TREES = [0, 1, 2].flatMap(r => [[r * 24 + 4, 5], [r * 24 + 18, 4], [r * 24 + 6, 18], [r * 24 + 19, 17]].map(([x, y]) => ({ x, y })));
+// Six regions, three across and two deep, like the six of a die.
+export const TREES = [0, 1, 2, 3, 4, 5].flatMap(r => { const x0 = (r % 3) * 24, y0 = Math.floor(r / 3) * 24; return [[x0 + 4, y0 + 5], [x0 + 18, y0 + 4], [x0 + 6, y0 + 18], [x0 + 19, y0 + 17]].map(([x, y]) => ({ x, y })); });
 
 // An oak in client coordinates: five logs, two 5 × 5 leaf layers without corners around the top two logs,
 // a 3 × 3 layer above the trunk and a cross on top. Mirrors Spec.BuildTrees on the server.
@@ -42,14 +43,14 @@ const SIDES = [
 
 export class VoxelWorld {
   constructor() {
-    this.width = 72; this.depth = 24; this.minY = -4; this.maxY = 64;
+    this.width = 72; this.depth = 48; this.minY = -4; this.maxY = 64;
     this.layers = new Map();
     this.trees = buildTreeMap(TREES);
     this.blocks = new Map();
     this.overrides = new Map();
     this.hidden = new Set();
     this.regionSize = 24;
-    this.regionColors = ["red", "blue", "green"];
+    this.regionColors = ["red", "blue", "green", "yellow", "purple", "pink"];
   }
 
   configure({ width, depth, minY, maxY, layers, blocks, trees, regionSize, regionColors }) {
@@ -73,7 +74,9 @@ export class VoxelWorld {
     return this.layers.get(y) ?? "air";
   }
 
-  regionColor(x) { return this.regionColors[Math.floor(x / this.regionSize)] ?? "green"; }
+  // Region r is column r % columns of row r / columns; the web's z is the server's y, the ground's depth.
+  regionOf(x, z) { return Math.floor(z / this.regionSize) * Math.floor(this.width / this.regionSize) + Math.floor(x / this.regionSize); }
+  regionColor(x, z) { return this.regionColors[this.regionOf(x, z)] ?? "green"; }
 
   kindAt(x, y, z) {
     const k = key(x, y, z);
@@ -137,7 +140,7 @@ export function meshChunk(world, atlas, materials, id) {
         const kind = world.kindAt(x, y, z);
         if (kind === "air") continue;
         const block = world.block(kind);
-        const faces = kind === "grass" ? grassFaces(world.regionColor(x)) : FACES[kind] ?? FACES.stone;
+        const faces = kind === "grass" ? grassFaces(world.regionColor(x, z)) : FACES[kind] ?? FACES.stone;
         const part = block.Transparent ? parts.cutout : parts.opaque;
         for (const side of SIDES) {
           if (!faceVisible(world, kind, block.Transparent, x + side.n[0], y + side.n[1], z + side.n[2])) continue;

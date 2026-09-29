@@ -1,8 +1,9 @@
-# The Cube World dedicated server as a PlayServ machine-pool image. The build context is the Linux server
-# archive UAT produces (RUNBOOK.md, "The Unreal dedicated server on the platform"):
-#   RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -server -serverplatform=Linux
-#     -noclient -build -cook -stage -pak -archive -archivedirectory=<out>
-#   playserv image push --slug cubeworld --src <out>\LinuxServer --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag <tag>
+# The Cube World dedicated server as a PlayServ machine-pool image. The build context is the Linux archive UAT
+# produces (RUNBOOK.md, "The Unreal dedicated server on the platform"): the Server target from a source-built
+# engine, or, from the Launcher's engine (no Server target), the Game target run headless (entrypoint.sh):
+#   RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -platform=Linux -clientconfig=Development
+#     -build -cook -stage -pak -archive -archivedirectory=<out>
+#   playserv image push --slug cubeworld-ue --src <out>\Linux --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag <tag>
 # The platform runs it with host networking and no arguments, and hands the machine over in the environment
 # (PLAYSERV_DEPLOYMENT_TOKEN, PLAYSERV_API_URL, PLAYSERV_EXECUTOR_SLUG, PLAYSERV_MACHINE_ID, PLAYSERV_PUBLIC_IP).
 FROM ubuntu:22.04

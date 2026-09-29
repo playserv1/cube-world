@@ -13,7 +13,7 @@
 void UCubeWorldGameInstance::Init()
 {
 	Super::Init();
-	if (!IsRunningDedicatedServer()) Textures.Build();
+	if (!CubeIsServerProcess()) Textures.Build();
 	Hotbar = CubeSpec::Hotbar();
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCubeWorldGameInstance::HandlePostLoadMap);
 	if (GEngine) GEngine->OnNetworkFailure().AddUObject(this, &UCubeWorldGameInstance::HandleNetworkFailure);
@@ -30,7 +30,7 @@ void UCubeWorldGameInstance::Shutdown()
 // The world on screen lives on the client alone; the server has no picture to draw.
 void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 {
-	if (!LoadedWorld || IsRunningDedicatedServer() || LoadedWorld->GetNetMode() == NM_DedicatedServer) return;
+	if (!LoadedWorld || CubeIsServerProcess() || LoadedWorld->GetNetMode() == NM_DedicatedServer) return;
 	LoadedWorld->SpawnActor<ACubeWorldActor>();
 	// Back in the local map after an Unreal server: the C# server waiting for us is reached now.
 	if (SocketPlan.bSet && LoadedWorld->GetNetMode() == NM_Standalone)
@@ -101,33 +101,59 @@ void UCubeWorldGameInstance::TurnedAwayBy(const FString& Reason)
 
 void UCubeWorldGameInstance::Browse()
 {
+	if (BrowsesPending > 0) return;
 	Status = TEXT("Looking for servers...");
+	// The C# servers and the Unreal servers register under their own room types; both are listed, and a room is
+	// joined under the type it was found in. A type the project has not got simply lists nothing.
+	BrowseFound.Empty();
+	BrowseError.Empty();
+	BrowsesPending = CubeSpec::RoomTypes().Num();
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
-	PlayServ::Rooms::Browse(FPlayServRoomFilters(), FPlayServBrowseCallback::CreateLambda([Weak](bool bOk, const FPlayServBrowsePage& Page, const FPlayServError& Error)
+	for (const FString& Slug : CubeSpec::RoomTypes())
 	{
-		if (!Weak.IsValid()) return;
-		UCubeWorldGameInstance* Self = Weak.Get();
-		if (!bOk || Page.Rooms.Num() == 0)
+		PlayServ::Rooms::Browse(Slug, FPlayServRoomFilters(), FPlayServBrowseCallback::CreateLambda([Weak, Slug](bool bOk, const FPlayServBrowsePage& Page, const FPlayServError& Error)
 		{
-			Self->bSigningIn = false;
-			Self->Status = bOk ? TEXT("No server is running. Press Enter to retry.") : FString::Printf(TEXT("Browse failed: %s"), *Error.Message);
-			Self->Log(Self->Status);
+			if (!Weak.IsValid()) return;
+			UCubeWorldGameInstance* Self = Weak.Get();
+			if (bOk)
+				for (const FPlayServRoomListing& R : Page.Rooms)
+				{
+					Self->RoomSlugs.Add(R.RoomName, Slug);
+					if ((R.PlacementState == EPlayServPlacementState::Open || R.PlacementState == EPlayServPlacementState::Unknown) && Self->MayTry(R.RoomName)) Self->BrowseFound.AddUnique(R.RoomName);
+				}
+			else if (Error.ProblemCode != TEXT("room_type_not_found") && Error.ProblemCode != TEXT("not_found")) Self->BrowseError = Error.Message;
+			if (--Self->BrowsesPending > 0) return;
+			Self->Browsed();
+		}));
+	}
+}
+
+void UCubeWorldGameInstance::Browsed()
+{
+	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
+	if (BrowseFound.Num() == 0)
+	{
+		if (!BrowseError.IsEmpty() || RoomSlugs.Num() == 0)
+		{
+			bSigningIn = false;
+			Status = BrowseError.IsEmpty() ? TEXT("No server is running. Press Enter to retry.") : FString::Printf(TEXT("Browse failed: %s"), *BrowseError);
+			Log(Status);
 			return;
 		}
-		Self->Candidates.Empty();
-		for (const FPlayServRoomListing& R : Page.Rooms)
-			if ((R.PlacementState == EPlayServPlacementState::Open || R.PlacementState == EPlayServPlacementState::Unknown) && Self->MayTry(R.RoomName)) Self->Candidates.Add(R.RoomName);
-		Self->Candidates.Sort();
-		if (Self->Candidates.Num() == 0)
-		{
-			Self->Status = TEXT("Every server is closing or full, retrying...");
-			Self->GetTimerManager().SetTimer(Self->RetryTimer, [Weak]() { if (Weak.IsValid()) Weak->Browse(); }, 3.f, false);
-			return;
-		}
-		const FString First = Self->Candidates[0];
-		Self->Candidates.RemoveAt(0);
-		Self->Enter(First, true);
-	}));
+		Status = TEXT("Every server is closing or full, retrying...");
+		GetTimerManager().SetTimer(RetryTimer, [Weak]() { if (Weak.IsValid()) Weak->Browse(); }, 3.f, false);
+		return;
+	}
+	Candidates = BrowseFound;
+	// The Unreal servers first, the C# ones after: the Unreal client is at home on Iris.
+	Candidates.Sort([this](const FString& A, const FString& B)
+	{
+		const bool bUnrealA = RoomSlugs.FindRef(A) == TEXT("cubeworld-ue"), bUnrealB = RoomSlugs.FindRef(B) == TEXT("cubeworld-ue");
+		return bUnrealA != bUnrealB ? bUnrealA : A < B;
+	});
+	const FString First = Candidates[0];
+	Candidates.RemoveAt(0);
+	Enter(First, true);
 }
 
 void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
@@ -137,7 +163,7 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 	Status = FString::Printf(TEXT("Joining %s..."), *RoomName);
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
 	// The SDK is not handed the controller: the travel is ours, so the position survives a border crossing.
-	PlayServ::Rooms::JoinRoom(RoomName, nullptr, FPlayServJoinCallback::CreateLambda([Weak, RoomName, bTeleport](bool bOk, const FPlayServJoinResult& Result, const FPlayServError& Error)
+	const FPlayServJoinCallback Joined = FPlayServJoinCallback::CreateLambda([Weak, RoomName, bTeleport](bool bOk, const FPlayServJoinResult& Result, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
 		UCubeWorldGameInstance* Self = Weak.Get();
@@ -173,7 +199,11 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 			if (Override.Split(TEXT(":"), &Host, &PortText)) Port = FCString::Atoi(*PortText); else Host = Override;
 		}
 		Self->ConnectSocket(RoomName, Host, Port, bSecure, Result.Ticket.ReservationToken, bTeleport);
-	}));
+	});
+	// The room is joined under the type it was listed in; one heard of only by name goes under the default type.
+	const FString Slug = RoomSlugs.FindRef(RoomName);
+	if (Slug.IsEmpty()) PlayServ::Rooms::JoinRoom(RoomName, nullptr, Joined);
+	else PlayServ::Rooms::JoinRoom(Slug, RoomName, nullptr, Joined);
 }
 
 void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const FString& Url, bool bTeleport)
@@ -195,7 +225,7 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 
 void UCubeWorldGameInstance::HandleNetworkFailure(UWorld* InWorld, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString)
 {
-	if (IsRunningDedicatedServer()) return;
+	if (CubeIsServerProcess()) return;
 	if (SocketPlan.bSet) return;   // leaving an Unreal server on purpose, for a C# one
 	Disconnected(ErrorString.IsEmpty() ? FString(ENetworkFailure::ToString(FailureType)) : ErrorString);
 }
@@ -204,7 +234,7 @@ void UCubeWorldGameInstance::HandleNetworkFailure(UWorld* InWorld, UNetDriver* N
 void UCubeWorldGameInstance::ReturnToMainMenu()
 {
 	Super::ReturnToMainMenu();
-	if (!IsRunningDedicatedServer()) Disconnected(TEXT("the server closed the connection"));
+	if (!CubeIsServerProcess()) Disconnected(TEXT("the server closed the connection"));
 }
 
 void UCubeWorldGameInstance::Disconnected(const FString& Why)
@@ -237,10 +267,10 @@ FString UCubeWorldGameInstance::RoomOfRegion(int32 InRegion) const
 	return FString();
 }
 
-void UCubeWorldGameInstance::MaybeCross(double X)
+void UCubeWorldGameInstance::MaybeCross(double X, double Y)
 {
 	if (!bPlaced || bSwitching || !IsConnected() || FPlatformTime::Seconds() < CrossAfter) return;
-	const FString Here = RoomOfRegion(FMath::FloorToInt32(X / World.RegionSize));
+	const FString Here = RoomOfRegion(CubeSpec::RegionOf(X, Y));
 	if (!Here.IsEmpty() && Here != Room && MayTry(Here)) Enter(Here, false);
 }
 
@@ -333,7 +363,11 @@ void UCubeWorldGameInstance::SetPlayers(const TArray<FCubePresenceRep>& InPlayer
 void UCubeWorldGameInstance::SetRegions(const TArray<FCubeRegionRep>& InRegions)
 {
 	Regions.Empty();
-	for (const FCubeRegionRep& R : InRegions) Regions.Add({ R.Region, R.Room, R.Color, R.Server });
+	for (const FCubeRegionRep& R : InRegions)
+	{
+		Regions.Add({ R.Region, R.Room, R.Color, R.Server, R.Slug });
+		if (!R.Slug.IsEmpty()) RoomSlugs.Add(R.Room, R.Slug);
+	}
 }
 
 void UCubeWorldGameInstance::OnHurtFrame(const FString& InPlayerId, double InHealth, double KX, double KY, double Strength)

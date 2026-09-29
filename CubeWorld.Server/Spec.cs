@@ -83,7 +83,11 @@ public static class Spec
 
     /// <summary>Where the oaks stand: four per region, clear of the spawn at the region's centre. Mirrored in web/voxels.js.</summary>
     public static readonly (int x, int y)[] Trees =
-        Enumerable.Range(0, 3).SelectMany(r => new[] { (r * 24 + 4, 5), (r * 24 + 18, 4), (r * 24 + 6, 18), (r * 24 + 19, 17) }).ToArray();
+        Enumerable.Range(0, World.RegionColors.Length).SelectMany(r =>
+        {
+            var (x0, _, y0, _) = World.Bounds(r);
+            return new[] { (x0 + 4, y0 + 5), (x0 + 18, y0 + 4), (x0 + 6, y0 + 18), (x0 + 19, y0 + 17) };
+        }).ToArray();
 
     /// <summary>
     /// An oak: a trunk of five logs, two 5 × 5 layers of leaves without their corners around the top two logs,

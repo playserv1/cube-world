@@ -95,6 +95,8 @@ public:
 	virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage) override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
+	/** The local player of a headless listen server (-cubeserver) gets no pawn: it is not a player of the world. */
+	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
 
 	/** True in a dedicated server that has claimed its region and opened its room. */
 	bool IsServing() const { return bServing; }
@@ -133,6 +135,8 @@ private:
 	void RetryStartup(const FString& Why);
 	FString ResolveHost() const;
 	FString RoomName() const;
+	/** The room type this server registers under (PLAYSERV_EXECUTOR_SLUG from hosting, else the settings'). */
+	FString RoomSlug() const;
 	FString Color() const;
 
 	// ---- the loops --------------------------------------------------------------------------

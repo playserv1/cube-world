@@ -45,6 +45,61 @@ struct FCubeHitbox
 	double X = 0, Y = 0, Z = 0, Height = CubeSpec::Height;
 };
 
+/**
+ * .NET's seeded Random (Knuth's subtractive generator, as System.Random keeps it for a given seed), so a crater
+ * worked out here from a bomb's seed is the crater the C# servers work out from it.
+ */
+class FDotNetRandom
+{
+public:
+	explicit FDotNetRandom(int32 Seed)
+	{
+		const int32 Subtraction = Seed == MIN_int32 ? MAX_int32 : FMath::Abs(Seed);
+		int32 Mj = MSeed - Subtraction, Mk = 1, Ii = 0;
+		SeedArray[55] = Mj;
+		for (int32 I = 1; I < 55; I++)
+		{
+			if ((Ii += 21) >= 55) Ii -= 55;
+			SeedArray[Ii] = Mk;
+			Mk = Mj - Mk;
+			if (Mk < 0) Mk += MBig;
+			Mj = SeedArray[Ii];
+		}
+		for (int32 K = 1; K < 5; K++)
+			for (int32 I = 1; I < 56; I++)
+			{
+				int32 N = I + 30;
+				if (N >= 55) N -= 55;
+				SeedArray[I] -= SeedArray[1 + N];
+				if (SeedArray[I] < 0) SeedArray[I] += MBig;
+			}
+		INext = 0;
+		INextP = 21;
+	}
+
+	/** [0, 1), as Random.NextDouble. */
+	double NextDouble() { return Sample() * (1.0 / MBig); }
+
+private:
+	static constexpr int32 MBig = MAX_int32, MSeed = 161803398;
+	int32 SeedArray[56] = {};
+	int32 INext = 0, INextP = 21;
+
+	int32 Sample()
+	{
+		int32 LocINext = INext, LocINextP = INextP;
+		if (++LocINext >= 56) LocINext = 1;
+		if (++LocINextP >= 56) LocINextP = 1;
+		int32 Result = SeedArray[LocINext] - SeedArray[LocINextP];
+		if (Result == MBig) Result--;
+		if (Result < 0) Result += MBig;
+		SeedArray[LocINext] = Result;
+		INext = LocINext;
+		INextP = LocINextP;
+		return Result;
+	}
+};
+
 class FCubeServerWorld
 {
 public:
@@ -53,7 +108,6 @@ public:
 	TMap<FIntVector, FCubeOverride> Overrides;
 
 	/** The columns of a region: From is its first, To the next region's first. */
-	static void Columns(int32 Region, int32& From, int32& To) { From = Region * CubeSpec::RegionSize; To = (Region + 1) * CubeSpec::RegionSize; }
 	static bool Inside(int32 X, int32 Y, int32 Z) { return X >= 0 && X < CubeSpec::Width_ && Y >= 0 && Y < CubeSpec::Depth && Z >= CubeSpec::MinZ && Z < CubeSpec::MaxZ; }
 	static FString Key(int32 X, int32 Y, int32 Z) { return FString::Printf(TEXT("%d:%d:%d"), X, Y, Z); }
 

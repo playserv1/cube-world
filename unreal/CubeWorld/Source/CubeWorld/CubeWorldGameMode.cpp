@@ -7,6 +7,7 @@
 #include "CubeLiveTables.h"
 #include "CubeWebSocketServer.h"
 #include "PlayServ.h"
+#include "Core/PlayServSettings.h"
 #include "Engine/World.h"
 #include "GameFramework/GameSession.h"
 #include "GameFramework/PlayerController.h"
@@ -30,11 +31,11 @@ namespace
 		return Machine.IsEmpty() ? FString(TEXT("local")) : Machine.Right(5).ToLower();
 	}
 
-	const TCHAR* RegionColorName(int32 Region)
-	{
-		static const TCHAR* Colors[] = { TEXT("red"), TEXT("blue"), TEXT("green") };
-		return Region >= 0 && Region < 3 ? Colors[Region] : TEXT("grey");
-	}
+	const TCHAR* RegionColorName(int32 Region) { return CubeSpec::RegionColorName(Region); }
+
+	// The Unreal servers take the lower row of the die first (regions 3, 4, 5), the C# servers the upper; either
+	// takes any free region once its own row is full.
+	int32 RegionToTry(int32 Try) { return (Try + CubeSpec::RegionColumns) % CubeSpec::RegionCount; }
 }
 
 ACubeWorldGameMode::ACubeWorldGameMode()
@@ -58,13 +59,16 @@ void ACubeWorldGameMode::ServerLog(const FString& Text) const
 FString ACubeWorldGameMode::Color() const { return RegionColorName(Region); }
 
 FString ACubeWorldGameMode::RoomName() const { return FString::Printf(TEXT("%s-%s"), *Color(), *ServerName); }
+FString ACubeWorldGameMode::RoomSlug() const { return UPlayServSettings::GetRoomDefaultSlug(); }
 
 // ── startup ──────────────────────────────────────────────────────────────────────────────────────
 
 void ACubeWorldGameMode::BeginPlay()
 {
 	Super::BeginPlay();
-	bDedicated = GetNetMode() == NM_DedicatedServer;
+	// A dedicated server, or a game build listening headless in its place (-cubeserver): the local player it
+	// cannot help having is a spectator with no pawn and no HUD, and is not a player of the world.
+	bDedicated = GetNetMode() == NM_DedicatedServer || (CubeIsServerProcess() && GetNetMode() == NM_ListenServer);
 	if (!bDedicated) return;   // the menu map of a client: nothing to serve
 	ServerName = ServerNameOf();
 	State = GetWorld()->SpawnActor<ACubeWorldState>();
@@ -130,26 +134,27 @@ void ACubeWorldGameMode::LoadBombs()
 void ACubeWorldGameMode::ClaimRegion(int32 Try)
 {
 	if (Try >= CubeSpec::RegionCount) { RetryStartup(TEXT("every region is held")); return; }
+	const int32 Candidate = RegionToTry(Try);
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::LoadAll<UWorldRegion>(FPlayServFilter::Where(TEXT("region")).EqualTo(FString::FromInt(Try)), [Weak, Try](bool bOk, TArray<UWorldRegion*> Rows, const FPlayServError& Error)
+	PlayServ::Data::LoadAll<UWorldRegion>(FPlayServFilter::Where(TEXT("region")).EqualTo(FString::FromInt(Candidate)), [Weak, Try, Candidate](bool bOk, TArray<UWorldRegion*> Rows, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
 		ACubeWorldGameMode* Self = Weak.Get();
 		if (!bOk) { Self->RetryStartup(FString::Printf(TEXT("regions not read: %s"), *Error.Message)); return; }
 		UWorldRegion* Holder = Rows.Num() > 0 ? Rows[0] : nullptr;
 		if (Holder && Holder->server != Self->ServerName && Now() - Holder->seen_at < RegionTtlMs) { Self->ClaimRegion(Try + 1); return; }
-		Self->Region = Try;
+		Self->Region = Candidate;
 		Self->RegionRow.Reset(Holder ? Holder : PlayServ::Data::Create<UWorldRegion>());
-		Self->WriteRegionClaim([Weak, Try](bool bWritten)
+		Self->WriteRegionClaim([Weak, Try, Candidate](bool bWritten)
 		{
 			if (!Weak.IsValid()) return;
 			if (!bWritten) { Weak->Region = -1; Weak->RegionRow.Reset(); Weak->ClaimRegion(Try + 1); return; }
 			// A second later the claim must still be ours: two servers may have reached for the same region.
 			FTimerHandle H;
-			Weak->GetWorldTimerManager().SetTimer(H, [Weak, Try]()
+			Weak->GetWorldTimerManager().SetTimer(H, [Weak, Try, Candidate]()
 			{
 				if (!Weak.IsValid()) return;
-				PlayServ::Data::LoadAll<UWorldRegion>(FPlayServFilter::Where(TEXT("region")).EqualTo(FString::FromInt(Try)), [Weak, Try](bool bOk, TArray<UWorldRegion*> Rows, const FPlayServError&)
+				PlayServ::Data::LoadAll<UWorldRegion>(FPlayServFilter::Where(TEXT("region")).EqualTo(FString::FromInt(Candidate)), [Weak, Try, Candidate](bool bOk, TArray<UWorldRegion*> Rows, const FPlayServError&)
 				{
 					if (!Weak.IsValid()) return;
 					if (bOk && Rows.Num() > 0 && Rows[0]->server == Weak->ServerName) { Weak->RegionRow.Reset(Rows[0]); Weak->OpenRoom(); return; }
@@ -169,6 +174,7 @@ void ACubeWorldGameMode::WriteRegionClaim(const TFunction<void(bool)>& Done)
 	Row->server = ServerName;
 	Row->color = Color();
 	Row->room = RoomName();
+	Row->slug = RoomSlug();
 	Row->seen_at = Now();
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	PlayServ::Data::Save(Row, FPlayServSimpleCallback::CreateLambda([Weak, Done](bool bOk, const FPlayServError& Error)
@@ -284,7 +290,7 @@ void ACubeWorldGameMode::PreLogin(const FString& Options, const FString& Address
 void ACubeWorldGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
-	if (!bDedicated) return;
+	if (!bDedicated || NewPlayer->IsLocalController()) return;
 	if (ACubePlayerPawn* Pawn = Cast<ACubePlayerPawn>(NewPlayer->GetPawn()))
 	{
 		Pawn->PlayerId = PlayServ::Rooms::GetPlayerId(NewPlayer);
@@ -293,10 +299,17 @@ void ACubeWorldGameMode::PostLogin(APlayerController* NewPlayer)
 	}
 }
 
+APawn* ACubeWorldGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
+{
+	// The local player logs in before BeginPlay: the mode is read from the process, not from bDedicated.
+	if (CubeIsServerProcess() && !IsRunningDedicatedServer() && NewPlayer && NewPlayer->IsLocalController()) return nullptr;
+	return Super::SpawnDefaultPawnFor_Implementation(NewPlayer, StartSpot);
+}
+
 void ACubeWorldGameMode::Logout(AController* Exiting)
 {
 	// The pawn is already unpossessed here: the player is found by their controller.
-	if (bDedicated)
+	if (bDedicated && Exiting && !Exiting->IsLocalController())
 		if (FCubeServerPlayer* Player = PlayerOfController(Exiting)) RemovePlayer(Player->Id);
 	Super::Logout(Exiting);
 }
@@ -323,7 +336,8 @@ FCubeServerPlayer* ACubeWorldGameMode::PlayerById(const FString& Id)
 
 void ACubeWorldGameMode::Spawn(FCubeServerPlayer& P)
 {
-	P.X = (Region + 0.5) * CubeSpec::RegionSize; P.Y = CubeSpec::Depth / 2.0; P.Z = 0;
+	const FVector2D Centre = CubeSpec::RegionCentre(Region);
+	P.X = Centre.X; P.Y = Centre.Y; P.Z = 0;
 	P.Health = CubeSpec::MaxHealth;
 }
 
@@ -725,7 +739,7 @@ void ACubeWorldGameMode::TickBombs()
 		if (Bomb.State == TEXT("free"))
 		{
 			Live->Z = CubeBombs::Descend(World.Voxels, Bomb.X, Bomb.Y, Live->Z);
-			if (CubeSpec::RegionOf(Bomb.X) != Region) continue;
+			if (CubeSpec::RegionOf(Bomb.X, Bomb.Y) != Region) continue;
 			for (auto& Pair : Players)
 			{
 				FCubeServerPlayer& P = *Pair.Value;
@@ -1132,7 +1146,7 @@ void ACubeWorldGameMode::PollRegions()
 		TArray<FCubeRegionRep> Live;
 		const int64 T = Now();
 		for (const UWorldRegion* Row : Rows)
-			if (T - Row->seen_at < RegionTtlMs) Live.Add({ FCString::Atoi(*Row->region), Row->room, Row->color, Row->server });
+			if (T - Row->seen_at < RegionTtlMs) Live.Add({ FCString::Atoi(*Row->region), Row->room, Row->color, Row->server, Row->slug });
 		Live.Sort([](const FCubeRegionRep& A, const FCubeRegionRep& B) { return A.Region < B.Region; });
 		Self->Regions = Live;
 		if (Self->State) Self->State->Regions = Live;
@@ -1183,15 +1197,15 @@ void ACubeWorldGameMode::ClearRegionAndExit()
 	for (const FString& Id : Ids)
 	{
 		const FCubeLiveBomb* Live = Bombs.Find(Id);
-		if (Live && !Live->Record.IsOver() && CubeSpec::RegionOf(Live->Record.X) == Region)
+		if (Live && !Live->Record.IsOver() && CubeSpec::RegionOf(Live->Record.X, Live->Record.Y) == Region)
 			ShareBomb(Next(Live->Record, TEXT("fizzled"), Live->Record.Holder, Live->Record.X, Live->Record.Y, Live->Z), false);
 	}
 	// The rows of the region go a few at a time: the SDK's DeleteAll fires every delete at once, and hundreds of
 	// requests in flight run past its timeout.
-	int32 From, To;
-	FCubeServerWorld::Columns(Region, From, To);
+	int32 X0, X1, Y0, Y1;
+	CubeSpec::RegionBounds(Region, X0, X1, Y0, Y1);
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::LoadAll<UWorldCube>(FPlayServFilter::Where(TEXT("x")).GreaterThanOrEqual(From).And(TEXT("x")).LessThan(To), [Weak](bool bOk, TArray<UWorldCube*> Rows, const FPlayServError& Error)
+	PlayServ::Data::LoadAll<UWorldCube>(FPlayServFilter::Where(TEXT("x")).GreaterThanOrEqual(X0).And(TEXT("x")).LessThan(X1).And(TEXT("y")).GreaterThanOrEqual(Y0).And(TEXT("y")).LessThan(Y1), [Weak](bool bOk, TArray<UWorldCube*> Rows, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
 		if (!bOk) { Weak->ServerLog(FString::Printf(TEXT("region not cleared, its rows could not be read: %s"), *Error.Message)); Weak->ExitSoon(); return; }

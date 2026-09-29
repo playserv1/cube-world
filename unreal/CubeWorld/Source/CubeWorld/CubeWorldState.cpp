@@ -1,4 +1,5 @@
 #include "CubeWorldState.h"
+#include "CubeWorld.h"
 #include "CubeWorldGameInstance.h"
 #include "Net/UnrealNetwork.h"
 
@@ -31,7 +32,7 @@ void ACubeWorldState::BeginPlay()
 
 UCubeWorldGameInstance* ACubeWorldState::Game() const
 {
-	return GetNetMode() == NM_DedicatedServer ? nullptr : Cast<UCubeWorldGameInstance>(GetGameInstance());
+	return GetNetMode() == NM_DedicatedServer || CubeIsServerProcess() ? nullptr : Cast<UCubeWorldGameInstance>(GetGameInstance());
 }
 
 void ACubeWorldState::OnRep_Info() {}

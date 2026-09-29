@@ -231,7 +231,7 @@ void UCubeWorldGameInstance::OnSocketFrame(const TSharedPtr<FJsonObject>& Frame,
 			for (const auto& V : *RegionsJson)
 			{
 				const TSharedPtr<FJsonObject> R = V->AsObject();
-				List.Add({ FCString::Atoi(*Str(R, TEXT("region"))), Str(R, TEXT("room")), Str(R, TEXT("color")), Str(R, TEXT("server")) });
+				List.Add({ FCString::Atoi(*Str(R, TEXT("region"))), Str(R, TEXT("room")), Str(R, TEXT("color")), Str(R, TEXT("server")), Str(R, TEXT("slug")) });
 			}
 		SetRegions(List);
 		return;

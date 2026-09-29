@@ -36,7 +36,7 @@ namespace
 
 	const TMap<FName, TArray<int32>>& GrassTints()
 	{
-		static const TMap<FName, TArray<int32>> Tints = { { TEXT("green"), { 93, 160, 60 } }, { TEXT("red"), { 200, 118, 48 } }, { TEXT("blue"), { 58, 150, 150 } } };
+		static const TMap<FName, TArray<int32>> Tints = { { TEXT("green"), { 93, 160, 60 } }, { TEXT("red"), { 200, 118, 48 } }, { TEXT("blue"), { 58, 150, 150 } }, { TEXT("yellow"), { 196, 186, 64 } }, { TEXT("purple"), { 140, 95, 170 } }, { TEXT("pink"), { 210, 120, 160 } } };
 		return Tints;
 	}
 
@@ -183,7 +183,7 @@ const TArray<FName>& FCubeTextures::TileNames()
 	static TArray<FName> Names;
 	if (Names.Num() == 0)
 	{
-		for (const FString Tint : { TEXT("green"), TEXT("red"), TEXT("blue") })
+		for (const FString Tint : { TEXT("green"), TEXT("red"), TEXT("blue"), TEXT("yellow"), TEXT("purple"), TEXT("pink") })
 		{
 			Names.Add(FName(*FString::Printf(TEXT("grass_top_%s"), *Tint)));
 			Names.Add(FName(*FString::Printf(TEXT("grass_side_%s"), *Tint)));

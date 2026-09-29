@@ -155,7 +155,7 @@ private:
 	FIntVector DigTarget;
 	FString LastPose;
 	FIntVector TestPlaced, TestDug;
-	TOptional<float> TestWalkTo;
+	TOptional<float> TestWalkTo, TestWalkToY;
 	float Fov = 70.f;
 	bool bBound = false;
 };

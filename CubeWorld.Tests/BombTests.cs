@@ -30,7 +30,7 @@ public class BombTests
         var update = world.Explode(World.RegionSize, 12.5, 0, Spec.CraterPower, new Random(1), "p", "a", region: 0);
 
         Assert.NotEmpty(update.Changes);
-        Assert.All(update.Changes, c => Assert.Equal(0, World.RegionOf(c.Cube.x)));
+        Assert.All(update.Changes, c => Assert.Equal(0, World.RegionOf(c.Cube.x, c.Cube.y)));
         Assert.Equal("air", world.KindAt(World.RegionSize - 1, 12, -1));
         Assert.Equal("grass", world.KindAt(World.RegionSize, 12, -1));
     }

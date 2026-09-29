@@ -78,6 +78,8 @@ public sealed class WorldRegion
     public string server { get; set; } = "";
     public string color { get; set; } = "";
     public string room { get; set; } = "";
+    /// <summary>The room type the room is registered under: the C# servers' and the Unreal servers' differ.</summary>
+    public string slug { get; set; } = "";
     public long seen_at { get; set; }
 }
 
@@ -101,18 +103,24 @@ public sealed class WorldUpdate
 /// </summary>
 public sealed class World
 {
-    public const int RegionSize = 24, Width = RegionSize * 3, Depth = RegionSize, MinZ = -4, MaxZ = 64;
-    public static readonly string[] RegionColors = ["red", "blue", "green"];
+    // Six regions, three across and two deep, like the six of a die: the upper row is the C# servers', the lower the
+    // Unreal servers' (each prefers its own row and takes any free region when its row is full).
+    public const int RegionSize = 24, Columns = 3, Rows = 2, Width = RegionSize * Columns, Depth = RegionSize * Rows, MinZ = -4, MaxZ = 64;
+    public static readonly string[] RegionColors = ["red", "blue", "green", "yellow", "purple", "pink"];
 
     private readonly Dictionary<string, WorldCube> _overrides = new();
 
     public IEnumerable<WorldCube> Overrides => _overrides.Values;
 
-    /// <summary>The region a column belongs to: region r is the columns r·<see cref="RegionSize"/> up to the next region's first.</summary>
-    public static int RegionOf(double x) => (int)Math.Floor(x / RegionSize);
+    /// <summary>The region a spot belongs to: region r is column r % <see cref="Columns"/> of row r / <see cref="Columns"/>.</summary>
+    public static int RegionOf(double x, double y) => (int)Math.Floor(y / RegionSize) * Columns + (int)Math.Floor(x / RegionSize);
 
-    /// <summary>The columns of <paramref name="region"/>: <c>From</c> is its first, <c>To</c> the next region's first.</summary>
-    public static (int From, int To) Columns(int region) => (region * RegionSize, (region + 1) * RegionSize);
+    /// <summary>The blocks of <paramref name="region"/>: x in [X0, X1), y in [Y0, Y1).</summary>
+    public static (int X0, int X1, int Y0, int Y1) Bounds(int region) =>
+        (region % Columns * RegionSize, (region % Columns + 1) * RegionSize, region / Columns * RegionSize, (region / Columns + 1) * RegionSize);
+
+    /// <summary>Where a region's players spawn: its middle.</summary>
+    public static (double X, double Y) Centre(int region) => ((region % Columns + 0.5) * RegionSize, (region / Columns + 0.5) * RegionSize);
 
     public static bool Inside(int x, int y, int z) => x is >= 0 and < Width && y is >= 0 and < Depth && z is >= MinZ and < MaxZ;
 
@@ -201,7 +209,7 @@ public sealed class World
                     }
                 }
 
-        if (region is { } only) destroyed.RemoveWhere(b => RegionOf(b.x) != only);
+        if (region is { } only) destroyed.RemoveWhere(b => RegionOf(b.x, b.y) != only);
 
         var update = new WorldUpdate();
         foreach (var (x, y, z) in destroyed.OrderBy(b => b.z)) Set(x, y, z, "air", by, on, update);

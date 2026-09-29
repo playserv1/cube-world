@@ -18,7 +18,7 @@ public sealed partial class CubeWorldServer
     private WorldPresence Spawn(string id, string name) => new()
     {
         player_id = id, name = name, server = _server, color = Color,
-        x = (_region + 0.5) * World.RegionSize, y = World.Depth / 2.0, z = 0, health = Spec.MaxHealth,
+        x = World.Centre(_region).X, y = World.Centre(_region).Y, z = 0, health = Spec.MaxHealth,
     };
 
     /// <summary>Everything the client needs to draw the world: the rules, the changed blocks, the bombs, the inventory.</summary>

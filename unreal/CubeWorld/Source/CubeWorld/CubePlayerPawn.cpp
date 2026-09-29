@@ -57,7 +57,7 @@ void ACubePlayerPawn::OnRep_PlayerId()
 void ACubePlayerPawn::BeginPlay()
 {
 	Super::BeginPlay();
-	if (GetNetMode() == NM_DedicatedServer) return;
+	if (GetNetMode() == NM_DedicatedServer || CubeIsServerProcess()) return;
 	Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
 }
 
@@ -323,14 +323,19 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 			}
 		}), 0.5f, true, 6.f);
 	}
-	// -walkto=<x>: keep walking towards that x (a border crossing test).
-	float Target;
-	if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), Target))
+	// -walkto=<x> or -walkto=<x>,<y>: keep walking towards that spot, one axis at a time (a border crossing test).
+	FString TargetText;
+	if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), TargetText, false) && !TargetText.IsEmpty())
 	{
+		FString TargetX, TargetY;
+		if (!TargetText.Split(TEXT(","), &TargetX, &TargetY)) TargetX = TargetText;
+		const float Target = FCString::Atof(*TargetX);
+		const TOptional<float> TargetYValue = TargetY.IsEmpty() ? TOptional<float>() : TOptional<float>(FCString::Atof(*TargetY));
 		FTimerHandle H;
-		GetWorldTimerManager().SetTimer(H, FTimerDelegate::CreateWeakLambda(this, [this, Target]()
+		GetWorldTimerManager().SetTimer(H, FTimerDelegate::CreateWeakLambda(this, [this, Target, TargetYValue]()
 		{
 			TestWalkTo = Target;
+			TestWalkToY = TargetYValue;
 			bMouseCaptured = true; TestForward = 1.f; bSprintHeld = true;
 		}), 2.f, false);
 		FTimerHandle Where;
@@ -451,7 +456,13 @@ void ACubePlayerPawn::GameTick()
 	for (ACubeBomb* Bomb : Live) if (Bomb) TickBomb(Bomb);
 	if (!Game->bPlaced) return;
 	// A -walkto test steers itself every tick: two client windows on one desktop fight over the mouse.
-	if (TestWalkTo.IsSet()) if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(0, TestWalkTo.GetValue() > Body.X ? 0.f : 180.f, 0));
+	if (TestWalkTo.IsSet()) if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		// Along x until there, then along y (Unreal's yaw 90 is the world's +y).
+		const bool bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
+		if (bThereX && TestWalkToY.IsSet()) PC->SetControlRotation(FRotator(0, TestWalkToY.GetValue() > Body.Y ? 90.f : -90.f, 0));
+		else PC->SetControlRotation(FRotator(0, TestWalkTo.GetValue() > Body.X ? 0.f : 180.f, 0));
+	}
 	const FRotator View = GetControlRotation();
 	const double Yaw = CubeSpec::YawFromUnreal(View.Yaw), Pitch = CubeSpec::PitchFromUnreal(View.Pitch);
 	if (!Game->bDead)
@@ -474,7 +485,7 @@ void ACubePlayerPawn::GameTick()
 		SendMove(Yaw, Pitch);
 	}
 	Game->LastBody = { true, Body.X, Body.Y, Body.Z, Yaw, Pitch };
-	Game->MaybeCross(Body.X);
+	Game->MaybeCross(Body.X, Body.Y);
 }
 
 void ACubePlayerPawn::Tick(float DeltaSeconds)

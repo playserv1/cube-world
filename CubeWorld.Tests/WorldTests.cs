@@ -31,7 +31,7 @@ public class WorldTests
         Assert.Equal("leaves", world.KindAt(x + 2, y, 3));
         Assert.Equal("air", world.KindAt(x + 2, y + 2, 3));
         Assert.Equal("air", world.KindAt(x, y, 7));
-        Assert.Equal(12, Spec.Trees.Length);
+        Assert.Equal(24, Spec.Trees.Length);
 
         var (update, log) = world.Break(x, y, 0, "p", "a")!.Value;
         Assert.Equal("wood", log.Kind);
@@ -229,13 +229,18 @@ public class WorldTests
     }
 
     [Fact]
-    public void A_region_is_its_own_stretch_of_columns_and_a_border_block_belongs_to_the_next_region()
+    public void A_region_is_its_own_square_three_across_and_two_deep_and_a_border_block_belongs_to_the_next_region()
     {
-        Assert.Equal((0, 24), World.Columns(0));
-        Assert.Equal((24, 48), World.Columns(1));
-        Assert.Equal((48, 72), World.Columns(2));
-        Assert.Equal(0, World.RegionOf(23.9));
-        Assert.Equal(1, World.RegionOf(24));
-        Assert.Equal(2, World.RegionOf(71.5));
+        Assert.Equal((0, 24, 0, 24), World.Bounds(0));
+        Assert.Equal((24, 48, 0, 24), World.Bounds(1));
+        Assert.Equal((48, 72, 0, 24), World.Bounds(2));
+        Assert.Equal((0, 24, 24, 48), World.Bounds(3));
+        Assert.Equal((48, 72, 24, 48), World.Bounds(5));
+        Assert.Equal(0, World.RegionOf(23.9, 0));
+        Assert.Equal(1, World.RegionOf(24, 23.9));
+        Assert.Equal(2, World.RegionOf(71.5, 0));
+        Assert.Equal(4, World.RegionOf(24, 24));
+        Assert.Equal(5, World.RegionOf(71.5, 47.5));
+        Assert.Equal((36, 36), World.Centre(4));
     }
 }

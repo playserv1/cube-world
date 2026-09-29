@@ -153,7 +153,7 @@ void ACubeWorldGameMode::OnLiveRegions(const TArray<TSharedPtr<FJsonObject>>& Ro
 	const int64 T = Now();
 	for (const TSharedPtr<FJsonObject>& Row : Rows)
 		if (T - (int64)Num(Row, TEXT("seen_at")) < 30000)
-			LiveRows.Add({ FCString::Atoi(*Str(Row, TEXT("region"))), Str(Row, TEXT("room")), Str(Row, TEXT("color")), Str(Row, TEXT("server")) });
+			LiveRows.Add({ FCString::Atoi(*Str(Row, TEXT("region"))), Str(Row, TEXT("room")), Str(Row, TEXT("color")), Str(Row, TEXT("server")), Str(Row, TEXT("slug")) });
 	LiveRows.Sort([](const FCubeRegionRep& A, const FCubeRegionRep& B) { return A.Region < B.Region; });
 	Regions = LiveRows;
 	if (State) State->Regions = LiveRows;

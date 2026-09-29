@@ -26,7 +26,7 @@ struct FCubePresence
 struct FCubeRegion
 {
 	int32 Region = -1;
-	FString Room, Color, Server;
+	FString Room, Color, Server, Slug;
 };
 
 struct FCubePose
@@ -69,8 +69,8 @@ public:
 	void StartPlay(const FString& Name);
 	/** Join a room by name and travel to its server; with bTeleport false the player keeps their position (a border crossing). */
 	void Enter(const FString& RoomName, bool bTeleport = true);
-	/** Called by the pawn every tick with its x: crosses into the region's server when the border is passed. */
-	void MaybeCross(double X);
+	/** Called by the pawn every tick with its x and y: crosses into the region's server when a border is passed. */
+	void MaybeCross(double X, double Y);
 	void Log(const FString& Text);
 
 	/** True once this server's welcome arrived and until the connection goes. */
@@ -136,6 +136,8 @@ public:
 
 private:
 	void Browse();
+	/** Every room type answered: pick a room and enter it. */
+	void Browsed();
 	void Reconnect();
 	void TravelToUnrealServer(const FString& RoomName, const FString& Url, bool bTeleport);
 	void ConnectSocket(const FString& RoomName, const FString& Host, int32 Port, bool bSecure, const FString& ReservationToken, bool bTeleport);
@@ -169,6 +171,12 @@ private:
 	/** A room that turned the player away (an operator closed it, or removed them) is not tried again before this time. */
 	TMap<FString, double> NotBefore;
 	TArray<FString> Candidates;
+	/** The room type each known room is registered under (the C# servers' or the Unreal servers'), from the browse and the regions. */
+	TMap<FString, FString> RoomSlugs;
+	/** Browses still to answer, when the room types are listed together. */
+	int32 BrowsesPending = 0;
+	TArray<FString> BrowseFound;
+	FString BrowseError;
 	FCubePose WelcomePose;
 	int32 ChunksExpected = 0, ChunksReceived = 0;
 	/** Changes heard before the world snapshot finished arriving; applied after it. */

@@ -1,4 +1,5 @@
 #include "CubeHUD.h"
+#include "CubeWorld.h"
 #include "CubeWorldGameInstance.h"
 #include "CubePlayerPawn.h"
 #include "CubeSpec.h"
@@ -16,6 +17,9 @@ namespace
 		if (Name == TEXT("red")) return FLinearColor(0.94f, 0.27f, 0.27f);
 		if (Name == TEXT("blue")) return FLinearColor(0.23f, 0.51f, 0.96f);
 		if (Name == TEXT("green")) return FLinearColor(0.13f, 0.77f, 0.37f);
+		if (Name == TEXT("yellow")) return FLinearColor(0.92f, 0.70f, 0.03f);
+		if (Name == TEXT("purple")) return FLinearColor(0.66f, 0.33f, 0.97f);
+		if (Name == TEXT("pink")) return FLinearColor(0.93f, 0.28f, 0.60f);
 		return FLinearColor(0.6f, 0.64f, 0.69f);
 	}
 }
@@ -53,6 +57,7 @@ void ACubeHUD::DrawHearts(float X, float Y, double Health)
 
 void ACubeHUD::DrawHUD()
 {
+	if (CubeIsServerProcess()) return;   // a headless server draws nothing
 	Super::DrawHUD();
 	UCubeWorldGameInstance* Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
 	ACubePlayerPawn* Pawn = Cast<ACubePlayerPawn>(GetOwningPawn());

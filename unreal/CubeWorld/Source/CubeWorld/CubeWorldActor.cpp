@@ -145,7 +145,7 @@ void ACubeWorldActor::RebuildChunk(const FIntPoint& Id)
 				const FName Kind = W.KindAt(X, Y, Z);
 				if (Kind == TEXT("air")) continue;
 				const FBlockDef& Block = W.Block(Kind);
-				const FCubeFaces Faces = Tex.Faces(Kind, W.RegionColor(X));
+				const FCubeFaces Faces = Tex.Faces(Kind, W.RegionColor(X, Y));
 				FMeshData& Data = Block.bTransparent ? CutoutData : OpaqueData;
 				for (const FSide& S : Sides)
 				{

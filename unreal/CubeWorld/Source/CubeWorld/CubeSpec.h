@@ -41,7 +41,9 @@ namespace CubeSpec
 	constexpr int32 TextureSize = 16;
 	constexpr float ModelScale = 0.9375f;
 
-	constexpr int32 RegionSize = 24, Width_ = 72, Depth = 24, MinZ = -4, MaxZ = 64, RegionCount = 3;
+	// Six regions, three across and two deep, like the six of a die: the upper row is the C# servers', the lower the
+	// Unreal servers' (each prefers its own row and takes any free region when its row is full).
+	constexpr int32 RegionSize = 24, RegionColumns = 3, RegionRows = 2, Width_ = RegionSize * RegionColumns, Depth = RegionSize * RegionRows, MinZ = -4, MaxZ = 64, RegionCount = RegionColumns * RegionRows;
 
 	// Bombs (CubeWorld.Server/Spec.cs): thrown at 1 block a tick, drag 0.99, gravity 0.05 (a thrown potion's);
 	// a parachute comes down at 0.1 a tick from 32 up. It explodes with a creeper's power of 3.
@@ -53,8 +55,22 @@ namespace CubeSpec
 	// the block under it and one around, a 3 × 3 patch of the top layer on flat ground.
 	constexpr double BlastReach = 3, CraterPower = 1;
 
-	/** The region a column belongs to: region r is the columns r·RegionSize up to the next region's first. */
-	inline int32 RegionOf(double X) { return FMath::FloorToInt32(X / RegionSize); }
+	/** The region a spot belongs to: region r is column r % RegionColumns of row r / RegionColumns. */
+	inline int32 RegionOf(double X, double Y) { return FMath::FloorToInt32(Y / RegionSize) * RegionColumns + FMath::FloorToInt32(X / RegionSize); }
+	/** The blocks of a region: x in [X0, X1), y in [Y0, Y1). */
+	inline void RegionBounds(int32 Region, int32& X0, int32& X1, int32& Y0, int32& Y1)
+	{
+		X0 = Region % RegionColumns * RegionSize; X1 = X0 + RegionSize; Y0 = Region / RegionColumns * RegionSize; Y1 = Y0 + RegionSize;
+	}
+	/** Where a region's players spawn: its middle. */
+	inline FVector2D RegionCentre(int32 Region) { return FVector2D((Region % RegionColumns + 0.5) * RegionSize, (Region / RegionColumns + 0.5) * RegionSize); }
+	/** The room types the world's servers register under: the C# servers' and the Unreal servers'. */
+	inline const TArray<FString>& RoomTypes() { static TArray<FString> Types = { TEXT("cubeworld"), TEXT("cubeworld-ue") }; return Types; }
+	inline const TCHAR* RegionColorName(int32 Region)
+	{
+		static const TCHAR* Colors[] = { TEXT("red"), TEXT("blue"), TEXT("green"), TEXT("yellow"), TEXT("purple"), TEXT("pink") };
+		return Region >= 0 && Region < RegionCount ? Colors[Region] : TEXT("grey");
+	}
 
 	/** Minecraft's yaw is Unreal's yaw minus 90°; its pitch is positive looking down. Both in radians. */
 	inline double YawFromUnreal(float UnrealYawDegrees) { return FMath::DegreesToRadians(FRotator::NormalizeAxis(UnrealYawDegrees - 90.f)); }
@@ -149,12 +165,14 @@ namespace CubeSpec
 inline TArray<FIntPoint> CubeTreeSpots()
 {
 	TArray<FIntPoint> Spots;
-	for (int32 R = 0; R < 3; R++)
+	for (int32 R = 0; R < CubeSpec::RegionCount; R++)
 	{
-		Spots.Add(FIntPoint(R * 24 + 4, 5));
-		Spots.Add(FIntPoint(R * 24 + 18, 4));
-		Spots.Add(FIntPoint(R * 24 + 6, 18));
-		Spots.Add(FIntPoint(R * 24 + 19, 17));
+		int32 X0, X1, Y0, Y1;
+		CubeSpec::RegionBounds(R, X0, X1, Y0, Y1);
+		Spots.Add(FIntPoint(X0 + 4, Y0 + 5));
+		Spots.Add(FIntPoint(X0 + 18, Y0 + 4));
+		Spots.Add(FIntPoint(X0 + 6, Y0 + 18));
+		Spots.Add(FIntPoint(X0 + 19, Y0 + 17));
 	}
 	return Spots;
 }

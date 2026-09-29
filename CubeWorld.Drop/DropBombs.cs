@@ -83,7 +83,7 @@ public sealed class DropBombs : PlatformFunction<object>
     /// A new bomb somewhere over the world.
     private async Task DropNewBomb(long now, CancellationToken ct)
     {
-        await WorldBombs.CreateAsync(Bomb($"drop-{now}", "free", Random.Shared.Next(1, 71), Random.Shared.Next(1, 23), now, now), ct);
+        await WorldBombs.CreateAsync(Bomb($"drop-{now}", "free", Random.Shared.Next(1, 71), Random.Shared.Next(1, 47), now, now), ct);
     }
 
     /// No server has picked the bomb up yet.

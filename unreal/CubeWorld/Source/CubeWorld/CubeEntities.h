@@ -89,6 +89,8 @@ public:
 	UPROPERTY() FString server;
 	UPROPERTY() FString color;
 	UPROPERTY() FString room;
+	/** The room type the room is registered under: the C# servers' or the Unreal servers'. */
+	UPROPERTY() FString slug;
 	UPROPERTY() int64 seen_at = 0;
 };
 

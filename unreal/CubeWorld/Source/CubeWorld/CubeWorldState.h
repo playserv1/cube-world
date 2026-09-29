@@ -18,6 +18,7 @@ struct FCubeRegionRep
 	UPROPERTY() FString Room;
 	UPROPERTY() FString Color;
 	UPROPERTY() FString Server;
+	UPROPERTY() FString Slug;
 };
 
 USTRUCT()

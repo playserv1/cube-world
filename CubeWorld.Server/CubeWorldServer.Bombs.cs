@@ -39,7 +39,7 @@ public sealed partial class CubeWorldServer
     {
         var bomb = live.Record;
         live.Z = Bomb.Descend(_world, bomb.x, bomb.y, live.Z);
-        if (World.RegionOf(bomb.x) != _region) return;
+        if (World.RegionOf(bomb.x, bomb.y) != _region) return;
 
         var taker = _players.Values.FirstOrDefault(p => !p.Dead && p.Bomb is null
                                                         && Bomb.InPickupReach(HitboxOf(p.Pose), bomb.x, bomb.y, live.Z));

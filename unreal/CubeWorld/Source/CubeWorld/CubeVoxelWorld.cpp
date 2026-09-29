@@ -37,9 +37,9 @@ bool FCubeVoxelWorld::IsSolidForPhysics(int32 X, int32 Y, int32 Z) const
 	return IsSolid(X, Y, Z);
 }
 
-FName FCubeVoxelWorld::RegionColor(int32 X) const
+FName FCubeVoxelWorld::RegionColor(int32 X, int32 Y) const
 {
-	const int32 R = FMath::FloorToInt32((float)X / RegionSize);
+	const int32 R = CubeSpec::RegionOf(X, Y);
 	return RegionColors.IsValidIndex(R) ? RegionColors[R] : FName(TEXT("green"));
 }
 
