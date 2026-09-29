@@ -59,7 +59,9 @@ public sealed partial class CubeWorldServer
 
     /// <summary>
     /// Our players' positions go out 20 times a second, as often as their clients send them; everyone's, ours and the
-    /// others', reach the clients 10 times. The steps are fixed, so a late one does not push the next ones back.
+    /// others', reach the clients 10 times. The steps are fixed, so a late one does not push the next ones back. The
+    /// platform stores one write of a row at a time and merges those that come meanwhile, so the other servers hear a
+    /// player about every 200 ms, but always the latest position.
     /// </summary>
     private async Task ShareMovesAsync()
     {

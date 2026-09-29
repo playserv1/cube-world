@@ -1,11 +1,12 @@
 // Another player on screen walks to the last position their server sent at a steady pace, and gets there about when
 // the next one is due: no dash-and-wait, whatever the frame rate. How often positions come is measured per player
-// (every 100 ms from this server, less evenly from another one).
+// (every 100 ms from this server; about every 200 ms from another one, whose writes the platform merges while it
+// stores the previous one, with pauses of seconds now and then).
 export const SNAP = 5;              // blocks: a respawn or a jump across regions is shown at once
 export const INTERVAL = 100;        // ms between positions, until measured
 export const MIN_INTERVAL = 40;
-export const MAX_INTERVAL = 300;
-export const SLACK = 1.5;           // the walk takes a bit longer than an interval, so an uneven one rarely leaves it standing
+export const MAX_INTERVAL = 500;
+export const SLACK = 2;             // the walk takes a bit longer than an interval, so an uneven one rarely leaves it standing
 
 export function createFollower(p, now) {
   return { x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, to: { ...p }, interval: INTERVAL, heardAt: now, arriveAt: now, drawnAt: now };
