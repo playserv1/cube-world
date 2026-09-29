@@ -1,4 +1,4 @@
-// A tombstone where a player died, standing until they respawn: a grey headstone with a rounded top on a
+// A tombstone where a player died, standing until they respawn: a grey rectangular headstone on a
 // low base, "R.I.P." and the player's name carved on its face, and their name tag above it (web/tombstone.js).
 // Its face looks along +X, as the player model does; the actor's yaw turns it.
 #pragma once

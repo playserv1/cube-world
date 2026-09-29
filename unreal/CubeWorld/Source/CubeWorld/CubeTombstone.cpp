@@ -47,7 +47,6 @@ void ACubeTombstone::Setup(const FString& Name)
 	FCubeShape Shape;
 	const FLinearColor Grey = FCubeShape::Hex(TEXT("#8d9096"));
 	Shape.Box(FVector(0, 0, Base + H / 2), FVector(D / 2, W / 2, H / 2), Grey);
-	Shape.Cylinder(FVector(0, 0, Base + H), FVector::XAxisVector, W / 2, D, 20, Grey, 0, PI);
 	Shape.Box(FVector(0, 0, Base / 2), FVector((D + 30) / 2, (W + 24) / 2, Base / 2), FCubeShape::Hex(TEXT("#6b6e73")));
 	Shape.Commit(Stone);
 

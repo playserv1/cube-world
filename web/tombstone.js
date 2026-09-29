@@ -1,5 +1,5 @@
-// A tombstone where a player died, standing until they respawn: a grey headstone with a rounded top on a
-// low base, "R.I.P." and the player's name carved on its face.
+// A tombstone where a player died, standing until they respawn: a grey rectangular headstone on a low
+// base, "R.I.P." and the player's name carved on its face.
 
 import * as THREE from "three";
 
@@ -28,11 +28,8 @@ export function buildTombstone(name) {
   const front = face(name);
   const slab = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [stone, stone, stone, stone, front, front]);
   slab.position.y = 0.12 + h / 2;
-  const top = new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, d, 20, 1, false, -Math.PI / 2, Math.PI), stone);
-  top.rotation.x = -Math.PI / 2;
-  top.position.y = 0.12 + h;
   const plinth = new THREE.Mesh(new THREE.BoxGeometry(w + 0.24, 0.12, d + 0.3), base);
   plinth.position.y = 0.06;
-  tomb.add(slab, top, plinth);
+  tomb.add(slab, plinth);
   return tomb;
 }
