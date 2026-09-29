@@ -63,6 +63,8 @@ export const BOMB_POWER = 3;
 // of 1, not 3: the block under it and one around, a 3 × 3 patch of the top layer on flat ground.
 export const BLAST_REACH = 3;
 export const CRATER_POWER = 1;
+// Every block a bomb can break takes it as dirt does, so it breaks at the first go; only bedrock stands.
+export const CRATER_RESISTANCE = 0.5;
 export const OWNER_IMMUNITY_TICKS = 4;
 export const PARACHUTE_SPEED = 0.1;
 export const DROP_HEIGHT = 32;

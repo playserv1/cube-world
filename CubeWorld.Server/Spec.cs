@@ -52,19 +52,23 @@ public static class Spec
     // picks it up as Minecraft players pick up items: the bomb within the hitbox grown by 1 sideways, 0.5 up and down.
     public const double ParachuteSpeed = 0.1, DropHeight = 32, PickupReach = 1.0, PickupReachUp = 0.5;
 
+    // Blast resistance: every block a bomb can break takes it as dirt does (0.5), so a blast breaks grass, glass,
+    // stone, brick and gold alike at the first go; only bedrock stands. Minecraft's own numbers differ (SPEC.md).
+    public const double CraterResistance = 0.5;
+
     public static readonly Block[] Blocks =
     [
         new("air", 0, false, true, false, null, 0),
         new("bedrock", -1, true, false, false, null, 3_600_000),
-        new("grass", 0.6, false, false, false, "dirt", 0.6),
-        new("dirt", 0.5, false, false, false, "dirt", 0.5),
-        new("sand", 0.5, false, false, true, "sand", 0.5),
-        new("stone", 1.5, true, false, false, null, 6),
-        new("wood", 2.0, false, false, false, "wood", 2),
-        new("brick", 2.0, true, false, false, null, 6),
-        new("glass", 0.3, false, true, false, null, 0.3),
-        new("gold", 3.0, true, false, false, null, 6),
-        new("leaves", 0.2, false, true, false, null, 0.2),
+        new("grass", 0.6, false, false, false, "dirt", CraterResistance),
+        new("dirt", 0.5, false, false, false, "dirt", CraterResistance),
+        new("sand", 0.5, false, false, true, "sand", CraterResistance),
+        new("stone", 1.5, true, false, false, null, CraterResistance),
+        new("wood", 2.0, false, false, false, "wood", CraterResistance),
+        new("brick", 2.0, true, false, false, null, CraterResistance),
+        new("glass", 0.3, false, true, false, null, CraterResistance),
+        new("gold", 3.0, true, false, false, null, CraterResistance),
+        new("leaves", 0.2, false, true, false, null, CraterResistance),
     ];
 
     public static readonly Dictionary<string, Block> ByKind = Blocks.ToDictionary(b => b.Kind);

@@ -813,8 +813,7 @@ function enterOffline() {
   // Bombs as the drop function and the server handle them: one dropped every 15 seconds (two to start, near the
   // spawn), at most five free, picked up by walking into them, thrown with right click.
   const offBombs = new Map();
-  const RESISTANCE = { grass: 0.6, dirt: 0.5, sand: 0.5, stone: 6, wood: 2, brick: 6, glass: 0.3, gold: 6, leaves: 0.2, bedrock: 3600000 };
-  const record = (b, p, extra = {}) => ({ bomb_id: b.id, state: b.state, holder: b.holder ?? "", ...toServer(p), vx: 0, vy: 0, vz: 0, dropped_at: b.dropped, at: Date.now(), ...extra });
+    const record = (b, p, extra = {}) => ({ bomb_id: b.id, state: b.state, holder: b.holder ?? "", ...toServer(p), vx: 0, vy: 0, vz: 0, dropped_at: b.dropped, at: Date.now(), ...extra });
   const emitBomb = (b, p, extra) => emit({ type: "bomb", bomb: record(b, p, extra), age: 0, z: p.y });
   const dropBomb = (x, z) => {
     const free = [...offBombs.values()].filter(b => b.state === "free").sort((a, b) => a.dropped - b.dropped);
@@ -837,7 +836,7 @@ function enterOffline() {
   const blowUp = b => {
     const block = (x, y, z) => {
       const kind = world.inside(x, y, z) ? world.kindAt(x, y, z) : "air";
-      return kind === "air" ? null : { resistance: RESISTANCE[kind] ?? 1, breakable: kind !== "bedrock" };
+      return kind === "air" ? null : kind === "bedrock" ? { resistance: 3600000, breakable: false } : { resistance: S.CRATER_RESISTANCE, breakable: true };
     };
     for (const [x, y, z] of explode(block, b.p.x, b.p.y, b.p.z, S.CRATER_POWER)) setBlock(x, z, y, "air");
     const targets = [{ id: "offline-you", x: me.x, y: me.y, z: me.z }].concat(dummy.health > 0 ? [{ id: dummy.player_id, ...toClient(dummy) }] : []);

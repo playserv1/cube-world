@@ -61,16 +61,19 @@ public class BombTests
     }
 
     [Fact]
-    public void Stone_stands_up_to_a_blast_that_takes_dirt()
+    public void A_blast_breaks_stone_glass_and_gold_at_the_first_go_as_it_does_dirt()
     {
-        var world = new World();
-        world.Place(29, 12, -1, 0, 0, 1, "stone", "p", "a", []);
-        world.Place(31, 12, -1, 0, 0, 1, "dirt", "p", "a", []);
+        foreach (var kind in new[] { "dirt", "grass", "glass", "stone", "brick", "gold", "wood", "leaves" })
+        {
+            var world = new World();
+            world.Place(29, 12, -1, 0, 0, 1, kind, "p", "a", []);
+            world.Place(31, 12, -1, 0, 0, 1, kind, "p", "a", []);
 
-        world.Explode(30.5, 12.5, 0.5, Spec.CraterPower, new Random(1), "p", "a");
+            world.Explode(30.5, 12.5, 0.5, Spec.CraterPower, new Random(1), "p", "a");
 
-        Assert.Equal("stone", world.KindAt(29, 12, 0));
-        Assert.Equal("air", world.KindAt(31, 12, 0));
+            Assert.Equal("air", world.KindAt(29, 12, 0));
+            Assert.Equal("air", world.KindAt(31, 12, 0));
+        }
     }
 
     [Fact]
