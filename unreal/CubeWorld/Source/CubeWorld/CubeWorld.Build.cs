@@ -12,5 +12,9 @@ public class CubeWorld : ModuleRules
 			"ProceduralMeshComponent", "Json", "JsonUtilities", "Sockets", "Networking",
 			"RenderCore", "RHI", "PlayServRuntime",
 		});
+
+		// The game socket runs over OpenSSL's connect BIO, plain or TLS; the SSL module owns the certificate store.
+		PrivateDependencyModuleNames.Add("SSL");
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 	}
 }

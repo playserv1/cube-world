@@ -1,34 +1,61 @@
 #include "CubeSocket.h"
 #include "CubeWorld.h"
-#include "Sockets.h"
-#include "SocketSubsystem.h"
-#include "IPAddress.h"
 #include "Async/Async.h"
 #include "Misc/Base64.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "SocketSubsystem.h"
+#include "SslModule.h"
+#include "Interfaces/ISslCertificateManager.h"
+
+// OpenSSL names a type UI, which collides with the engine namespace of that name.
+#define UI UI_ST
+THIRD_PARTY_INCLUDES_START
+#include <openssl/ssl.h>
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
+THIRD_PARTY_INCLUDES_END
+#undef UI
 
 static bool CubeSocketVerbose() { static const bool bVerbose = FParse::Param(FCommandLine::Get(), TEXT("logframes")); return bVerbose; }
 
-FCubeSocket::FCubeSocket(const FString& InHost, int32 InPort, const FString& InPath)
-	: Host(InHost), Path(InPath.IsEmpty() ? TEXT("/") : InPath), Port(InPort)
+namespace
+{
+	FString LastOpenSslError()
+	{
+		char Buffer[256] = { 0 };
+		const unsigned long Code = ERR_get_error();
+		if (Code == 0) return TEXT("no detail");
+		ERR_error_string_n(Code, Buffer, sizeof(Buffer));
+		return FString(ANSI_TO_TCHAR(Buffer));
+	}
+}
+
+FCubeSocket::FCubeSocket(const FString& InHost, int32 InPort, bool bInSecure, const FString& InPath)
+	: Host(InHost), Path(InPath.IsEmpty() ? TEXT("/") : InPath), Port(InPort), bSecure(bInSecure)
 {
 }
 
 FCubeSocket::~FCubeSocket()
 {
 	if (Ticker.IsValid()) FTSTicker::GetCoreTicker().RemoveTicker(Ticker);
-	if (Socket)
-	{
-		Socket->Close();
-		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
-	}
+	FreeConnection();
+}
+
+void FCubeSocket::FreeConnection()
+{
+	if (Bio) { BIO_free_all((BIO*)Bio); Bio = nullptr; }
+	if (SslContext) { SSL_CTX_free((SSL_CTX*)SslContext); SslContext = nullptr; }
 }
 
 void FCubeSocket::Connect()
 {
 	if (State != EState::Idle) return;
 	State = EState::Connecting;
+	// The socket layer must be up (Winsock on Windows) and the SSL module loaded before OpenSSL is used.
+	ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	FSslModule::Get();
 	TWeakPtr<FCubeSocket> Weak = AsShared();
 	Worker = Async(EAsyncExecution::Thread, [Weak]()
 	{
@@ -44,48 +71,81 @@ void FCubeSocket::Connect()
 	Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FCubeSocket::Tick), 0.f);
 }
 
-// Runs on the worker: resolve, connect, send the upgrade request and read the answer.
+// Runs on the worker: connect (and handshake TLS), send the upgrade request and read the answer.
 bool FCubeSocket::DoConnect(FString& OutError)
 {
-	ISocketSubsystem* Subsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-	TSharedPtr<FInternetAddr> Address;
-	bool bValid = false;
-	Address = Subsystem->CreateInternetAddr();
-	Address->SetIp(*Host, bValid);
-	if (!bValid)
-	{
-		const FAddressInfoResult Info = Subsystem->GetAddressInfo(*Host, nullptr, EAddressInfoFlags::Default, NAME_None);
-		if (Info.Results.Num() == 0) { OutError = FString::Printf(TEXT("cannot resolve %s"), *Host); return false; }
-		Address = Info.Results[0].Address;
-	}
-	Address->SetPort(Port);
+	const FTCHARToUTF8 HostUtf8(*Host);
+	const FString HostPort = FString::Printf(TEXT("%s:%d"), *Host, Port);
+	const FTCHARToUTF8 HostPortUtf8(*HostPort);
+	BIO* NewBio = nullptr;
+	SSL* Ssl = nullptr;
 
-	FSocket* NewSocket = Subsystem->CreateSocket(NAME_Stream, TEXT("cubeworld"), Address->GetProtocolType());
-	if (!NewSocket) { OutError = TEXT("no socket"); return false; }
-	NewSocket->SetNoDelay(true);
-	if (!NewSocket->Connect(*Address))
+	if (bSecure)
 	{
-		OutError = FString::Printf(TEXT("connect to %s:%d failed"), *Host, Port);
-		Subsystem->DestroySocket(NewSocket);
+		SSL_CTX* Ctx = SSL_CTX_new(TLS_client_method());
+		if (!Ctx) { OutError = TEXT("no TLS context"); return false; }
+		FSslModule::Get().GetCertificateManager().AddCertificatesToSslContext(Ctx);
+		SSL_CTX_set_verify(Ctx, SSL_VERIFY_PEER, nullptr);
+		SSL_CTX_set_min_proto_version(Ctx, TLS1_2_VERSION);
+		SslContext = Ctx;
+		NewBio = BIO_new_ssl_connect(Ctx);
+		if (!NewBio) { OutError = TEXT("no TLS connection"); return false; }
+		BIO_get_ssl(NewBio, &Ssl);
+		SSL_set_mode(Ssl, SSL_MODE_AUTO_RETRY);
+		SSL_set_tlsext_host_name(Ssl, HostUtf8.Get());
+		SSL_set1_host(Ssl, HostUtf8.Get());
+	}
+	else
+	{
+		NewBio = BIO_new(BIO_s_connect());
+		if (!NewBio) { OutError = TEXT("no connection"); return false; }
+	}
+	BIO_set_conn_hostname(NewBio, HostPortUtf8.Get());
+	BIO_set_nbio(NewBio, 0);
+
+	if (BIO_do_connect(NewBio) <= 0)
+	{
+		OutError = FString::Printf(TEXT("connect to %s failed: %s"), *HostPort, *LastOpenSslError());
+		BIO_free_all(NewBio);
 		return false;
+	}
+	if (bSecure)
+	{
+		if (BIO_do_handshake(NewBio) <= 0)
+		{
+			OutError = FString::Printf(TEXT("TLS handshake with %s failed: %s"), *Host, *LastOpenSslError());
+			BIO_free_all(NewBio);
+			return false;
+		}
+		const long Verify = SSL_get_verify_result(Ssl);
+		if (Verify != X509_V_OK)
+		{
+			OutError = FString::Printf(TEXT("certificate of %s rejected: %s"), *Host, ANSI_TO_TCHAR(X509_verify_cert_error_string(Verify)));
+			BIO_free_all(NewBio);
+			return false;
+		}
 	}
 
 	uint8 KeyBytes[16];
 	for (uint8& B : KeyBytes) B = (uint8)FMath::RandRange(0, 255);
 	const FString Key = FBase64::Encode(KeyBytes, 16);
-	const FString Request = FString::Printf(TEXT("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"), *Path, *Host, Port, *Key);
+	const FString Request = FString::Printf(TEXT("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"), *Path, *HostPort, *Key);
 	const FTCHARToUTF8 Utf8(*Request);
-	int32 Sent = 0;
-	if (!NewSocket->Send((const uint8*)Utf8.Get(), Utf8.Length(), Sent)) { OutError = TEXT("handshake send failed"); Subsystem->DestroySocket(NewSocket); return false; }
+	if (BIO_write(NewBio, Utf8.Get(), Utf8.Length()) <= 0) { OutError = TEXT("handshake send failed"); BIO_free_all(NewBio); return false; }
 
 	TArray<uint8> Answer;
 	const double Deadline = FPlatformTime::Seconds() + 10;
 	while (FPlatformTime::Seconds() < Deadline)
 	{
 		uint8 Buffer[4096];
-		int32 Read = 0;
-		if (!NewSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(200))) continue;
-		if (!NewSocket->Recv(Buffer, sizeof(Buffer), Read) || Read <= 0) { OutError = TEXT("handshake: connection closed"); Subsystem->DestroySocket(NewSocket); return false; }
+		const int32 Read = BIO_read(NewBio, Buffer, sizeof(Buffer));
+		if (Read <= 0)
+		{
+			if (BIO_should_retry(NewBio)) continue;
+			OutError = TEXT("handshake: connection closed");
+			BIO_free_all(NewBio);
+			return false;
+		}
 		Answer.Append(Buffer, Read);
 		const FUTF8ToTCHAR AnswerConverted((const ANSICHAR*)Answer.GetData(), Answer.Num());
 		const FString Text(AnswerConverted.Length(), AnswerConverted.Get());
@@ -94,7 +154,7 @@ bool FCubeSocket::DoConnect(FString& OutError)
 		if (!Text.StartsWith(TEXT("HTTP/1.1 101")))
 		{
 			OutError = FString::Printf(TEXT("handshake refused: %s"), *Text.Left(Text.Find(TEXT("\r\n"))));
-			Subsystem->DestroySocket(NewSocket);
+			BIO_free_all(NewBio);
 			return false;
 		}
 		// Whatever followed the headers is already a frame.
@@ -102,12 +162,12 @@ bool FCubeSocket::DoConnect(FString& OutError)
 		const int32 HeadBytes = HeadUtf8.Length();
 		FScopeLock Guard(&Lock);
 		if (Answer.Num() > HeadBytes) Incoming.Append(Answer.GetData() + HeadBytes, Answer.Num() - HeadBytes);
-		NewSocket->SetNonBlocking(true);
-		Socket = NewSocket;
+		BIO_set_nbio(NewBio, 1);
+		Bio = NewBio;
 		return true;
 	}
 	OutError = TEXT("handshake timed out");
-	Subsystem->DestroySocket(NewSocket);
+	BIO_free_all(NewBio);
 	return false;
 }
 
@@ -122,29 +182,28 @@ bool FCubeSocket::Tick(float)
 		State = EState::Open;
 		OnConnected.Broadcast();
 	}
-	if (State != EState::Open || !Socket) return State == EState::Open;
+	if (State != EState::Open || !Bio) return State == EState::Open;
 
-	uint32 Pending = 0;
-	while (Socket->HasPendingData(Pending) && Pending > 0)
+	// Non-blocking reads until the connection has nothing more; 0 with no retry is the peer closing.
+	for (int32 Rounds = 0; Rounds < 64; Rounds++)
 	{
-		TArray<uint8> Buffer;
-		Buffer.SetNumUninitialized(FMath::Min<uint32>(Pending, 65536));
-		int32 Read = 0;
-		const bool bOk = Socket->Recv(Buffer.GetData(), Buffer.Num(), Read);
-		if (CubeSocketVerbose()) UE_LOG(LogCubeWorld, Log, TEXT("socket: pending %u read %d ok %d"), Pending, Read, bOk);
-		if (!bOk || Read <= 0) break;
-		Incoming.Append(Buffer.GetData(), Read);
-	}
-	// A graceful close shows as a failed zero-byte peek; a would-block peek succeeds with nothing read.
-	uint8 Probe = 0;
-	int32 Peeked = 0;
-	if (!Socket->Recv(&Probe, 1, Peeked, ESocketReceiveFlags::Peek) && Peeked == 0)
-	{
+		uint8 Buffer[16384];
+		const int32 Read = BIO_read((BIO*)Bio, Buffer, sizeof(Buffer));
+		if (Read > 0)
+		{
+			if (CubeSocketVerbose()) UE_LOG(LogCubeWorld, Log, TEXT("socket: read %d"), Read);
+			Incoming.Append(Buffer, Read);
+			continue;
+		}
+		if (BIO_should_retry((BIO*)Bio)) break;
 		ReadFrames();
-		if (State == EState::Open) { State = EState::Closed; OnClosed.Broadcast(TEXT("connection closed by the server")); }
+		if (State == EState::Open)
+		{
+			State = EState::Closed;
+			OnClosed.Broadcast(Read == 0 ? TEXT("connection closed by the server") : FString::Printf(TEXT("connection lost: %s"), *LastOpenSslError()));
+		}
 		return false;
 	}
-	if (Socket->GetConnectionState() == SCS_ConnectionError) { Fail(TEXT("connection lost")); return false; }
 	ReadFrames();
 	return State == EState::Open;
 }
@@ -192,7 +251,7 @@ void FCubeSocket::ReadFrames()
 
 void FCubeSocket::SendFrame(uint8 Opcode, const TArray<uint8>& Payload)
 {
-	if (!Socket || State != EState::Open) return;
+	if (!Bio || State != EState::Open) return;
 	TArray<uint8> Frame;
 	Frame.Add(0x80 | Opcode);
 	const int32 N = Payload.Num();
@@ -206,16 +265,13 @@ void FCubeSocket::SendFrame(uint8 Opcode, const TArray<uint8>& Payload)
 	for (int32 I = 0; I < N; I++) Frame[Start + I] = Payload[I] ^ Mask[I % 4];
 
 	int32 Total = 0;
+	const double Deadline = FPlatformTime::Seconds() + 2;
 	while (Total < Frame.Num())
 	{
-		int32 Sent = 0;
-		if (!Socket->Send(Frame.GetData() + Total, Frame.Num() - Total, Sent))
-		{
-			if (Socket->GetConnectionState() == SCS_ConnectionError) { Fail(TEXT("send failed")); return; }
-			Socket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromMilliseconds(50));
-			continue;
-		}
-		Total += Sent;
+		const int32 Sent = BIO_write((BIO*)Bio, Frame.GetData() + Total, Frame.Num() - Total);
+		if (Sent > 0) { Total += Sent; continue; }
+		if (!BIO_should_retry((BIO*)Bio) || FPlatformTime::Seconds() > Deadline) { Fail(TEXT("send failed")); return; }
+		FPlatformProcess::Sleep(0.001f);
 	}
 }
 
@@ -232,7 +288,7 @@ void FCubeSocket::Close()
 	if (State == EState::Open) SendFrame(0x8, TArray<uint8>());
 	State = EState::Closed;
 	if (Ticker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(Ticker); Ticker.Reset(); }
-	if (Socket) Socket->Close();
+	FreeConnection();
 }
 
 void FCubeSocket::Fail(const FString& Reason)

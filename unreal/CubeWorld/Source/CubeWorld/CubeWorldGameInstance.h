@@ -105,7 +105,7 @@ public:
 private:
 	void Browse();
 	void Reconnect();
-	void Connect(const FString& RoomName, const FString& Host, int32 Port, const FString& Path, const FString& ReservationToken, bool bTeleport);
+	void Connect(const FString& RoomName, const FString& Host, int32 Port, const FString& Path, bool bSecure, const FString& ReservationToken, bool bTeleport);
 	void OnFrame(const TSharedPtr<FJsonObject>& Frame, bool bTeleport);
 	void ReadInventory(const TSharedPtr<FJsonObject>& Object);
 	void ReadCube(const TSharedPtr<FJsonObject>& Cube, bool bDelete, TArray<FIntVector>& Changed);

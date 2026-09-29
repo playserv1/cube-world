@@ -193,20 +193,24 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		const FPlayServRoomConnect& C = Result.Ticket.Connect;
 		FString Host = C.Host, Path = TEXT("/"), Override;
 		int32 Port = C.Port;
-		// -wshost=127.0.0.1:7777 points the game socket elsewhere, for tests.
+		// The pool machines speak wss; the SDK's transport enum has no wss yet, so anything it did not
+		// read as plain ws is taken as TLS. -wsplain / -wssecure force it, -wshost=host:port redirects.
+		bool bSecure = C.Transport != EPlayServRoomTransport::Ws;
+		if (FParse::Param(FCommandLine::Get(), TEXT("wsplain"))) bSecure = false;
+		if (FParse::Param(FCommandLine::Get(), TEXT("wssecure"))) bSecure = true;
 		if (FParse::Value(FCommandLine::Get(), TEXT("-wshost="), Override) && !Override.IsEmpty())
 		{
 			FString PortText;
 			if (Override.Split(TEXT(":"), &Host, &PortText)) Port = FCString::Atoi(*PortText); else Host = Override;
 		}
-		Self->Connect(RoomName, Host, Port, Path, Result.Ticket.ReservationToken, bTeleport);
+		Self->Connect(RoomName, Host, Port, Path, bSecure, Result.Ticket.ReservationToken, bTeleport);
 	}));
 }
 
-void UCubeWorldGameInstance::Connect(const FString& RoomName, const FString& Host, int32 Port, const FString& Path, const FString& ReservationToken, bool bTeleport)
+void UCubeWorldGameInstance::Connect(const FString& RoomName, const FString& Host, int32 Port, const FString& Path, bool bSecure, const FString& ReservationToken, bool bTeleport)
 {
-	Log(FString::Printf(TEXT("connecting to %s:%d"), *Host, Port));
-	TSharedPtr<FCubeSocket> NewSocket = MakeShared<FCubeSocket>(Host, Port, Path);
+	Log(FString::Printf(TEXT("connecting to %s://%s:%d"), bSecure ? TEXT("wss") : TEXT("ws"), *Host, Port));
+	TSharedPtr<FCubeSocket> NewSocket = MakeShared<FCubeSocket>(Host, Port, bSecure, Path);
 	Pending = NewSocket;
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
 	TWeakPtr<FCubeSocket> WeakSocket(NewSocket);
