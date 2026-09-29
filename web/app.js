@@ -33,10 +33,6 @@ const falling = [];
 const bombs = new Map();
 const me = createBody(36, 0, 12);
 
-function log(text) {
-  $("log").textContent = `${new Date().toLocaleTimeString()} ${text}\n` + $("log").textContent;
-}
-
 // ── platform ─────────────────────────────────────────────────────────────────────────────────────
 
 async function api(method, path, body, retried = false) {
@@ -71,7 +67,7 @@ function refreshSession() {
 
 function scheduleRefresh(seconds) {
   clearTimeout(scheduleRefresh.timer);
-  scheduleRefresh.timer = setTimeout(() => refreshSession().catch(e => log(e.message)), Math.max(10, (seconds || 900) - 60) * 1000);
+  scheduleRefresh.timer = setTimeout(() => refreshSession().catch(() => {}), Math.max(10, (seconds || 900) - 60) * 1000);
 }
 
 async function signIn(name) {
@@ -96,7 +92,7 @@ async function refreshServers() {
     li.innerHTML = `<span>${room.room_name} · ${room.players}/${room.capacity}</span>`;
     const button = document.createElement("button");
     button.textContent = room.room_name === state.room ? "here" : "enter";
-    button.onclick = () => enter(room.room_name).catch(e => log(refusal({ code: e.code }).message ?? e.message));
+    button.onclick = () => enter(room.room_name).catch(() => {});
     li.append(button);
     $("servers").append(li);
   }
@@ -124,7 +120,6 @@ async function enter(roomName, teleport = true) {
         state.switching = false;
         previous?.close();
         onFrame(frame, teleport || !state.placed);
-        log(`${previous ? "crossed into" : "entered"} ${roomName}`);
         refreshServers().catch(() => {});
         return;
       }
@@ -134,7 +129,6 @@ async function enter(roomName, teleport = true) {
       if (state.socket === socket) {
         const turned = refusal({ reason: e.reason });
         if (turned.message) state.notBefore[roomName] = performance.now() + turned.waitMs;
-        log(turned.message ?? `disconnected: ${e.reason || e.code}`);
         state.room = null;
       }
       if (state.socket !== socket) state.switching = false;
@@ -187,7 +181,6 @@ function onFrame(frame, teleport) {
       const c = frame.cube;
       rebuild(world.set(c.x, c.z, c.y, frame.op === "delete" ? null : c.kind));
       if (state.dig && state.dig.key === `${c.x},${c.z},${c.y}` && world.kindAt(c.x, c.z, c.y) === "air") { state.dig = null; state.digCooldown = S.DIG_COOLDOWN_TICKS; }
-      if (frame.remote) log(`${c.kind === "air" || frame.op === "delete" ? "removed" : "placed"} on server ${c.placed_on} → arrived here`);
       break;
     }
     case "fall":
@@ -202,8 +195,6 @@ function onFrame(frame, teleport) {
         if (state.dig && state.dig.key === `${c.x},${c.z},${c.y}` && world.kindAt(c.x, c.z, c.y) === "air") { state.dig = null; state.digCooldown = S.DIG_COOLDOWN_TICKS; }
       }
       rebuild(ids);
-      const first = frame.changes[0]?.cube;
-      if (frame.remote && first) log(`${frame.changes.length} block${frame.changes.length > 1 ? "s" : ""} changed on server ${first.placed_on} → arrived here`);
       break;
     }
     case "dig":
@@ -222,7 +213,6 @@ function onFrame(frame, teleport) {
       break;
     case "death":
       if (frame.player === state.player?.player_id) { state.dead = true; state.health = 0; renderHearts(); $("death").hidden = false; controls.unlock(); }
-      log(`${nameOf(frame.player)} died${frame.by ? ` to ${nameOf(frame.by)}` : ""}`);
       break;
     case "bomb":
       onBomb(frame);
@@ -235,11 +225,6 @@ function onFrame(frame, teleport) {
       renderHearts();
       break;
   }
-}
-
-function nameOf(id) {
-  if (id === state.player?.player_id) return "you";
-  return avatars.get(id)?.info?.name ?? id;
 }
 
 function onHurt(frame) {
@@ -284,7 +269,6 @@ function onBomb({ bomb: b, age = 0, z }) {
   let e = bombs.get(b.bomb_id);
   if (b.state === "exploded") {
     spawnExplosion(scene, new THREE.Vector3(at.x, at.y, at.z));
-    log(`${nameOf(b.holder)} blew up a bomb`);
     removeBomb(b.bomb_id);
     return;
   }
@@ -733,7 +717,6 @@ function gameTick() {
       state.switching = false;
       const turned = refusal({ code: e.code });
       if (turned.message) state.notBefore[here] = now + turned.waitMs; else state.crossAfter = now + 3000;
-      log(turned.message ?? e.message);
     });
 }
 
@@ -942,7 +925,6 @@ function enterOffline() {
     if (dummy.health > 0) { dummy.x = 39 + Math.sin(t) * 3; dummy.yaw = Math.cos(t) > 0 ? -Math.PI / 2 : Math.PI / 2; dummy.sneaking = Math.sin(t / 3) > 0.8 ? 1 : 0; }
     emit({ type: "players", players: [dummy] });
   }, 100);
-  log("offline: no platform, a local world with one other player");
 }
 
 // ── start ────────────────────────────────────────────────────────────────────────────────────────
@@ -960,8 +942,6 @@ $("join").onsubmit = async e => {
     const rooms = await refreshServers();
     if (rooms.length) await enter(rooms[0].room_name);
     setInterval(() => refreshServers().catch(() => {}), 5000);
-  } catch (err) {
-    log(err.message);
-  }
+  } catch {}
 };
 window.cubeworld = { state, enter, send, world, avatars, me, camera, aim, controls, keys, mouse, bombs };
