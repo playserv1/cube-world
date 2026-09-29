@@ -57,6 +57,20 @@ public sealed class WorldHit
     public long at { get; set; }
 }
 
+/// <summary>
+/// One row, "world": the epoch the reset function bumps after it has rewritten the table. A server that sees a
+/// new epoch restarts and opens its room fresh from the table.
+/// </summary>
+[EntityName("WorldEpoch")]
+public sealed class WorldEpoch
+{
+    public string name { get; set; } = "world";
+    public long epoch { get; set; }
+    public long at { get; set; }
+    public string by { get; set; } = "";
+    public int seeded { get; set; }
+}
+
 [EntityName("WorldRegion")]
 public sealed class WorldRegion
 {
@@ -105,7 +119,6 @@ public sealed class World
     public static string Generated(int x, int y, int z)
     {
         if (!Inside(x, y, z)) return "air";
-        if (z >= 0) return Spec.TreeBlocks.GetValueOrDefault(Key(x, y, z), "air");
         foreach (var layer in Spec.Layers) if (layer.z == z) return layer.kind;
         return "air";
     }

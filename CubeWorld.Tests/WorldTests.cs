@@ -19,19 +19,28 @@ public class WorldTests
         Assert.Equal("air", world.KindAt(5, 5, 0));
     }
 
+    /// <summary>The oaks the reset function seeds, as the server loads them.</summary>
+    internal static IEnumerable<WorldCube> SeededOaks() =>
+        CubeWorld.Reset.Seed.Blocks().Select(b => new WorldCube { key = b.key, x = b.x, y = b.y, z = b.z, kind = b.kind, placed_by = b.placed_by, placed_on = b.placed_on });
+
     [Fact]
-    public void An_oak_stands_at_each_tree_spot_and_its_logs_can_be_cut()
+    public void The_seed_is_twelve_oaks_and_a_loaded_oak_can_be_cut()
     {
         var world = new World();
-        var (x, y) = Spec.Trees[0];
+        world.Load(SeededOaks());
+        var (x, y) = CubeWorld.Reset.Seed.Trees[0];
 
+        Assert.Equal(12, CubeWorld.Reset.Seed.Trees.Length);
+        // Per oak: 5 logs, two 5 × 5 leaf layers less corners and trunk (20 each), a 3 × 3 layer, a cross of 5.
+        Assert.Equal(12 * (5 + 20 + 20 + 9 + 5), CubeWorld.Reset.Seed.Blocks().Count);
+        Assert.True(CubeWorld.Reset.Seed.Blocks().Count > CubeWorld.Reset.ResetWorld.BatchSize, "the seed needs more than one bulk-insert batch");
         Assert.Equal("wood", world.KindAt(x, y, 0));
         Assert.Equal("wood", world.KindAt(x, y, 4));
         Assert.Equal("leaves", world.KindAt(x, y, 5));
         Assert.Equal("leaves", world.KindAt(x + 2, y, 3));
         Assert.Equal("air", world.KindAt(x + 2, y + 2, 3));
         Assert.Equal("air", world.KindAt(x, y, 7));
-        Assert.Equal(12, Spec.Trees.Length);
+        Assert.Equal("air", new World().KindAt(x, y, 0));
 
         var (update, log) = world.Break(x, y, 0, "p", "a")!.Value;
         Assert.Equal("wood", log.Kind);

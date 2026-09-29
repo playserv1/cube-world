@@ -31,13 +31,52 @@ public sealed partial class CubeWorldServer
         region = $"{region}", server = _server, color = World.RegionColors[region], room = $"{World.RegionColors[region]}-{_server}", seen_at = Now,
     };
 
-    /// <summary>Every 5 s: this server still holds its region, and the players learn which regions are up.</summary>
+    /// <summary>Every 5 s: this server still holds its region, the players learn which regions are up, and the epoch is checked.</summary>
     private async Task SayThisServerIsAlive()
     {
         Platform.RuntimeData.Write(Uplink, "WorldRegion", $"{_region}", Claim(_region));
         try { _regions = await LiveRegionsAsync(); } catch { }
         Broadcast(new { type = "regions", regions = _regions });
         Subscribe();
+        await WatchEpoch();
+    }
+
+    // ── the world's epoch: a reset rewrote the table, every server starts over from it ─────────────
+
+    private static async Task<long> ReadEpoch() =>
+        (await Platform.Table<WorldEpoch>().FindByAsync(e => e.name, "world"))?.Fields?.epoch ?? 0;
+
+    private async Task WatchEpoch()
+    {
+        try
+        {
+            var epoch = await ReadEpoch();
+            if (epoch == _epoch) return;
+            await Platform.Log($"{RoomName}: the world was reset (epoch {_epoch} → {epoch}), reopening the room from the table");
+            _newEpoch = true;
+        }
+        catch (Exception e) { _ = Platform.Log($"{RoomName}: epoch not read: {e.Message}"); }
+    }
+
+    /// <summary>
+    /// A player asked for the world to start over. The reset function does it in bulk: every changed block cleared
+    /// in one call, the default blocks inserted 200 a call, the epoch bumped; then every server, this one included,
+    /// sees the new epoch and reopens its room from the table.
+    /// </summary>
+    private void RequestReset(Player player)
+    {
+        Broadcast(new { type = "resetting", by = player.Pose.player_id });
+        _ = Task.Run(async () =>
+        {
+            try { await CallReset($"{player.Pose.name} on {RoomName}"); }
+            catch (Exception e) { _ = Platform.Log($"{RoomName}: reset refused: {e.Message}"); }
+        });
+    }
+
+    private static async Task CallReset(string by)
+    {
+        var answer = await Platform.CallFunction<System.Text.Json.JsonElement>("cubeworld-reset", new { By = by });
+        await Platform.Log($"reset by {by}: {answer}");
     }
 
     private static async Task<WorldRegion[]> LiveRegionsAsync()
@@ -147,38 +186,38 @@ public sealed partial class CubeWorldServer
         });
     }
 
-    // ── when the operator closes the room ───────────────────────────────────────────────────────────
+    // ── when the operator closes the room, or the world was reset ───────────────────────────────────
 
     /// <summary>
-    /// The room was closed. Its region goes back to the generated terrain (every change in it is deleted, and every
-    /// server and client hears the deletes), the bombs over it go up in smoke, and the process ends. Docker starts it
-    /// again on the same machine, where it claims its region again and opens the room fresh.
+    /// The operator closed the room: the whole world goes back to its default state, in bulk, through the reset
+    /// function; the bombs over this region go up in smoke; the process ends. Docker starts it again on the same
+    /// machine, and it, like every other server that sees the new epoch, reopens its room from the table.
     /// </summary>
-    private async Task ClearRegionAndRestart()
+    private async Task ResetWorldAndRestart()
     {
         try
         {
-            await Platform.Log($"{RoomName} was closed: clearing region {_region} and restarting");
+            await Platform.Log($"{RoomName} was closed: resetting the world and restarting");
             FizzleBombsOverRegion();
-            var deleted = await DeleteChangedBlocksInRegion();
-            await Platform.Log($"{RoomName}: region {_region} cleared, {deleted} changed blocks deleted");
+            await CallReset($"operator closed {RoomName}");
         }
-        catch (Exception e) { await Platform.Log($"{RoomName}: region {_region} not fully cleared: {e.Message}"); }
-
-        // The platform has its answer and the players their close code already; this gives the smoke and the logs
-        // time to leave before the process does.
-        await Task.Delay(TimeSpan.FromSeconds(3));
-        Environment.Exit(0);
+        catch (Exception e) { await Platform.Log($"{RoomName}: the world was not reset: {e.Message}"); }
+        await Restart();
     }
 
-    private async Task<int> DeleteChangedBlocksInRegion()
+    /// <summary>The world was reset under this room: the room closes and the process starts over from the table.</summary>
+    private async Task RestartForTheNewWorld()
     {
-        var (from, to) = World.Columns(_region);
-        var cubes = Platform.Table<WorldCube>();
-        var rows = await ReadAll(cubes.Where(c => c.x >= from && c.x < to));
-        // 16 at a time: one by one, a well-built region takes a minute and a half to come back.
-        await Parallel.ForEachAsync(rows, new ParallelOptions { MaxDegreeOfParallelism = 16 },
-            async (row, ct) => await cubes.DeleteAsync(row.Id, ct));
-        return rows.Count;
+        Broadcast(new { type = "reset", epoch = _epoch });
+        FizzleBombsOverRegion();
+        await Restart();
+    }
+
+    // The platform has its answer and the players their close code already; this gives the smoke and the logs
+    // time to leave before the process does.
+    private static async Task Restart()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        Environment.Exit(0);
     }
 }

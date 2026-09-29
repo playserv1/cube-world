@@ -36,7 +36,7 @@ public sealed partial class CubeWorldServer
         {
             type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = player.Pose,
             width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
-            layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
+            layers = Spec.Layers.Select(l => new { l.z, l.kind }), epoch = _epoch,
             blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
             hotbar = Spec.Placeable, world, inventory = player.Inventory.Stacks, tick = _tick, bombs,
         });
