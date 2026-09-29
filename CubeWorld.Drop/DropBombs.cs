@@ -12,9 +12,9 @@ public sealed class WorldBomb
     public double x { get; set; }
     public double y { get; set; }
     public double z { get; set; }
-    public double vx { get; set; }   // the servers read these as numbers: a bomb that has not been thrown writes 0
-    public double vy { get; set; }
-    public double vz { get; set; }
+    public double? vx { get; set; }   // a thrown bomb's motion; a dropped one writes 0, older rows may hold none
+    public double? vy { get; set; }
+    public double? vz { get; set; }
     public long dropped_at { get; set; }
     public long at { get; set; }
 }
@@ -93,5 +93,5 @@ public sealed class DropBombs : PlatformFunction<object>
         bomb.Any(r => r.Fields!.state is "exploded" or "fizzled" && now - r.Fields!.at > 120_000);
 
     private static WorldBomb Bomb(string id, string state, double x, double y, long droppedAt, long now) =>
-        new() { bomb_id = id, state = state, x = x, y = y, z = 32, dropped_at = droppedAt, at = now };
+        new() { bomb_id = id, state = state, x = x, y = y, z = 32, vx = 0, vy = 0, vz = 0, dropped_at = droppedAt, at = now };
 }
