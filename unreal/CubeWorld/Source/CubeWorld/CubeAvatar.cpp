@@ -124,7 +124,7 @@ namespace
 {
 	constexpr double SnapBlocks = 5;       // a respawn or a jump across regions is shown at once
 	constexpr double MinInterval = 0.04, MaxInterval = 0.5;
-	constexpr double Slack = 2;            // the walk takes a bit longer than an interval, so an uneven one rarely leaves it standing
+	constexpr double WalkSlack = 2;            // the walk takes a bit longer than an interval, so an uneven one rarely leaves it standing
 }
 
 void ACubeAvatar::SetTarget(double X, double Y, double Z, double InYaw, double InPitch, bool bInSneaking, double InHealth)
@@ -145,7 +145,7 @@ void ACubeAvatar::SetTarget(double X, double Y, double Z, double InYaw, double I
 		ArriveAt = DrawnAt = Now;
 		bPlaced = true;
 	}
-	else ArriveAt = Now + Interval * Slack;
+	else ArriveAt = Now + Interval * WalkSlack;
 }
 
 void ACubeAvatar::Hurt()
