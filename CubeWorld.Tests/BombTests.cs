@@ -12,12 +12,12 @@ public class BombTests
     {
         var world = new World();
 
-        var update = world.Explode(30.5, 12.5, 0, Spec.BombPower, new Random(1), "p", "a");
+        var update = world.Explode(30.5, 12.5, 0, Spec.CraterPower, new Random(1), "p", "a");
 
         Assert.Equal("air", world.KindAt(30, 12, -1));
         Assert.Equal("bedrock", world.KindAt(30, 12, -4));
         Assert.All(update.Changes, c => Assert.Equal("air", c.Cube.kind));
-        Assert.InRange(update.Changes.Count, 20, 200);
+        Assert.InRange(update.Changes.Count, 10, 100);
         Assert.Equal("grass", world.KindAt(36, 12, -1));
     }
 
@@ -26,7 +26,7 @@ public class BombTests
     {
         var world = new World();
 
-        var update = world.Explode(World.RegionSize, 12.5, 0, Spec.BombPower, new Random(1), "p", "a", region: 0);
+        var update = world.Explode(World.RegionSize, 12.5, 0, Spec.CraterPower, new Random(1), "p", "a", region: 0);
 
         Assert.NotEmpty(update.Changes);
         Assert.All(update.Changes, c => Assert.Equal(0, World.RegionOf(c.Cube.x)));
@@ -39,7 +39,7 @@ public class BombTests
     {
         var seed = Bomb.BlastSeed("bomb-7");
         HashSet<(string, string)> Broken(int? region) =>
-            new World().Explode(World.RegionSize, 12.5, 0, Spec.BombPower, new Random(seed), "p", "a", region)
+            new World().Explode(World.RegionSize, 12.5, 0, Spec.CraterPower, new Random(seed), "p", "a", region)
                 .Changes.Select(c => (c.Cube.key, c.Cube.kind)).ToHashSet();
 
         var whole = Broken(null);
@@ -66,7 +66,7 @@ public class BombTests
         for (var x = 27; x <= 29; x++) world.Place(x, 12, -1, 0, 0, 1, "stone", "p", "a", []);
         world.Place(33, 12, -1, 0, 0, 1, "dirt", "p", "a", []);
 
-        world.Explode(31, 12.5, 0.5, Spec.BombPower, new Random(1), "p", "a");
+        world.Explode(31, 12.5, 0.5, Spec.CraterPower, new Random(1), "p", "a");
 
         Assert.Equal("stone", world.KindAt(28, 12, 0));
         Assert.Equal("air", world.KindAt(33, 12, 0));
@@ -79,7 +79,7 @@ public class BombTests
         world.Place(30, 12, -1, 0, 0, 1, "stone", "p", "a", []);
         for (var z = 0; z < 6; z++) world.Place(30, 12, z, 0, 0, 1, "sand", "p", "a", []);
 
-        var update = world.Explode(30.5, 12.5, 0.5, Spec.BombPower, new Random(1), "p", "a");
+        var update = world.Explode(30.5, 12.5, 0.5, Spec.CraterPower, new Random(1), "p", "a");
 
         Assert.NotEmpty(update.Falls);
         Assert.True(world.IsSolid(30, 12, -4));

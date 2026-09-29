@@ -35,8 +35,8 @@ test("a bomb is picked up within a block of the hitbox", () => {
 
 test("an explosion breaks dirt but not bedrock", () => {
   const block = (x, y, z) => y === -4 ? { resistance: 3600000, breakable: false } : y < 0 ? { resistance: 0.5, breakable: true } : null;
-  const destroyed = explode(block, 30.5, 0, 12.5, S.BOMB_POWER, () => 0.5);
-  assert.ok(destroyed.length > 20);
+  const destroyed = explode(block, 30.5, 0, 12.5, S.CRATER_POWER, () => 0.5);
+  assert.ok(destroyed.length > 10);
   assert.ok(destroyed.every(([, y]) => y > -4));
 });
 

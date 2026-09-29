@@ -744,7 +744,7 @@ function enterOffline() {
       const kind = world.inside(x, y, z) ? world.kindAt(x, y, z) : "air";
       return kind === "air" ? null : { resistance: RESISTANCE[kind] ?? 1, breakable: kind !== "bedrock" };
     };
-    for (const [x, y, z] of explode(block, b.p.x, b.p.y, b.p.z, S.BOMB_POWER)) setBlock(x, z, y, "air");
+    for (const [x, y, z] of explode(block, b.p.x, b.p.y, b.p.z, S.CRATER_POWER)) setBlock(x, z, y, "air");
     const targets = [{ id: "offline-you", x: me.x, y: me.y, z: me.z }].concat(dummy.health > 0 ? [{ id: dummy.player_id, ...toClient(dummy) }] : []);
     for (const t of targets) {
       const d = new THREE.Vector3(t.x - b.p.x, t.y - b.p.y, t.z - b.p.z);

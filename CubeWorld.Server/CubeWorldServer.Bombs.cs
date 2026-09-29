@@ -103,7 +103,7 @@ public sealed partial class CubeWorldServer
     private void Crater(WorldBomb bomb)
     {
         if (_region < 0) return;
-        Publish(_world.Explode(bomb.x, bomb.y, bomb.z, Spec.BombPower, new Random(Bomb.BlastSeed(bomb.bomb_id)),
+        Publish(_world.Explode(bomb.x, bomb.y, bomb.z, Spec.CraterPower, new Random(Bomb.BlastSeed(bomb.bomb_id)),
             bomb.holder, _server, _region));
     }
 
