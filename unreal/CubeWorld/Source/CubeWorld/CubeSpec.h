@@ -43,6 +43,9 @@ namespace CubeSpec
 
 	// Six regions, three across and two deep, like the six of a die: the upper row is the C# servers', the lower the
 	// Unreal servers' (each prefers its own row and takes any free region when its row is full).
+	// Blast resistance: every block a bomb can break takes it as dirt does, so a blast breaks grass, glass, stone, brick
+	// and gold alike at the first go; only bedrock stands (the C# servers' Spec.CraterResistance).
+	constexpr double CraterResistance = 0.5;
 	constexpr int32 RegionSize = 24, RegionColumns = 3, RegionRows = 2, Width_ = RegionSize * RegionColumns, Depth = RegionSize * RegionRows, MinZ = -4, MaxZ = 64, RegionCount = RegionColumns * RegionRows;
 
 	// Bombs (CubeWorld.Server/Spec.cs): thrown at 1 block a tick, drag 0.99, gravity 0.05 (a thrown potion's);
@@ -106,15 +109,15 @@ namespace CubeSpec
 			const FRow Rows[] = {
 				{ TEXT("air"), 0, false, true, false, nullptr, 0 },
 				{ TEXT("bedrock"), -1, true, false, false, nullptr, 3600000 },
-				{ TEXT("grass"), 0.6, false, false, false, TEXT("dirt"), 0.6 },
-				{ TEXT("dirt"), 0.5, false, false, false, TEXT("dirt"), 0.5 },
-				{ TEXT("sand"), 0.5, false, false, true, TEXT("sand"), 0.5 },
-				{ TEXT("stone"), 1.5, true, false, false, nullptr, 6 },
-				{ TEXT("wood"), 2.0, false, false, false, TEXT("wood"), 2 },
-				{ TEXT("brick"), 2.0, true, false, false, nullptr, 6 },
-				{ TEXT("glass"), 0.3, false, true, false, nullptr, 0.3 },
-				{ TEXT("gold"), 3.0, true, false, false, nullptr, 6 },
-				{ TEXT("leaves"), 0.2, false, true, false, nullptr, 0.2 },
+				{ TEXT("grass"), 0.6, false, false, false, TEXT("dirt"), CraterResistance },
+				{ TEXT("dirt"), 0.5, false, false, false, TEXT("dirt"), CraterResistance },
+				{ TEXT("sand"), 0.5, false, false, true, TEXT("sand"), CraterResistance },
+				{ TEXT("stone"), 1.5, true, false, false, nullptr, CraterResistance },
+				{ TEXT("wood"), 2.0, false, false, false, TEXT("wood"), CraterResistance },
+				{ TEXT("brick"), 2.0, true, false, false, nullptr, CraterResistance },
+				{ TEXT("glass"), 0.3, false, true, false, nullptr, CraterResistance },
+				{ TEXT("gold"), 3.0, true, false, false, nullptr, CraterResistance },
+				{ TEXT("leaves"), 0.2, false, true, false, nullptr, CraterResistance },
 			};
 			TArray<FBlockDef> Out;
 			for (const FRow& R : Rows)
