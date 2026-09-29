@@ -62,10 +62,6 @@ public static class Bomb
         return world.IsSolid(bx, by, below) || below < World.MinZ ? below + 1 : next;
     }
 
-    /// <summary>The free bombs beyond the limit, oldest first: they go up in smoke.</summary>
-    public static IEnumerable<WorldBomb> Surplus(IEnumerable<WorldBomb> bombs, int max) =>
-        bombs.Where(b => b.state == Free).OrderByDescending(b => b.dropped_at).ThenByDescending(b => b.bomb_id).Skip(max);
-
     /// <summary>The bombs still in play over <paramref name="region"/>: when its room closes they go up in smoke.</summary>
     public static IEnumerable<WorldBomb> InRegion(IEnumerable<WorldBomb> bombs, int region) =>
         bombs.Where(b => !Over(b.state) && World.RegionOf(b.x) == region);

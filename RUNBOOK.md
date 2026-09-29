@@ -23,7 +23,7 @@ playserv functions deploy --slug cubeworld-refill-<suffix> --kind cloud_function
 playserv functions deploy --slug cubeworld-drop-<suffix> --kind cloud_function --src CubeWorld.Drop
 ```
 
-Live in about 150 s. Both crons in `platform.json` fire every minute. A drop fire runs for 30 minutes and drops a bomb every 15 s, on the clock's quarter minutes; the fires in between are skipped, and the next one takes over when it ends.
+Live in about 150 s. Both crons in `platform.json` fire every minute. A drop fire drops four bombs, 15 s apart, and ends.
 
 ## Part C — the servers on Vultr
 

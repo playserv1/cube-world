@@ -1,4 +1,3 @@
-using CubeWorld.Drop;
 using CubeWorld.Server;
 using Xunit;
 
@@ -193,94 +192,12 @@ public class BombTests
     }
 
     [Fact]
-    public void Beyond_five_free_bombs_the_oldest_are_the_surplus()
-    {
-        var bombs = Enumerable.Range(0, 8).Select(i => new Server.WorldBomb { bomb_id = $"b{i}", state = Bomb.Free, dropped_at = 1000 + i })
-            .Append(new Server.WorldBomb { bomb_id = "held", state = Bomb.Held, dropped_at = 1 });
-
-        Assert.Equal(["b2", "b1", "b0"], Bomb.Surplus(bombs, Spec.MaxFreeBombs).Select(b => b.bomb_id));
-        Assert.Empty(Bomb.Surplus(bombs.Take(5), Spec.MaxFreeBombs));
-    }
-
-    [Fact]
     public void A_bomb_only_moves_forward_through_its_states()
     {
         Assert.True(Bomb.Rank(Bomb.Held) > Bomb.Rank(Bomb.Free));
         Assert.True(Bomb.Rank(Bomb.Flying) > Bomb.Rank(Bomb.Held));
         Assert.True(Bomb.Over(Bomb.Exploded) && Bomb.Over(Bomb.Fizzled));
         Assert.False(Bomb.Over(Bomb.Flying));
-    }
-
-    private static Drop.WorldBomb Free(string id, long droppedAt) => new() { bomb_id = id, state = "free", dropped_at = droppedAt, at = droppedAt };
-
-    [Fact]
-    public void A_drop_into_a_world_with_five_free_bombs_fizzles_the_oldest()
-    {
-        var bombs = Enumerable.Range(0, 5).Select(i => Free($"b{i}", 1000 + i))
-            .Append(new Drop.WorldBomb { bomb_id = "held", state = "held", dropped_at = 1 });
-
-        var plan = DropBombs.Plan(bombs, 10_000);
-
-        Assert.Equal("b0", Assert.Single(plan.Fizzle).bomb_id);
-        Assert.Equal("fizzled", plan.Fizzle[0].state);
-        Assert.Equal(5, plan.Free);
-        Assert.Equal("free", plan.Drop.state);
-        Assert.Equal(DropBombs.DropHeight, plan.Drop.z);
-        Assert.InRange(plan.Drop.x, 1, DropBombs.Width - 1);
-        Assert.InRange(plan.Drop.y, 1, DropBombs.Depth - 1);
-    }
-
-    [Fact]
-    public void A_bomb_with_several_rows_is_the_row_furthest_on()
-    {
-        var bombs = new[]
-        {
-            Free("b0", 1000),
-            new Drop.WorldBomb { bomb_id = "b0", state = "held", dropped_at = 1000, at = 2000 },
-            Free("b1", 1500),
-            Free("b2", 1600),
-            new Drop.WorldBomb { bomb_id = "b2", state = "exploded", dropped_at = 1600, at = 3000 },
-        };
-
-        var latest = DropBombs.Latest(bombs).ToDictionary(b => b.bomb_id, b => b.state);
-        var plan = DropBombs.Plan(bombs, 10_000);
-
-        Assert.Equal("held", latest["b0"]);
-        Assert.Equal("exploded", latest["b2"]);
-        Assert.Equal(2, plan.Free);
-        Assert.Empty(plan.Fizzle);
-    }
-
-    [Fact]
-    public void Drops_fall_on_the_quarter_minutes_and_two_fires_drop_the_same_bomb()
-    {
-        Assert.Equal(15_000, DropBombs.NextSlot(1));
-        Assert.Equal(15_000, DropBombs.NextSlot(15_000));
-        Assert.Equal(30_000, DropBombs.NextSlot(15_001));
-
-        var one = DropBombs.Plan([], 1_790_601_015_000).Drop;
-        var other = DropBombs.Plan([], 1_790_601_015_000).Drop;
-        Assert.Equal("drop-1790601015", one.bomb_id);
-        Assert.Equal((one.bomb_id, one.x, one.y), (other.bomb_id, other.x, other.y));
-        Assert.NotEqual(one.x, DropBombs.Plan([], 1_790_601_030_000).Drop.x);
-    }
-
-    [Fact]
-    public void A_drop_under_the_limit_fizzles_nothing_and_sweeps_old_finished_bombs()
-    {
-        var bombs = new[]
-        {
-            Free("b0", 1000),
-            new Drop.WorldBomb { bomb_id = "done", state = "exploded", at = 1000 },
-            new Drop.WorldBomb { bomb_id = "recent", state = "exploded", at = 199_000 },
-            new Drop.WorldBomb { bomb_id = "lost", state = "flying", at = 100_000 },
-        };
-
-        var plan = DropBombs.Plan(bombs, 200_000);
-
-        Assert.Equal("lost", Assert.Single(plan.Fizzle).bomb_id);
-        Assert.Equal(["done"], plan.Sweep);
-        Assert.Equal(2, plan.Free);
     }
 
     [Fact]

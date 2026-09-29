@@ -216,12 +216,6 @@ public sealed class CubeWorldServer : PlatformGameServer
     /// </summary>
     private void TickBombs()
     {
-        // The drop function keeps five bombs free; should the world ever hold more, the oldest go up in smoke here.
-        // Every server picks the same ones, and a second fizzle of a fizzled bomb changes nothing.
-        if (_tick % Spec.TicksPerSecond == 0)
-            foreach (var surplus in Bomb.Surplus(_bombs.Values.Select(b => b.Record), Spec.MaxFreeBombs).ToArray())
-                Share(Next(surplus, Bomb.Fizzled, surplus.holder, surplus.x, surplus.y, _bombs[surplus.bomb_id].Z), owned: false);
-
         foreach (var live in _bombs.Values.ToArray())
         {
             var bomb = live.Record;

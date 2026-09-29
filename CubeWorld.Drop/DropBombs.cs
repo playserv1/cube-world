@@ -3,130 +3,48 @@ using PlayServ.Sdk.Data;
 
 namespace CubeWorld.Drop;
 
-/// <summary>The bomb as CubeWorld.Server/Bomb.cs describes it; only the fields this function writes matter here.</summary>
 [EntityName("WorldBomb")]
 public sealed class WorldBomb
 {
     public string bomb_id { get; set; } = "";
     public string state { get; set; } = "";
-    public string holder { get; set; } = "";
     public double x { get; set; }
     public double y { get; set; }
     public double z { get; set; }
-    public double vx { get; set; }
-    public double vy { get; set; }
-    public double vz { get; set; }
     public long dropped_at { get; set; }
     public long at { get; set; }
 }
 
-public sealed record DropRequest(int? Minutes);
-
-/// <summary>
-/// Drops a bomb on a parachute every 15 seconds, on the clock's quarter minutes. At most five bombs lie free in the
-/// world: before a sixth comes, the oldest goes up in smoke.
-/// </summary>
-/// <remarks>
-/// A cron fires once a minute at most and starts some 30 seconds late, and the platform skips a fire while the last
-/// one still runs. So one fire runs for half an hour, dropping on every quarter minute, and the fires in between are
-/// skipped; the next one takes over when it ends. A drop is named by its quarter minute and placed by a random seeded
-/// with it, so two fires that ever overlap write the very same bomb.
-/// </remarks>
-/// <remarks>
-/// bomb_id is not the entity's primary key, so one bomb can have several rows: the servers write theirs through
-/// runtime data, keyed by bomb_id, and this function creates its own. A bomb only moves forward through its states,
-/// so the row furthest on is the bomb; this function only ever adds rows, never updates one.
-/// </remarks>
-public sealed class DropBombs : PlatformFunction<DropRequest>
+/// Every minute: 4 bombs, one every 15 seconds. At most 5 lie free.
+public sealed class DropBombs : PlatformFunction<object>
 {
-    public const int MaxFree = 5, Width = 72, Depth = 24, RunMinutes = 30;
-    public const double DropHeight = 32;
-    public const long Interval = 15_000;
-
-    // A thrown bomb whose server went away never lands; it goes after half a minute. Finished bombs are swept
-    // after two: every server has heard them by then.
-    private const long StaleFlight = 30_000, Sweep = 120_000;
-
-    protected override async Task<FunctionResponse> HandleAsync(DropRequest body, CancellationToken ct)
+    protected override async Task<FunctionResponse> HandleAsync(object _, CancellationToken ct)
     {
-        var until = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(body.Minutes ?? RunMinutes, 1, RunMinutes)).ToUnixTimeMilliseconds();
         var table = Platform.Table<WorldBomb>();
-        int dropped = 0, fizzled = 0, swept = 0;
 
-        for (var slot = NextSlot(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); slot <= until; slot += Interval)
+        for (var i = 0; i < 4; i++)
         {
-            var wait = slot - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (wait > 0) await Task.Delay(TimeSpan.FromMilliseconds(wait), ct);
-            var rows = await LoadAsync(table, ct);
-            var plan = Plan(rows.Select(r => r.Fields!), slot);
+            if (i > 0) await Task.Delay(TimeSpan.FromSeconds(15), ct);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var bombs = (await table.Query().Take(200).ToListAsync(ct)).GroupBy(r => r.Fields!.bomb_id).ToList();
 
-            foreach (var bomb in plan.Fizzle)
-            {
-                await table.CreateAsync(bomb, ct);
-                fizzled++;
-            }
-            foreach (var row in rows.Where(r => plan.Sweep.Contains(r.Fields!.bomb_id)))
-            {
-                try { await table.DeleteAsync(row.Id, ct); swept++; }
-                catch (ApiException) { }
-            }
-            await table.CreateAsync(plan.Drop, ct);
-            dropped++;
-            await Platform.Log($"dropped bomb {plan.Drop.bomb_id} over ({plan.Drop.x:0.0}, {plan.Drop.y:0.0}), {plan.Free} free", ct: ct);
+            // 1. A bomb that went off over two minutes ago: forget it.
+            foreach (var bomb in bombs.Where(b => b.Any(r => r.Fields!.state is "exploded" or "fizzled" && now - r.Fields!.at > 120_000)))
+                foreach (var row in bomb) await table.DeleteAsync(row.Id, ct);
+
+            // 2. Five bombs already free (no server has touched them): the oldest goes up in smoke.
+            var free = bombs.Where(b => b.All(r => r.Fields!.state == "free")).Select(b => b.First().Fields!)
+                            .OrderBy(b => b.dropped_at).ToList();
+            foreach (var old in free.Take(free.Count - 4))
+                await table.CreateAsync(Bomb(old.bomb_id, "fizzled", old.x, old.y, old.dropped_at, now), ct);
+
+            // 3. A new bomb somewhere over the world.
+            await table.CreateAsync(Bomb($"drop-{now}", "free", Random.Shared.Next(1, 71), Random.Shared.Next(1, 23), now, now), ct);
         }
 
-        return FunctionResponse.Json(new { dropped, fizzled, swept });
+        return FunctionResponse.Json(new { ok = true });
     }
 
-    /// <summary>What one drop does: which bombs go up in smoke, which finished ones are swept, and the new bomb.</summary>
-    /// <summary>The first quarter minute at or after <paramref name="now"/>, Unix milliseconds.</summary>
-    internal static long NextSlot(long now) => (now + Interval - 1) / Interval * Interval;
-
-    internal static (List<WorldBomb> Fizzle, HashSet<string> Sweep, WorldBomb Drop, int Free) Plan(IEnumerable<WorldBomb> bombs, long now)
-    {
-        var random = new Random((int)(now / Interval % int.MaxValue));
-        var all = Latest(bombs);
-        var fizzle = new List<WorldBomb>();
-
-        var free = all.Where(b => b.state == "free").OrderBy(b => b.dropped_at).ToList();
-        var oldest = free.Take(Math.Max(0, free.Count - (MaxFree - 1))).ToList();
-        fizzle.AddRange(oldest.Select(b => Fizzled(b, now)));
-        foreach (var stale in all.Where(b => b.state == "flying" && now - b.at > StaleFlight))
-            fizzle.Add(Fizzled(stale, now));
-
-        var sweep = all.Where(b => b.state is "exploded" or "fizzled" && now - b.at > Sweep).Select(b => b.bomb_id).ToHashSet();
-
-        var drop = new WorldBomb
-        {
-            bomb_id = $"drop-{now / 1000}", state = "free",
-            x = 1 + random.NextDouble() * (Width - 2), y = 1 + random.NextDouble() * (Depth - 2), z = DropHeight,
-            dropped_at = now, at = now,
-        };
-        return (fizzle, sweep, drop, free.Count - oldest.Count + 1);
-    }
-
-    /// <summary>Each bomb as its row furthest through free, held, flying, exploded or fizzled says it is.</summary>
-    internal static List<WorldBomb> Latest(IEnumerable<WorldBomb> rows) =>
-        rows.GroupBy(b => b.bomb_id).Select(g => g.OrderByDescending(b => Rank(b.state)).ThenByDescending(b => b.at).First()).ToList();
-
-    private static int Rank(string state) => state switch { "free" => 0, "held" => 1, "flying" => 2, _ => 3 };
-
-    private static WorldBomb Fizzled(WorldBomb bomb, long now) => new()
-    {
-        bomb_id = bomb.bomb_id, state = "fizzled", holder = bomb.holder, x = bomb.x, y = bomb.y, z = bomb.z,
-        dropped_at = bomb.dropped_at, at = now,
-    };
-
-    private static async Task<List<Record<WorldBomb>>> LoadAsync(ITable<WorldBomb> table, CancellationToken ct)
-    {
-        var rows = new List<Record<WorldBomb>>();
-        string? cursor = null;
-        do
-        {
-            var page = await table.Query().Take(200).WithCursor(cursor).ToPageAsync(ct);
-            rows.AddRange(page.Items);
-            cursor = page.NextCursor;
-        } while (!string.IsNullOrEmpty(cursor));
-        return rows;
-    }
+    static WorldBomb Bomb(string id, string state, double x, double y, long droppedAt, long now) =>
+        new() { bomb_id = id, state = state, x = x, y = y, z = 32, dropped_at = droppedAt, at = now };
 }
