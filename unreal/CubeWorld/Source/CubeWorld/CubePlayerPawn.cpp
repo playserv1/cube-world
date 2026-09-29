@@ -78,15 +78,18 @@ void ACubePlayerPawn::Bind()
 	bBound = true;
 	OnRep_PlayerId();
 
-	Body.Teleport(36, 12, 0);
-	Game->bPlaced = false;
+	// After a border crossing the player stands where they were, in the world the client already holds, and keeps
+	// walking while the new server's welcome is on its way: no start screen, no jump to the region's middle.
+	const bool bCrossingIn = Game->Crossing.bSet;
+	if (bCrossingIn) Body.Teleport(Game->Crossing.X, Game->Crossing.Y, Game->Crossing.Z); else Body.Teleport(36, 12, 0);
+	Game->bPlaced = bCrossingIn;
 	if (APlayerController* PC = Cast<APlayerController>(GetController()))
 	{
-		PC->SetControlRotation(FRotator(-15.f, 135.f, 0));
+		if (!bCrossingIn) PC->SetControlRotation(FRotator(-15.f, 135.f, 0));
 		PC->PlayerCameraManager->ViewPitchMin = -89.9f;
 		PC->PlayerCameraManager->ViewPitchMax = 89.9f;
 	}
-	CaptureMouse(false);
+	CaptureMouse(bCrossingIn);
 
 	if (Game->PlayerName.IsEmpty())
 	{
@@ -244,6 +247,8 @@ void ACubePlayerPawn::Unstick()
 
 void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 {
+	// A crossing keeps the body where the client has walked it meanwhile; the server's pose is where the crossing began.
+	if (Game->bPlaced && FMath::Abs(You.X - Body.X) + FMath::Abs(You.Y - Body.Y) + FMath::Abs(You.Z - Body.Z) < 12) { Unstick(); return; }
 	Spawn(You.X, You.Y, You.Z);
 	LastPose.Empty();
 	for (auto& Pair : Avatars) if (Pair.Value) Pair.Value->Destroy();

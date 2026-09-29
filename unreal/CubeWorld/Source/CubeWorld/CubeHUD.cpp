@@ -150,7 +150,7 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(TEXT("You died!"), H / 2 - 40, 2.f, FLinearColor::White);
 		DrawCentered(TEXT("Press Enter or click to respawn"), H / 2 + 10, 1.f, FLinearColor::White);
 	}
-	else if (!Game->IsConnected())
+	else if (!Game->IsConnected() && !Game->bPlaced)
 	{
 		DrawRect(FLinearColor(0, 0, 0, 0.5f), 0, 0, W, H);
 		DrawCentered(TEXT("Cube World"), H / 2 - 80, 2.5f, FLinearColor::White);
