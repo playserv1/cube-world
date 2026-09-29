@@ -78,7 +78,11 @@ void ACubeWorldGameMode::BeginPlay()
 void ACubeWorldGameMode::StartServer()
 {
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Auth::LoginServer(FPlayServSimpleCallback::CreateLambda([Weak](bool bOk, const FPlayServError& Error)
+	// On the platform's pool the process is handed a deployment token and no server key; on a developer's machine the
+	// other way round. The SDK's parameterless LoginServer knows only the key, so the credential is picked here.
+	const FString Token = UPlayServSettings::GetDeploymentToken();
+	const FString Credential = Token.IsEmpty() ? UPlayServSettings::GetServerKey() : Token;
+	PlayServ::Auth::LoginServer(Credential, FPlayServSimpleCallback::CreateLambda([Weak](bool bOk, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
 		if (!bOk) { Weak->RetryStartup(FString::Printf(TEXT("server sign-in failed: %s"), *Error.Message)); return; }
@@ -191,6 +195,9 @@ FString ACubeWorldGameMode::ResolveHost() const
 {
 	FString Host;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-PublicHost="), Host) && !Host.IsEmpty()) return Host;
+	// A pool machine has a name under the platform's domain (its TLS certificate is for that name) and an address.
+	Host = FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_PUBLIC_HOST"));
+	if (!Host.IsEmpty()) return Host;
 	Host = FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_PUBLIC_IP"));
 	if (!Host.IsEmpty()) return Host;
 	bool bCanBindAll = false;
@@ -234,10 +241,21 @@ void ACubeWorldGameMode::OpenRoom()
 		Room.RoomName = Self->RoomName();
 		Room.State = TEXT("open");
 		Room.Attributes.Add(TEXT("engine"), TEXT("unreal"));
+		// A pool machine's firewall passes only the platform's TCP front: Iris's UDP port is unreachable there, so the
+		// clients are told to come through the door. CUBEWORLD_IRIS_PUBLIC=1 says the UDP port is open after all.
+		const bool bPool = !FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_PUBLIC_HOST")).IsEmpty();
+		const bool bUdpOpen = FPlatformMisc::GetEnvironmentVariable(TEXT("CUBEWORLD_IRIS_PUBLIC")) == TEXT("1");
+		Room.Attributes.Add(TEXT("iris"), bPool && !bUdpOpen ? TEXT("off") : TEXT("udp"));
 		if (Self->Web.IsValid()) Room.Attributes.Add(TEXT("ws"), Self->WebAddress());
 		Room.Attributes.Add(PlayServ::Rooms::Attributes::Name, FString::Printf(TEXT("Cube World %s"), *Self->Color()));
 		Room.Attributes.Add(TEXT("color"), Self->Color());
 		Room.Attributes.Add(TEXT("region"), FString::FromInt(Self->Region));
+		// What the platform told the process about its network, for reading off the room while the pool is new.
+		for (const TCHAR* Var : { TEXT("PLAYSERV_PORTS_MAPPING"), TEXT("PLAYSERV_ROOM_LISTEN_PORT"), TEXT("PLAYSERV_PUBLIC_HOST"), TEXT("PLAYSERV_PUBLIC_IP") })
+		{
+			const FString Value = FPlatformMisc::GetEnvironmentVariable(Var);
+			if (!Value.IsEmpty()) Room.Attributes.Add(FString(Var).ToLower(), Value);
+		}
 		Room.Connect.Host = Self->ResolveHost();
 		Room.Connect.Port = Self->GetWorld()->URL.Port;
 		Room.Connect.Transport = EPlayServRoomTransport::Udp;

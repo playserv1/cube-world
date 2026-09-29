@@ -103,7 +103,10 @@ int32 ACubeWorldGameMode::WebPort() const
 	if (FParse::Value(FCommandLine::Get(), TEXT("-wsport="), Port) && Port > 0) return Port;
 	const FString Given = FPlatformMisc::GetEnvironmentVariable(TEXT("CUBEWORLD_WS_PORT"));
 	if (!Given.IsEmpty()) return FCString::Atoi(*Given);
-	// Ten above the game port: 7777 plays on 7787, the next server's 7778 on 7788.
+	// On a pool machine the platform forwards one public TCP port to the port it allotted the process, so the door
+	// listens on that port over TCP (Iris has it over UDP). Elsewhere ten above the game port: 7777 plays on 7787.
+	const FString Allotted = FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_ROOM_LISTEN_PORT"));
+	if (!Allotted.IsEmpty() && FCString::Atoi(*Allotted) > 0) return FCString::Atoi(*Allotted);
 	return GetWorld()->URL.Port + 10;
 }
 
@@ -113,6 +116,14 @@ FString ACubeWorldGameMode::WebAddress() const
 	if (FParse::Value(FCommandLine::Get(), TEXT("-wsaddress="), Given) && !Given.IsEmpty()) return Given;
 	Given = FPlatformMisc::GetEnvironmentVariable(TEXT("CUBEWORLD_WS_ADDRESS"));
 	if (!Given.IsEmpty()) return Given;
+	// On a pool machine browsers come in through the platform's TLS front on its public port (7777, as the C# rooms'),
+	// which forwards to the door; the certificate is for the machine's name.
+	const FString PublicHost = FPlatformMisc::GetEnvironmentVariable(TEXT("PLAYSERV_PUBLIC_HOST"));
+	if (!PublicHost.IsEmpty())
+	{
+		const FString PublicPort = FPlatformMisc::GetEnvironmentVariable(TEXT("CUBEWORLD_WS_PUBLIC_PORT"));
+		return FString::Printf(TEXT("wss://%s:%d"), *PublicHost, PublicPort.IsEmpty() ? 7777 : FCString::Atoi(*PublicPort));
+	}
 	return FString::Printf(TEXT("ws://%s:%d"), *ResolveHost(), Web.IsValid() ? Web->ListeningPort() : WebPort());
 }
 

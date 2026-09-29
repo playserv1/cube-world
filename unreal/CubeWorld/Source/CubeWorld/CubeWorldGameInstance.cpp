@@ -183,7 +183,11 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		const FPlayServRoomConnect& C = Result.Ticket.Connect;
 		// An Unreal server says so in its attributes and is reached over Iris; any other room is a C# server, reached
 		// over the JSON socket, plain or TLS (the SDK reads wss as anything but ws).
-		if (Result.Ticket.Attributes.FindRef(TEXT("engine")) == TEXT("unreal"))
+		const bool bUnreal = Result.Ticket.Attributes.FindRef(TEXT("engine")) == TEXT("unreal");
+		// An Unreal server whose UDP port the world cannot reach (a pool machine behind the platform's TCP front) says
+		// iris=off: it is entered through its JSON door instead, like a C# server. -forcews does the same anywhere.
+		const bool bDoorOnly = Result.Ticket.Attributes.FindRef(TEXT("iris")) == TEXT("off") || FParse::Param(FCommandLine::Get(), TEXT("forcews"));
+		if (bUnreal && !bDoorOnly)
 		{
 			Self->TravelToUnrealServer(RoomName, PlayServ::Rooms::BuildTravelUrl(Result.Ticket), bTeleport);
 			return;
@@ -191,6 +195,13 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		FString Host = C.Host, Override;
 		int32 Port = C.Port;
 		bool bSecure = C.Transport != EPlayServRoomTransport::Ws;
+		const FString Door = Result.Ticket.Attributes.FindRef(TEXT("ws"));
+		if (bUnreal && !Door.IsEmpty())
+		{
+			// ws://host:port or wss://host:port
+			FString Scheme, Rest, PortText;
+			if (Door.Split(TEXT("://"), &Scheme, &Rest)) { bSecure = Scheme == TEXT("wss"); if (Rest.Split(TEXT(":"), &Host, &PortText)) Port = FCString::Atoi(*PortText); else Host = Rest; }
+		}
 		if (FParse::Param(FCommandLine::Get(), TEXT("wsplain"))) bSecure = false;
 		if (FParse::Param(FCommandLine::Get(), TEXT("wssecure"))) bSecure = true;
 		if (FParse::Value(FCommandLine::Get(), TEXT("-wshost="), Override) && !Override.IsEmpty())
