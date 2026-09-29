@@ -426,6 +426,8 @@ void ACubePlayerPawn::GameTick()
 void ACubePlayerPawn::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	const double PawnStart = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT { const double Ms = (FPlatformTime::Seconds() - PawnStart) * 1000; if (Ms > 20) UE_LOG(LogCubeWorld, Log, TEXT("slow: pawn tick %.0f ms"), Ms); };
 	if (!Game) return;
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { GameTick(); Accumulator -= CubeSpec::TickSeconds; }

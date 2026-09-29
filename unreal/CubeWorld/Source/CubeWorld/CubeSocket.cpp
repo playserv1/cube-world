@@ -162,7 +162,11 @@ bool FCubeSocket::DoConnect(FString& OutError)
 		const int32 HeadBytes = HeadUtf8.Length();
 		FScopeLock Guard(&Lock);
 		if (Answer.Num() > HeadBytes) Incoming.Append(Answer.GetData() + HeadBytes, Answer.Num() - HeadBytes);
-		BIO_set_nbio(NewBio, 1);
+		// BIO_set_nbio only acts before the connect; from here the socket itself is switched to non-blocking,
+		// so the reads on the game thread return at once when nothing is waiting.
+		int FileDescriptor = -1;
+		BIO_get_fd(NewBio, &FileDescriptor);
+		if (FileDescriptor >= 0) BIO_socket_nbio(FileDescriptor, 1);
 		Bio = NewBio;
 		return true;
 	}
@@ -173,6 +177,8 @@ bool FCubeSocket::DoConnect(FString& OutError)
 
 bool FCubeSocket::Tick(float)
 {
+	const double TickStart = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT { const double Ms = (FPlatformTime::Seconds() - TickStart) * 1000; if (Ms > 20 && CubeSocketVerbose()) UE_LOG(LogCubeWorld, Log, TEXT("slow: socket tick %.0f ms"), Ms); };
 	if (State == EState::Connecting)
 	{
 		if (!bWorkerDone) return true;
@@ -251,6 +257,8 @@ void FCubeSocket::ReadFrames()
 
 void FCubeSocket::SendFrame(uint8 Opcode, const TArray<uint8>& Payload)
 {
+	const double SendStart = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT { const double Ms = (FPlatformTime::Seconds() - SendStart) * 1000; if (Ms > 20 && CubeSocketVerbose()) UE_LOG(LogCubeWorld, Log, TEXT("slow: send %.0f ms"), Ms); };
 	if (!Bio || State != EState::Open) return;
 	TArray<uint8> Frame;
 	Frame.Add(0x80 | Opcode);

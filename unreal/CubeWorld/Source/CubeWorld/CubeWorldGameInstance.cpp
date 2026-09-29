@@ -336,6 +336,8 @@ void UCubeWorldGameInstance::ReadInventory(const TSharedPtr<FJsonObject>& Object
 void UCubeWorldGameInstance::OnFrame(const TSharedPtr<FJsonObject>& Frame, bool bTeleport)
 {
 	const FString Type = Str(Frame, TEXT("type"));
+	const double FrameStart = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT { const double Ms = (FPlatformTime::Seconds() - FrameStart) * 1000; if (Ms > 20) UE_LOG(LogCubeWorld, Log, TEXT("slow: frame %s took %.0f ms"), *Type, Ms); };
 	if (Type != TEXT("players") && FParse::Param(FCommandLine::Get(), TEXT("logframes"))) UE_LOG(LogCubeWorld, Log, TEXT("frame %s"), *Type);
 	if (Type == TEXT("welcome"))
 	{

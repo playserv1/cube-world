@@ -6,6 +6,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 namespace
 {
@@ -115,7 +117,9 @@ void ACubeWorldActor::RebuildAll()
 
 void ACubeWorldActor::Rebuild(const TSet<FIntPoint>& Ids)
 {
+	const double Start = FPlatformTime::Seconds();
 	for (const FIntPoint& Id : Ids) RebuildChunk(Id);
+	if (FParse::Param(FCommandLine::Get(), TEXT("logframes"))) UE_LOG(LogCubeWorld, Log, TEXT("rebuilt %d chunks in %.1f ms"), Ids.Num(), (FPlatformTime::Seconds() - Start) * 1000);
 }
 
 void ACubeWorldActor::RebuildChunk(const FIntPoint& Id)
@@ -247,6 +251,9 @@ void ACubeWorldActor::BuildSky()
 void ACubeWorldActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	static double FpsWindow = 0; static int32 FpsFrames = 0; static float Worst = 0;
+	FpsWindow += DeltaSeconds; FpsFrames++; Worst = FMath::Max(Worst, DeltaSeconds);
+	if (FpsWindow >= 1.0) { if (FParse::Param(FCommandLine::Get(), TEXT("logframes"))) UE_LOG(LogCubeWorld, Log, TEXT("fps %.0f, worst frame %.0f ms"), FpsFrames / FpsWindow, Worst * 1000); FpsWindow = 0; FpsFrames = 0; Worst = 0; }
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { TickFalling(); Accumulator -= CubeSpec::TickSeconds; }
 }
