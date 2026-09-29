@@ -29,7 +29,10 @@ function tops up each player's blocks once a minute; another drops a bomb on a p
 |---|---|
 | `CubeWorld.Server/Spec.cs` | The Minecraft numbers and the block registry (hardness, drops, gravity). |
 | `CubeWorld.Server/World.cs` | The tables and the world's rules: superflat terrain, place against a face, break, falling sand, apply a change from elsewhere, the inventory. |
-| `CubeWorld.Server/CubeWorldServer.cs` | The game server: loads the world, opens its room, ticks 20 times a second, times digs, deals damage, writes and hears changes; when its room is closed, clears its region and restarts. |
+| `CubeWorld.Server/CubeWorldServer.cs` | The game server's outline: how it starts, what one tick does, what a player can do, what it hears from the other servers. |
+| `CubeWorld.Server/CubeWorldServer.Players.cs` | Joining, moving, digging, placing, fighting, dying and coming back. |
+| `CubeWorld.Server/CubeWorldServer.Bombs.cs` | The parachute, the pickup, the throw, the blast. |
+| `CubeWorld.Server/CubeWorldServer.Sharing.cs` | The region this server holds, the positions and blocks the servers share; when its room is closed, clears its region and restarts. |
 | `CubeWorld.Server/Bomb.cs` | The `WorldBomb` table and how a bomb moves: the parachute, the pickup reach, the throw. |
 | `CubeWorld.Refill/` | The refill function. |
 | `CubeWorld.Drop/` | The bomb drop function: at most five free bombs, the oldest fizzles out for a new one; finished bombs are swept after two minutes. |

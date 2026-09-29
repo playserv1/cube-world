@@ -1,0 +1,182 @@
+using PlayServ.Sdk;
+using PlayServ.Sdk.Data;
+
+namespace CubeWorld.Server;
+
+/// <summary>
+/// One world, several servers: each holds one region, writes what changes there to platform data and hears what the
+/// others write.
+/// </summary>
+public sealed partial class CubeWorldServer
+{
+    // ── the region this server holds ────────────────────────────────────────────────────────────────
+
+    private async Task<int> ClaimRegionAsync()
+    {
+        var regions = Platform.Table<WorldRegion>();
+        for (var region = 0; region < World.RegionColors.Length; region++)
+        {
+            var holder = (await regions.FindByAsync(r => r.region, $"{region}"))?.Fields;
+            if (holder is not null && holder.server != _server && Now - holder.seen_at < 30_000) continue;
+
+            await regions.UpsertByAsync(r => r.region, $"{region}", UpsertMode.Managed, Claim(region));
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            if ((await regions.FindByAsync(r => r.region, $"{region}"))?.Fields?.server == _server) return region;
+        }
+        return -1;
+    }
+
+    private WorldRegion Claim(int region) => new()
+    {
+        region = $"{region}", server = _server, color = World.RegionColors[region], room = $"{World.RegionColors[region]}-{_server}", seen_at = Now,
+    };
+
+    /// <summary>Every 5 s: this server still holds its region, and the players learn which regions are up.</summary>
+    private async Task SayThisServerIsAlive()
+    {
+        Platform.RuntimeData.Write(Uplink, "WorldRegion", $"{_region}", Claim(_region));
+        try { _regions = await LiveRegionsAsync(); } catch { }
+        Broadcast(new { type = "regions", regions = _regions });
+        Subscribe();
+    }
+
+    private static async Task<WorldRegion[]> LiveRegionsAsync()
+    {
+        var rows = await Platform.Table<WorldRegion>().Query().ToListAsync();
+        return rows.Select(r => r.Fields!).Where(r => Now - r.seen_at < 30_000).ToArray();
+    }
+
+    private static void Subscribe()
+    {
+        Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key");
+        Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
+        Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
+        Platform.RuntimeData.Subscribe(Uplink, "WorldHit", "field:hit_id");
+        Platform.RuntimeData.Subscribe(Uplink, "WorldBomb", "field:bomb_id");
+    }
+
+    // ── where the players are ───────────────────────────────────────────────────────────────────────
+
+    /// <summary>Our players' positions go out 5 times a second; everyone's, ours and the others', reach the clients 10 times.</summary>
+    private async Task ShareMovesAsync()
+    {
+        for (var tick = 0; ; tick++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+            if (tick % 2 == 0)
+                foreach (var player in _players.Values.Where(p => p.Moved || Now - p.Pose.seen_at > 2000))
+                {
+                    player.Moved = false;
+                    player.Pose.seen_at = Now;
+                    Platform.RuntimeData.Write(Uplink, "WorldPresence", player.Pose.player_id, player.Pose);
+                }
+
+            var everyone = _players.Values.Select(p => p.Pose).Concat(Others());
+            Broadcast(new { type = "players", players = everyone });
+        }
+    }
+
+    private void HearPresence(WorldPresence pose, bool gone)
+    {
+        if (gone) _elsewhere.TryRemove(pose.player_id, out _);
+        else _elsewhere[pose.player_id] = pose;
+    }
+
+    // ── the blocks ──────────────────────────────────────────────────────────────────────────────────
+
+    private static async Task<List<WorldCube>> LoadCubesAsync() =>
+        (await ReadAll(Platform.Table<WorldCube>().Query())).Select(r => r.Fields!).ToList();
+
+    /// <summary>Every row a query finds, 200 a page.</summary>
+    private static async Task<List<Record<T>>> ReadAll<T>(RecordQuery<T> query) where T : class
+    {
+        var rows = new List<Record<T>>();
+        string? cursor = null;
+        do
+        {
+            var page = await query.Take(200).WithCursor(cursor).ToPageAsync();
+            rows.AddRange(page.Items);
+            cursor = page.NextCursor;
+        } while (!string.IsNullOrEmpty(cursor));
+        return rows;
+    }
+
+    /// <summary>A block changed here: the other servers hear it through platform data, our players see it now.</summary>
+    private void Publish(WorldUpdate update)
+    {
+        foreach (var (op, cube) in update.Changes)
+        {
+            if (op == "delete") Platform.RuntimeData.Delete(Uplink, "WorldCube", cube.key);
+            else Platform.RuntimeData.Write(Uplink, "WorldCube", cube.key, cube);
+        }
+        BroadcastCubes(update.Falls, update.Changes, remote: false);
+    }
+
+    private void HearCube(string op, WorldCube cube)
+    {
+        lock (_world)
+        {
+            if (_world.Apply(op, cube)) _heard.Add(new Change(op, cube));
+        }
+    }
+
+    /// <summary>What the other servers changed this tick goes out together (a blast elsewhere is a hundred blocks).</summary>
+    private void SendWhatOtherServersChanged()
+    {
+        lock (_world)
+        {
+            if (_heard.Count == 0) return;
+            BroadcastCubes([], _heard.ToList(), remote: true);
+            _heard.Clear();
+        }
+    }
+
+    /// <summary>
+    /// A player's socket holds at most 64 frames queued and is cut the moment one more is sent, so blocks that change
+    /// together go out together: one "cubes" frame.
+    /// </summary>
+    private void BroadcastCubes(IReadOnlyList<Fall> falls, IReadOnlyList<Change> changes, bool remote)
+    {
+        if (falls.Count == 0 && changes.Count == 0) return;
+        Broadcast(new
+        {
+            type = "cubes", remote,
+            falls = falls.Select(f => new { kind = f.Kind, x = f.X, y = f.Y, fromZ = f.FromZ, toZ = f.ToZ }),
+            changes = changes.Select(c => new { op = c.Op, cube = c.Cube }),
+        });
+    }
+
+    // ── when the operator closes the room ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The room was closed. Its region goes back to the generated terrain (every change in it is deleted, and every
+    /// server and client hears the deletes), the bombs over it go up in smoke, and the process ends. Docker starts it
+    /// again on the same machine, where it claims its region again and opens the room fresh.
+    /// </summary>
+    private async Task ClearRegionAndRestart()
+    {
+        try
+        {
+            await Platform.Log($"{RoomName} was closed: clearing region {_region} and restarting");
+            FizzleBombsOverRegion();
+            var deleted = await DeleteChangedBlocksInRegion();
+            await Platform.Log($"{RoomName}: region {_region} cleared, {deleted} changed blocks deleted");
+        }
+        catch (Exception e) { await Platform.Log($"{RoomName}: region {_region} not fully cleared: {e.Message}"); }
+
+        // The platform has its answer and the players their close code already; this gives the smoke and the logs
+        // time to leave before the process does.
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        Environment.Exit(0);
+    }
+
+    private async Task<int> DeleteChangedBlocksInRegion()
+    {
+        var (from, to) = World.Columns(_region);
+        var cubes = Platform.Table<WorldCube>();
+        var rows = await ReadAll(cubes.Where(c => c.x >= from && c.x < to));
+        foreach (var row in rows) await cubes.DeleteAsync(row.Id);
+        return rows.Count;
+    }
+}

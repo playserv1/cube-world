@@ -11,7 +11,12 @@ namespace CubeWorld.Server;
 /// against, times every dig by the block's hardness, deals damage and knockback, and ticks 20 times a second.
 /// Movement itself is simulated by the client and reported back, as Minecraft clients do.
 /// </summary>
-public sealed class CubeWorldServer : PlatformGameServer
+/// <remarks>
+/// This file is the outline: how the server starts, what one tick does, what a player can do, what it hears from the
+/// other servers. The details are next to it: <c>CubeWorldServer.Players.cs</c> (moving, digging, placing, fighting),
+/// <c>CubeWorldServer.Bombs.cs</c> and <c>CubeWorldServer.Sharing.cs</c> (the regions and the world the servers share).
+/// </remarks>
+public sealed partial class CubeWorldServer : PlatformGameServer
 {
     private const string Uplink = "";
 
@@ -34,6 +39,8 @@ public sealed class CubeWorldServer : PlatformGameServer
 
     protected override TimeSpan ReconnectGrace => TimeSpan.Zero;
 
+    // ── the server's life ───────────────────────────────────────────────────────────────────────────
+
     protected override Task OnStartupAsync()
     {
         Platform.OnRuntimeDataUpdate(OnDataChanged);
@@ -43,6 +50,15 @@ public sealed class CubeWorldServer : PlatformGameServer
 
     private async Task RunAsync()
     {
+        await LoadWorldAndClaimRegion();    // tries again every 5 s until the tables answer and a region is free
+        StartTicking();                     // the game 20 times a second, player positions 5 times a second
+        OpenRoom();
+        await KeepRoomOpen();               // until the operator closes the room
+        await ClearRegionAndRestart();
+    }
+
+    private async Task LoadWorldAndClaimRegion()
+    {
         while (true)
         {
             try
@@ -51,127 +67,39 @@ public sealed class CubeWorldServer : PlatformGameServer
                 // instead of being missed (applying one that the load already holds changes nothing).
                 Subscribe();
                 _world.Load(await LoadCubesAsync());
-                // The bombs are an extra: a world whose bombs cannot be read still opens, without them.
-                try { foreach (var bomb in await LoadBombsAsync()) lock (_world) OnBomb(bomb, owned: false); }
-                catch (Exception e) { _ = Platform.Log($"bombs not loaded, the world opens without them: {e.Message}"); }
+                await LoadBombs();
                 _region = await ClaimRegionAsync();
-                if (_region >= 0) break;
+                if (_region >= 0)
+                {
+                    break;
+                }
             }
             catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5 s: {e.Message}"); }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
         await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, {_bombs.Count} bombs, world ready");
+    }
+
+    private void StartTicking()
+    {
         _ = Task.Run(ShareMovesAsync);
         _ = Task.Run(TickAsync);
+    }
 
-        _rooms.GetOrCreate(RoomName);
-        while (true)
+    private void OpenRoom() => _rooms.GetOrCreate(RoomName);
+
+    /// <summary>The room is gone only when the platform ended it: the operator closed it, or it reached its lifetime.</summary>
+    private async Task KeepRoomOpen()
+    {
+        while (_rooms.Find(RoomName) is { IsDisposed: false })
         {
-            // The room is gone only when the platform ended it: the operator closed it, or it reached its lifetime.
-            if (_rooms.Find(RoomName) is null or { IsDisposed: true })
-            {
-                await CloseAsync();
-                return;
-            }
-            Platform.RuntimeData.Write(Uplink, "WorldRegion", $"{_region}", Claim(_region));
-            try { _regions = await LiveRegionsAsync(); } catch { }
-            Broadcast(new { type = "regions", regions = _regions });
-            Subscribe();
+            await SayThisServerIsAlive();
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
     }
 
-    /// <summary>
-    /// The room was closed. Its region goes back to the generated terrain (every change in it is deleted, and every
-    /// server and client hears the deletes), the bombs over it go up in smoke, and the process ends. Docker starts it
-    /// again on the same machine, where it claims its region again and opens the room fresh.
-    /// </summary>
-    private async Task CloseAsync()
-    {
-        try
-        {
-            await Platform.Log($"{RoomName} was closed: clearing region {_region} and restarting");
-            lock (_world)
-                foreach (var bomb in Bomb.InRegion(_bombs.Values.Select(b => b.Record), _region).ToArray())
-                    Share(Next(bomb, Bomb.Fizzled, bomb.holder, bomb.x, bomb.y, _bombs[bomb.bomb_id].Z), owned: false);
+    // ── the game tick ───────────────────────────────────────────────────────────────────────────────
 
-            var (from, to) = World.Columns(_region);
-            var cubes = Platform.Table<WorldCube>();
-            var ids = new List<string>();
-            string? cursor = null;
-            do
-            {
-                var page = await cubes.Where(c => c.x >= from && c.x < to).Take(200).WithCursor(cursor).ToPageAsync();
-                ids.AddRange(page.Items.Select(r => r.Id));
-                cursor = page.NextCursor;
-            } while (!string.IsNullOrEmpty(cursor));
-            foreach (var id in ids) await cubes.DeleteAsync(id);
-            await Platform.Log($"{RoomName}: region {_region} cleared, {ids.Count} changed blocks deleted");
-        }
-        catch (Exception e) { await Platform.Log($"{RoomName}: region {_region} not fully cleared: {e.Message}"); }
-
-        // The platform has its answer and the players their close code already; this gives the smoke and the logs
-        // time to leave before the process does.
-        await Task.Delay(TimeSpan.FromSeconds(3));
-        Environment.Exit(0);
-    }
-
-    private static void Subscribe()
-    {
-        Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key");
-        Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
-        Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
-        Platform.RuntimeData.Subscribe(Uplink, "WorldHit", "field:hit_id");
-        Platform.RuntimeData.Subscribe(Uplink, "WorldBomb", "field:bomb_id");
-    }
-
-    private async Task<int> ClaimRegionAsync()
-    {
-        var regions = Platform.Table<WorldRegion>();
-        for (var region = 0; region < World.RegionColors.Length; region++)
-        {
-            var holder = (await regions.FindByAsync(r => r.region, $"{region}"))?.Fields;
-            if (holder is not null && holder.server != _server && Now - holder.seen_at < 30_000) continue;
-
-            await regions.UpsertByAsync(r => r.region, $"{region}", UpsertMode.Managed, Claim(region));
-            await Task.Delay(TimeSpan.FromSeconds(1));
-            if ((await regions.FindByAsync(r => r.region, $"{region}"))?.Fields?.server == _server) return region;
-        }
-        return -1;
-    }
-
-    private WorldRegion Claim(int region) => new()
-    {
-        region = $"{region}", server = _server, color = World.RegionColors[region], room = $"{World.RegionColors[region]}-{_server}", seen_at = Now,
-    };
-
-    private static async Task<WorldRegion[]> LiveRegionsAsync()
-    {
-        var rows = await Platform.Table<WorldRegion>().Query().ToListAsync();
-        return rows.Select(r => r.Fields!).Where(r => Now - r.seen_at < 30_000).ToArray();
-    }
-
-    private async Task ShareMovesAsync()
-    {
-        for (var tick = 0; ; tick++)
-        {
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
-
-            if (tick % 2 == 0)
-                foreach (var player in _players.Values.Where(p => p.Moved || Now - p.Pose.seen_at > 2000))
-                {
-                    player.Moved = false;
-                    player.Pose.seen_at = Now;
-                    Platform.RuntimeData.Write(Uplink, "WorldPresence", player.Pose.player_id, player.Pose);
-                }
-
-            var everyone = _players.Values.Select(p => p.Pose)
-                .Concat(_elsewhere.Values.Where(p => Now - p.seen_at < 5000 && !_players.ContainsKey(p.player_id)));
-            Broadcast(new { type = "players", players = everyone });
-        }
-    }
-
-    /// <summary>The 20 Hz game tick: digging progresses and finishes, health regenerates, bombs come down and fly.</summary>
     private async Task TickAsync()
     {
         var next = Environment.TickCount64;
@@ -180,227 +108,43 @@ public sealed class CubeWorldServer : PlatformGameServer
             next += 1000 / Spec.TicksPerSecond;
             var wait = next - Environment.TickCount64;
             if (wait > 0) await Task.Delay((int)wait); else next = Environment.TickCount64;
-            _tick++;
-
-            foreach (var player in _players.Values)
-            {
-                try
-                {
-                    lock (_world) TickDig(player);
-                    if (!player.Dead && player.Pose.health < Spec.MaxHealth && _tick % Spec.RegenIntervalTicks == 0)
-                    {
-                        player.Pose.health = Math.Min(Spec.MaxHealth, player.Pose.health + 1);
-                        player.Moved = true;
-                    }
-                }
-                catch (Exception e) { _ = Platform.Log($"tick: {e.Message}"); }
-            }
-            try
-            {
-                lock (_world)
-                {
-                    TickBombs();
-                    // What the other servers changed this tick goes out together (a blast elsewhere is a hundred blocks).
-                    if (_heard.Count > 0) { BroadcastCubes([], _heard.ToList(), remote: true); _heard.Clear(); }
-                }
-            }
-            catch (Exception e) { _ = Platform.Log($"bombs: {e.Message}"); }
+            Tick();
         }
     }
 
-    // ── bombs ────────────────────────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Every server brings every free bomb down, but only the server of the region a bomb is over lets a player pick
-    /// it up, so two servers never hand out one bomb. A thrown bomb is flown by its thrower's server alone.
-    /// </summary>
-    private void TickBombs()
+    /// <summary>One tick: digging progresses and finishes, health regenerates, bombs come down and fly.</summary>
+    private void Tick()
     {
-        foreach (var live in _bombs.Values.ToArray())
-        {
-            var bomb = live.Record;
-            if (bomb.state == Bomb.Free)
-            {
-                live.Z = Bomb.Descend(_world, bomb.x, bomb.y, live.Z);
-                if ((int)Math.Floor(bomb.x / World.RegionSize) != _region) continue;
-                var taker = _players.Values.FirstOrDefault(p => p.Throws && !p.Dead && p.Bomb is null
-                                                                && Bomb.InPickupReach(HitboxOf(p.Pose), bomb.x, bomb.y, live.Z));
-                if (taker is not null)
-                    Share(Next(bomb, Bomb.Held, taker.Pose.player_id, bomb.x, bomb.y, live.Z), owned: false);
-            }
-            else if (bomb.state == Bomb.Flying && live.Owned)
-            {
-                var flight = live.Age++ >= Spec.BombFlightTicks ? Flight.Exploded
-                    : Bomb.Fly(_world, live.P, live.V, Targets(), bomb.holder, live.Age);
-                if (flight == Flight.Exploded) Explode(bomb, live.P);
-                else if (flight == Flight.Gone) Share(Next(bomb, Bomb.Fizzled, bomb.holder, live.P[0], live.P[1], live.P[2]), owned: false);
-            }
-        }
-    }
-
-    private void Throw(Player player, Command command)
-    {
-        if (player.Dead || player.Bomb is not { } id) return;
-        player.Bomb = null;
-        if (!_bombs.TryGetValue(id, out var live) || live.Record.state != Bomb.Held || live.Record.holder != player.Pose.player_id) return;
-
-        double dx = command.x, dy = command.y, dz = command.z;
-        var length = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-        if (length < 1e-6)
-        {
-            var (yaw, pitch) = (player.Pose.yaw, player.Pose.pitch);
-            (dx, dy, dz, length) = (-Math.Sin(yaw) * Math.Cos(pitch), Math.Cos(yaw) * Math.Cos(pitch), -Math.Sin(pitch), 1);
-        }
-        var (ex, ey, ez) = Eye(player);
-        var thrown = Next(live.Record, Bomb.Flying, player.Pose.player_id, ex, ey, ez);
-        (thrown.vx, thrown.vy, thrown.vz) = (dx / length * Spec.ThrowSpeed, dy / length * Spec.ThrowSpeed, dz / length * Spec.ThrowSpeed);
-        Share(thrown, owned: true);
-    }
-
-    /// <summary>
-    /// Players here are hurt, players elsewhere get a WorldHit, both judged against the world as it stood before the
-    /// blast, as Minecraft does. Then the bomb is recorded as exploded, and <see cref="OnBomb"/> breaks this region's
-    /// blocks; every other server breaks its own when it hears the record. The centre is rounded to a thousandth so
-    /// the record carries exactly the point every server works the blast out from.
-    /// </summary>
-    private void Explode(WorldBomb bomb, double[] at)
-    {
-        var (cx, cy, cz) = (Math.Round(at[0], 3), Math.Round(at[1], 3), Math.Round(at[2], 3));
-
-        foreach (var player in _players.Values.Where(p => !p.Dead))
-            if (_world.Blast(cx, cy, cz, Spec.BombPower, HitboxOf(player.Pose), EyeHeightOf(player.Pose)) is { } blast)
-                Hurt(player, blast.Damage, (blast.Nx, blast.Ny), blast.Impact, bomb.holder);
-
-        foreach (var pose in _elsewhere.Values.Where(p => Now - p.seen_at < 5000 && p.health > 0 && !_players.ContainsKey(p.player_id)))
-            if (_world.Blast(cx, cy, cz, Spec.BombPower, HitboxOf(pose), EyeHeightOf(pose)) is { } blast)
-            {
-                var hit = new WorldHit
-                {
-                    hit_id = $"{bomb.bomb_id}:{pose.player_id}", victim = pose.player_id, attacker = bomb.holder,
-                    damage = blast.Damage, kx = blast.Nx, ky = blast.Ny, strength = blast.Impact, at = Now,
-                };
-                Platform.RuntimeData.Write(Uplink, "WorldHit", hit.hit_id, hit);
-            }
-
-        Share(Next(bomb, Bomb.Exploded, bomb.holder, cx, cy, cz), owned: false);
-    }
-
-    /// <summary>
-    /// A bomb went off, here or on another server: this server breaks the blocks of its own region and no others.
-    /// A region whose server is not up when the bomb goes off keeps its blocks.
-    /// </summary>
-    private void Crater(WorldBomb bomb)
-    {
-        if (_region < 0) return;
-        Publish(_world.Explode(bomb.x, bomb.y, bomb.z, Spec.BombPower, new Random(Bomb.BlastSeed(bomb.bomb_id)),
-            bomb.holder, _server, _region));
-    }
-
-    private static WorldBomb Next(WorldBomb bomb, string state, string holder, double x, double y, double z) => new()
-    {
-        bomb_id = bomb.bomb_id, state = state, holder = holder, x = x, y = y, z = z, dropped_at = bomb.dropped_at, at = Now,
-    };
-
-    private void Share(WorldBomb bomb, bool owned)
-    {
-        Platform.RuntimeData.Write(Uplink, "WorldBomb", bomb.bomb_id, bomb);
-        OnBomb(bomb, owned);
-    }
-
-    /// <summary>A bomb moved on, here or on another server. Anything that does not move it forward is an echo or stale.</summary>
-    private void OnBomb(WorldBomb bomb, bool owned)
-    {
-        var known = _bombs.GetValueOrDefault(bomb.bomb_id);
-        if (known is not null && Bomb.Rank(bomb.state) <= Bomb.Rank(known.Record.state)) return;
-        if (known is null && Bomb.Over(bomb.state) && Now - bomb.at > 5000) return;
-
-        if (Bomb.Over(bomb.state)) _bombs.Remove(bomb.bomb_id);
-        else _bombs[bomb.bomb_id] = LiveBomb.Of(bomb, _world, owned, Now);
-        if (bomb.state == Bomb.Exploded) Crater(bomb);
+        _tick++;
 
         foreach (var player in _players.Values)
-            if (player.Bomb == bomb.bomb_id && (bomb.state != Bomb.Held || bomb.holder != player.Pose.player_id)) player.Bomb = null;
-        if (bomb.state == Bomb.Held && _players.TryGetValue(bomb.holder, out var holder)) holder.Bomb = bomb.bomb_id;
-
-        Broadcast(BombFrame(bomb, _bombs.GetValueOrDefault(bomb.bomb_id)));
-    }
-
-    private static object BombFrame(WorldBomb bomb, LiveBomb? live) => new { type = "bomb", bomb, age = Now - bomb.at, z = live?.Z ?? bomb.z };
-
-    private IEnumerable<(string, Hitbox)> Targets() =>
-        _players.Values.Where(p => !p.Dead).Select(p => p.Pose)
-            .Concat(_elsewhere.Values.Where(p => Now - p.seen_at < 5000 && p.health > 0 && !_players.ContainsKey(p.player_id)))
-            .Select(p => (p.player_id, HitboxOf(p)));
-
-    private void TickDig(Player player)
-    {
-        if (player.Dig is not { } dig) return;
-        var (ex, ey, ez) = Eye(player);
-        if (World.DistanceToBlock(ex, ey, ez, dig.X, dig.Y, dig.Z) > Spec.BlockReach + Spec.ReachTolerance || player.Dead)
         {
-            StopDig(player);
-            return;
+            Safely("tick", () =>
+            {
+                ProgressDigging(player);
+                RegenerateHealth(player);
+            });
         }
 
-        var elapsed = _tick - dig.StartTick;
-        var stage = (int)Math.Min(9, elapsed * 10 / dig.Ticks);
-        if (stage != dig.Stage)
+        Safely("bombs", () =>
         {
-            dig.Stage = stage;
-            Broadcast(new { type = "dig", player = player.Pose.player_id, x = dig.X, y = dig.Y, z = dig.Z, stage });
-        }
-        if (elapsed < dig.Ticks) return;
-
-        player.Dig = null;
-        Broadcast(new { type = "dig", player = player.Pose.player_id, x = dig.X, y = dig.Y, z = dig.Z, stage = -1 });
-        if (_world.Break(dig.X, dig.Y, dig.Z, player.Pose.player_id, _server) is not { } broken) return;
-
-        if (broken.Broken.Drop is { } drop && player.Inventory.Give(drop)) ShareInventory(player);
-        Publish(broken.Update);
+            MoveBombs();
+            SendWhatOtherServersChanged();
+        });
     }
 
-    private void StopDig(Player player)
-    {
-        if (player.Dig is not { } dig) return;
-        player.Dig = null;
-        Broadcast(new { type = "dig", player = player.Pose.player_id, x = dig.X, y = dig.Y, z = dig.Z, stage = -1 });
-    }
+    // ── players ─────────────────────────────────────────────────────────────────────────────────────
 
     protected override async Task OnPlayerConnected(PlayerSession session)
     {
         var name = session.DisplayName ?? session.Id;
-        var saved = await Platform.Table<CubeInventory>().FindByAsync(i => i.player_id, session.Id);
-        var inventory = saved?.Fields is { } record ? Inventory.Parse(record.stacks) : Inventory.Starting();
-        Platform.RuntimeData.Write(Uplink, "CubeInventory", session.Id, inventory.ToRecord(session.Id));
+        var inventory = await LoadInventory(session.Id);
+        var player = new Player(session, inventory, Spawn(session.Id, name));
 
-        var pose = Spawn(session.Id, name);
-        var player = new Player(session, inventory, pose);
         _players[session.Id] = player;
         InRoom(room => room.AddPlayer(new WorldPlayer { Id = session.Id, DisplayName = name }));
-
-        WorldCube[] world;
-        object[] bombs;
-        lock (_world)
-        {
-            world = _world.Overrides.ToArray();
-            player.Bomb = _bombs.Values.FirstOrDefault(b => b.Record.state == Bomb.Held && b.Record.holder == session.Id)?.Record.bomb_id;
-            bombs = _bombs.Values.Select(b => BombFrame(b.Record, b)).ToArray();
-        }
-        Send(session, new
-        {
-            type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = pose,
-            width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
-            layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
-            blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
-            hotbar = Spec.Placeable, world, inventory = inventory.Stacks, tick = _tick, bombs,
-        });
+        SendWelcome(player);
     }
-
-    private WorldPresence Spawn(string id, string name) => new()
-    {
-        player_id = id, name = name, server = _server, color = Color,
-        x = (_region + 0.5) * World.RegionSize, y = World.Depth / 2.0, z = 0, health = Spec.MaxHealth,
-    };
 
     protected override Task OnPlayerMessage(PlayerSession session, byte[] message)
     {
@@ -417,197 +161,10 @@ public sealed class CubeWorldServer : PlatformGameServer
                 case "attack": Attack(player, command); break;
                 case "respawn": Respawn(player); break;
                 case "throw": Throw(player, command); break;
-                case "bombs": player.Throws = true; break;
             }
         }
         return Task.CompletedTask;
     }
-
-    private void Move(Player player, Command command)
-    {
-        if (player.Dead) return;
-        var pose = player.Pose;
-        pose.x = Math.Clamp(command.x, 0, World.Width);
-        pose.y = Math.Clamp(command.y, 0, World.Depth);
-        pose.z = Math.Clamp(command.z, World.MinZ, World.MaxZ + 8);
-        pose.yaw = command.yaw;
-        pose.pitch = command.pitch;
-        pose.sneaking = command.sneaking ? 1 : 0;
-        pose.sprinting = command.sprinting ? 1 : 0;
-        player.Moved = true;
-
-        // Fall damage, from the height reached since the player last stood on the ground.
-        if (command.onGround)
-        {
-            if (player.Airborne)
-            {
-                var damage = Math.Ceiling(player.Peak - pose.z - Spec.SafeFallDistance);
-                if (damage > 0) Hurt(player, damage, null, 0, null);
-            }
-            player.Airborne = false;
-        }
-        else
-        {
-            player.Peak = player.Airborne ? Math.Max(player.Peak, pose.z) : pose.z;
-            player.Airborne = true;
-        }
-    }
-
-    private void Dig(Player player, Command command)
-    {
-        StopDig(player);
-        if (command.state != "start" || player.Dead) return;
-
-        int x = (int)Math.Floor(command.x), y = (int)Math.Floor(command.y), z = (int)Math.Floor(command.z);
-        var block = _world.BlockAt(x, y, z);
-        var (ex, ey, ez) = Eye(player);
-        if (!World.Inside(x, y, z) || !block.Solid || !block.Breakable
-            || World.DistanceToBlock(ex, ey, ez, x, y, z) > Spec.BlockReach + Spec.ReachTolerance) return;
-
-        player.Dig = new DigState(x, y, z, _tick, block.BreakTicks);
-        Broadcast(new { type = "dig", player = player.Pose.player_id, x, y, z, stage = 0 });
-    }
-
-    private void Place(Player player, Command command)
-    {
-        if (player.Dead) return;
-        int x = (int)Math.Floor(command.x), y = (int)Math.Floor(command.y), z = (int)Math.Floor(command.z);
-        var kind = command.kind ?? "";
-        var (ex, ey, ez) = Eye(player);
-        var reachable = World.DistanceToBlock(ex, ey, ez, x, y, z) <= Spec.BlockReach + Spec.ReachTolerance;
-        var update = reachable && player.Inventory.Count(kind) > 0
-            ? _world.Place(x, y, z, command.nx, command.ny, command.nz, kind, player.Pose.player_id, _server, Hitboxes())
-            : null;
-
-        if (update is null)
-        {
-            Send(player.Session, new { type = "refused", op = "place", inventory = player.Inventory.Stacks });
-            return;
-        }
-        player.Inventory.Take(kind);
-        ShareInventory(player);
-        Publish(update);
-    }
-
-    /// <summary>A hit on whoever is within reach: a player on this server, or one another server hosts.</summary>
-    private void Attack(Player player, Command command)
-    {
-        if (player.Dead || command.target is null || command.target == player.Pose.player_id) return;
-        var local = _players.GetValueOrDefault(command.target);
-        var pose = local?.Pose ?? _elsewhere.GetValueOrDefault(command.target);
-        if (pose is null || local is { Dead: true } || pose.health <= 0 || (local is null && Now - pose.seen_at > 5000)) return;
-
-        // A hand recharges in 5 ticks; a hit before that is weaker: 20 % plus 80 % of the charge squared.
-        var charge = Math.Min(1.0, (_tick - player.LastAttackTick) / (double)Spec.FistChargeTicks);
-        player.LastAttackTick = _tick;
-
-        var (ex, ey, ez) = Eye(player);
-        if (World.DistanceToHitbox(ex, ey, ez, HitboxOf(pose)) > Spec.EntityReach + Spec.ReachTolerance) return;
-
-        var damage = Spec.FistDamage * (0.2 + 0.8 * charge * charge);
-        double dx = pose.x - player.Pose.x, dy = pose.y - player.Pose.y;
-        var length = Math.Sqrt(dx * dx + dy * dy);
-        if (length < 1e-4) { dx = -Math.Sin(player.Pose.yaw); dy = Math.Cos(player.Pose.yaw); length = 1; }
-        var strength = Spec.Knockback + (player.Pose.sprinting == 1 ? Spec.SprintKnockback : 0);
-
-        if (local is not null) { Hurt(local, damage, (dx / length, dy / length), strength, player.Pose.player_id); return; }
-
-        // The victim is on another server: hand the hit over through platform data; that server applies it.
-        var hit = new WorldHit
-        {
-            hit_id = $"{player.Pose.player_id}:{_tick}:{Guid.NewGuid():N}", victim = command.target, attacker = player.Pose.player_id,
-            damage = damage, kx = dx / length, ky = dy / length, strength = strength, at = Now,
-        };
-        Platform.RuntimeData.Write(Uplink, "WorldHit", hit.hit_id, hit);
-    }
-
-    private void Hurt(Player victim, double damage, (double x, double y)? direction, double strength, string? by)
-    {
-        if (victim.Dead || _tick - victim.LastHurtTick < Spec.InvulnerabilityTicks) return;
-        victim.LastHurtTick = _tick;
-        victim.Pose.health = Math.Max(0, victim.Pose.health - damage);
-        victim.Moved = true;
-        Broadcast(new
-        {
-            type = "hurt", player = victim.Pose.player_id, health = victim.Pose.health, by,
-            kx = direction?.x * strength ?? 0, ky = direction?.y * strength ?? 0, strength = direction is null ? 0 : strength,
-        });
-
-        if (victim.Pose.health > 0) return;
-        victim.Dead = true;
-        StopDig(victim);
-        Broadcast(new { type = "death", player = victim.Pose.player_id, by });
-    }
-
-    private void Respawn(Player player)
-    {
-        if (!player.Dead) return;
-        var spawn = Spawn(player.Pose.player_id, player.Pose.name);
-        player.Pose.x = spawn.x; player.Pose.y = spawn.y; player.Pose.z = spawn.z;
-        player.Pose.health = Spec.MaxHealth;
-        player.Dead = false;
-        player.Airborne = false;
-        player.Moved = true;
-        Send(player.Session, new { type = "respawn", you = player.Pose });
-    }
-
-    private void Publish(WorldUpdate update)
-    {
-        foreach (var (op, cube) in update.Changes)
-        {
-            if (op == "delete") Platform.RuntimeData.Delete(Uplink, "WorldCube", cube.key);
-            else Platform.RuntimeData.Write(Uplink, "WorldCube", cube.key, cube);
-        }
-        BroadcastCubes(update.Falls, update.Changes, remote: false);
-    }
-
-    /// <summary>
-    /// A player's socket holds at most 64 frames queued and is cut the moment one more is sent, so blocks that change
-    /// together go out together: one "cubes" frame. A client that has not said it reads them (an Unreal build from before the bombs) gets a
-    /// frame per block as before, each sent only once there is room for it.
-    /// </summary>
-    private void BroadcastCubes(IReadOnlyList<Fall> falls, IReadOnlyList<Change> changes, bool remote)
-    {
-        if (falls.Count == 0 && changes.Count == 0) return;
-        var batch = JsonSerializer.Serialize(new
-        {
-            type = "cubes", remote,
-            falls = falls.Select(f => new { kind = f.Kind, x = f.X, y = f.Y, fromZ = f.FromZ, toZ = f.ToZ }),
-            changes = changes.Select(c => new { op = c.Op, cube = c.Cube }),
-        });
-        string[]? single = null;
-        foreach (var player in _players.Values)
-        {
-            if (player.Throws) { player.Session.TrySendText(batch); continue; }
-            single ??= falls.Select(f => JsonSerializer.Serialize(new { type = "fall", kind = f.Kind, x = f.X, y = f.Y, fromZ = f.FromZ, toZ = f.ToZ }))
-                .Concat(changes.Select(c => JsonSerializer.Serialize(new { type = "cube", op = c.Op, cube = c.Cube, remote }))).ToArray();
-            _ = SendInTurnAsync(player.Session, single);
-        }
-    }
-
-    private static async Task SendInTurnAsync(PlayerSession session, string[] frames)
-    {
-        try { foreach (var frame in frames) await session.SendTextAsync(frame); }
-        catch { }
-    }
-
-    private void ShareInventory(Player player)
-    {
-        Platform.RuntimeData.Write(Uplink, "CubeInventory", player.Pose.player_id, player.Inventory.ToRecord(player.Pose.player_id));
-        Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
-    }
-
-    private IEnumerable<Hitbox> Hitboxes() =>
-        _players.Values.Where(p => !p.Dead).Select(p => p.Pose)
-            .Concat(_elsewhere.Values.Where(p => Now - p.seen_at < 5000 && p.health > 0 && !_players.ContainsKey(p.player_id)))
-            .Select(HitboxOf);
-
-    private static Hitbox HitboxOf(WorldPresence pose) =>
-        new(pose.x, pose.y, pose.z, pose.sneaking == 1 ? Spec.SneakHeight : Spec.PlayerHeight);
-
-    private static (double x, double y, double z) Eye(Player player) => (player.Pose.x, player.Pose.y, player.Pose.z + EyeHeightOf(player.Pose));
-
-    private static double EyeHeightOf(WorldPresence pose) => pose.sneaking == 1 ? Spec.SneakEyeHeight : Spec.EyeHeight;
 
     protected override Task OnPlayerDisconnected(PlayerSession session, DisconnectReason reason)
     {
@@ -617,72 +174,36 @@ public sealed class CubeWorldServer : PlatformGameServer
         return Task.CompletedTask;
     }
 
+    // ── what the other servers and the functions changed ────────────────────────────────────────────
+
     private void OnDataChanged(Platform.RuntimeDataUpdate update)
     {
         switch (update.Entity)
         {
             case "WorldCube" when update.Data.Deserialize<WorldCube>() is { } cube:
-                bool changed;
-                lock (_world)
-                {
-                    changed = _world.Apply(update.Op, cube);
-                    if (changed) _heard.Add(new Change(update.Op, cube));
-                }
+                HearCube(update.Op, cube);
                 break;
-
-            case "CubeInventory" when update.Data.Deserialize<CubeInventory>() is { } refill
-                                      && _players.TryGetValue(refill.player_id, out var player):
-                var stacks = Inventory.Parse(refill.stacks).Stacks;
-                lock (_world)
-                    foreach (var kind in Spec.Placeable)
-                        while (player.Inventory.Count(kind) < Math.Min(Spec.StackSize, stacks.GetValueOrDefault(kind)) && player.Inventory.Give(kind)) { }
-                Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
+            case "CubeInventory" when update.Data.Deserialize<CubeInventory>() is { } refill:
+                HearRefill(refill);
                 break;
-
             case "WorldPresence" when update.Data.Deserialize<WorldPresence>() is { } pose:
-                if (update.IsDelete) _elsewhere.TryRemove(pose.player_id, out _);
-                else _elsewhere[pose.player_id] = pose;
+                HearPresence(pose, update.IsDelete);
                 break;
-
-            case "WorldHit" when !update.IsDelete && update.Data.Deserialize<WorldHit>() is { } hit
-                                 && Now - hit.at < 5000 && _players.TryGetValue(hit.victim, out var victim):
-                lock (_world) Hurt(victim, hit.damage, (hit.kx, hit.ky), hit.strength, hit.attacker);
-                Platform.RuntimeData.Delete(Uplink, "WorldHit", hit.hit_id);
+            case "WorldHit" when !update.IsDelete && update.Data.Deserialize<WorldHit>() is { } hit:
+                HearHit(hit);
                 break;
-
             case "WorldBomb" when !update.IsDelete && update.Data.Deserialize<WorldBomb>() is { } bomb:
-                lock (_world) OnBomb(bomb, owned: false);
+                HearBomb(bomb);
                 break;
         }
     }
 
-    private static async Task<List<WorldCube>> LoadCubesAsync()
-    {
-        var cubes = new List<WorldCube>();
-        string? cursor = null;
-        do
-        {
-            var page = await Platform.Table<WorldCube>().Query().Take(200).WithCursor(cursor).ToPageAsync();
-            cubes.AddRange(page.Items.Select(r => r.Fields!));
-            cursor = page.NextCursor;
-        } while (!string.IsNullOrEmpty(cursor));
-        return cubes;
-    }
+    // ── small helpers ───────────────────────────────────────────────────────────────────────────────
 
-    private static async Task<List<WorldBomb>> LoadBombsAsync()
+    private static void Safely(string what, Action action)
     {
-        var bombs = new List<WorldBomb>();
-        string? cursor = null;
-        do
-        {
-            var page = await Platform.Table<WorldBomb>().Query().Take(200).WithCursor(cursor).ToPageAsync();
-            bombs.AddRange(page.Items.Select(r => r.Fields!));
-            cursor = page.NextCursor;
-        } while (!string.IsNullOrEmpty(cursor));
-        // A bomb can have several rows (the drop function's and the servers'): the one furthest on is the bomb.
-        return bombs.GroupBy(b => b.bomb_id)
-            .Select(g => g.OrderByDescending(b => Bomb.Rank(b.state)).ThenByDescending(b => b.at).First())
-            .Where(b => !Bomb.Over(b.state)).ToList();
+        try { action(); }
+        catch (Exception e) { _ = Platform.Log($"{what}: {e.Message}"); }
     }
 
     private void Broadcast(object frame)
@@ -707,58 +228,12 @@ public sealed class CubeWorldServer : PlatformGameServer
     private static string ServerName(string? machineId) =>
         string.IsNullOrEmpty(machineId) ? "local" : machineId[^5..].ToLowerInvariant();
 
-    private sealed class DigState(int x, int y, int z, long startTick, int ticks)
-    {
-        public int X => x;
-        public int Y => y;
-        public int Z => z;
-        public long StartTick => startTick;
-        public int Ticks => ticks;
-        public int Stage { get; set; } = 0;
-    }
-
-    private sealed record Player(PlayerSession Session, Inventory Inventory, WorldPresence Pose)
-    {
-        public bool Moved { get; set; }
-        public bool Dead { get; set; }
-        public bool Airborne { get; set; }
-        public double Peak { get; set; }
-        public long LastAttackTick { get; set; } = long.MinValue / 2;
-        public long LastHurtTick { get; set; } = long.MinValue / 2;
-        public DigState? Dig { get; set; }
-        /// <summary>The bomb in the player's hand. A player holds one at a time and can only throw it.</summary>
-        public string? Bomb { get; set; }
-        /// <summary>The client can show and throw a bomb and reads batched "cubes" frames; one that cannot is never handed a bomb.</summary>
-        public bool Throws { get; set; }
-    }
-
-    /// <summary>A bomb as this server follows it: the height of a free one, the path of one it threw.</summary>
-    private sealed class LiveBomb
-    {
-        public required WorldBomb Record { get; init; }
-        public double Z { get; set; }
-        public double[] P { get; init; } = [];
-        public double[] V { get; init; } = [];
-        public bool Owned { get; init; }
-        public int Age { get; set; }
-
-        /// <summary>A free bomb heard late is brought down as far as it has come since it was dropped.</summary>
-        public static LiveBomb Of(WorldBomb bomb, World world, bool owned, long now)
-        {
-            var z = bomb.z;
-            if (bomb.state == CubeWorld.Server.Bomb.Free)
-                for (long t = 0, ticks = Math.Clamp((now - bomb.at) / (1000 / Spec.TicksPerSecond), 0, 2000); t < ticks; t++)
-                    z = CubeWorld.Server.Bomb.Descend(world, bomb.x, bomb.y, z);
-            return new LiveBomb
-            {
-                Record = bomb, Z = z, Owned = owned && bomb.state == CubeWorld.Server.Bomb.Flying,
-                P = [bomb.x, bomb.y, bomb.z], V = [bomb.vx, bomb.vy, bomb.vz],
-            };
-        }
-    }
-
     private sealed record Command(string op, double x, double y, double z, double yaw, double pitch, int nx, int ny, int nz,
-        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting);
+        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting)
+    {
+        /// <summary>The block the command points at.</summary>
+        public (int x, int y, int z) Block => ((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z));
+    }
 }
 
 public sealed class WorldPlayer : RoomPlayer;
