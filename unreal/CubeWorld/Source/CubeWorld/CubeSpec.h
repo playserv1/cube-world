@@ -19,7 +19,11 @@ namespace CubeSpec
 	constexpr double BlockReach = 4.5, EntityReach = 3.0;
 	constexpr double MaxHealth = 20, KnockbackLift = 0.4, Push = 0.05;
 	constexpr int32 HurtTicks = 10, DigCooldownTicks = 5;
+	// Field of view 70° is Minecraft's VERTICAL angle (Options); Unreal's camera takes the horizontal one, so
+	// the pawn converts with the viewport's aspect. Sprinting scales the angle by 1.15.
 	constexpr float Fov = 70.f, SprintFov = 1.15f;
+	// The mouse turns the view 0.15° per pixel at Minecraft's default sensitivity (Options § Mouse sensitivity).
+	constexpr float DegreesPerMousePixel = 0.15f;
 
 	constexpr float BlockCm = 100.f;
 	constexpr int32 TextureSize = 16;

@@ -134,7 +134,7 @@ void ACubeBomb::Animate(double Now)
 	const double Swell = FMath::Max(0.0, FMath::Sin(Now * 1000 / 160));
 	Head->SetRelativeScale3D(FVector(1 + 0.06 * Swell));
 	Flash->SetVisibility(Swell > 0.6);
-	const bool bOpen = State == TEXT("free") && !bLanded;
+	const bool bOpen = State == TEXT("free") && !bLanded && Holder.IsEmpty();
 	Parachute->SetVisibility(bOpen);
 	if (bOpen) Parachute->SetRelativeRotation(FRotator(0, 0, FMath::RadiansToDegrees(FMath::Sin(Now * 1000 / 700 + Pos.X) * 0.08)));
 }

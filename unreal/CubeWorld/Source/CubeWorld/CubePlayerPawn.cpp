@@ -4,8 +4,11 @@
 #include "CubeAvatar.h"
 #include "CubeWorldActor.h"
 #include "CubeBombs.h"
+#include "ProceduralMeshComponent.h"
 #include "CubeTombstone.h"
 #include "Camera/CameraComponent.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/Engine.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerInput.h"
@@ -164,8 +167,9 @@ void ACubePlayerPawn::SetupPlayerInputComponent(UInputComponent* Input)
 	Input->BindAction(TEXT("Release"), IE_Pressed, this, &ACubePlayerPawn::OnRelease);
 }
 
-void ACubePlayerPawn::OnTurn(float V) { if (bMouseCaptured) AddControllerYawInput(V * 0.12f); }
-void ACubePlayerPawn::OnLookUp(float V) { if (bMouseCaptured) AddControllerPitchInput(V * 0.12f); }
+// The axis value is the raw pixel delta (DefaultInput.ini sets the mouse sensitivity to 1 and the legacy scales off).
+void ACubePlayerPawn::OnTurn(float V) { if (bMouseCaptured) AddControllerYawInput(V * CubeSpec::DegreesPerMousePixel); }
+void ACubePlayerPawn::OnLookUp(float V) { if (bMouseCaptured) AddControllerPitchInput(V * CubeSpec::DegreesPerMousePixel); }
 
 void ACubePlayerPawn::CaptureMouse(bool bCapture)
 {
@@ -437,9 +441,13 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 	SetActorLocation(Feet * CubeSpec::BlockCm);
 	Camera->SetRelativeLocation(FVector(0, 0, Body.EyeHeight() * CubeSpec::BlockCm));
 
+	// Minecraft's angle is vertical; Unreal wants the horizontal one for the viewport's aspect.
 	const float TargetFov = CubeSpec::Fov * (Body.bSprinting ? CubeSpec::SprintFov : 1.f);
 	Fov += (TargetFov - Fov) * FMath::Min(1.f, DeltaSeconds * 12.f);
-	Camera->SetFieldOfView(Fov);
+	float Aspect = 16.f / 9.f;
+	if (GEngine && GEngine->GameViewport) { FVector2D Size; GEngine->GameViewport->GetViewportSize(Size); if (Size.Y > 0) Aspect = Size.X / Size.Y; }
+	const float Horizontal = FMath::RadiansToDegrees(2.f * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(Fov / 2.f)) * Aspect));
+	Camera->SetFieldOfView(Horizontal);
 
 	const double Now = FPlatformTime::Seconds();
 	for (const auto& Pair : Bombs)
@@ -498,8 +506,10 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 	if (B.State == TEXT("free"))
 	{
 		Bomb->Pos = FVector(B.X, B.Y, B.Height.Get(B.Z));
-		Bomb->bLanded = false;
+		// Already resting on a block: the parachute stays folded, whatever frame repeats the record.
+		Bomb->bLanded = CubeBombs::Descend(Game->World, Bomb->Pos.X, Bomb->Pos.Y, Bomb->Pos.Z) == Bomb->Pos.Z;
 	}
+	else if (Bomb->Parachute) Bomb->Parachute->SetVisibility(false);
 	else if (B.State == TEXT("flying"))
 	{
 		// Heard late, it is flown as far as it has come.

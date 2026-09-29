@@ -24,7 +24,8 @@ Every mechanic below follows the [Minecraft Wiki](https://minecraft.wiki). The c
 | Jump | 0.42 blocks/tick up, 1.2522 blocks high, +0.2 forward when sprinting, 10 ticks between jumps while the key is held | [Jumping](https://minecraft.wiki/w/Jumping) |
 | Step height | 0.6: a full block is never stepped over, it is jumped | [Player](https://minecraft.wiki/w/Player) |
 | Diagonal input | normalised, no faster than straight | [Walking](https://minecraft.wiki/w/Walking) |
-| Field of view | 70° | [Options](https://minecraft.wiki/w/Options) |
+| Field of view | 70° vertical (Unreal takes the horizontal angle, so the client converts it for the viewport), × 1.15 sprinting | [Options](https://minecraft.wiki/w/Options) |
+| Mouse sensitivity | 0.15° of view per mouse pixel at the default setting | [Options § Mouse sensitivity](https://minecraft.wiki/w/Options) |
 | Entities push each other | 0.05 blocks/tick apart when hitboxes overlap | [Entity](https://minecraft.wiki/w/Entity) |
 
 ## Health and damage
