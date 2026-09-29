@@ -130,6 +130,44 @@ void ACubePlayerPawn::BeginPlay()
 		FTimerHandle Done;
 		GetWorldTimerManager().SetTimer(Done, [this]() { Game->Log(FString::Printf(TEXT("frametest: %d of 20 refusals answered"), Answers)); }, 9.f, false);
 	}
+	// -bombtest: walk onto the first free bomb, throw it ahead, and log where it is on every tick.
+	if (FParse::Param(FCommandLine::Get(), TEXT("bombtest")))
+	{
+		static int32 Phase = 0;
+		static FString TestBomb;
+		FTimerHandle H;
+		GetWorldTimerManager().SetTimer(H, [this]()
+		{
+			if (Phase == 0)
+			{
+				for (const auto& Pair : Bombs)
+					if (Pair.Value && Pair.Value->State == TEXT("free"))
+					{
+						TestBomb = Pair.Key;
+						const FVector P = Pair.Value->Pos;
+						Body.Teleport(P.X, P.Y, FMath::Max(0.0, P.Z));
+						Game->Log(FString::Printf(TEXT("bombtest: standing on bomb %s at %.1f %.1f %.1f"), *TestBomb, P.X, P.Y, P.Z));
+						Phase = 1;
+						return;
+					}
+				Game->Log(FString::Printf(TEXT("bombtest: no free bomb yet (%d bombs known)"), Bombs.Num()));
+			}
+			else if (Phase == 1 && !Game->Holding.IsEmpty())
+			{
+				Game->Log(FString::Printf(TEXT("bombtest: holding %s, throwing"), *Game->Holding));
+				const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
+				F->SetStringField(TEXT("op"), TEXT("throw"));
+				F->SetNumberField(TEXT("x"), 0.9); F->SetNumberField(TEXT("y"), 0); F->SetNumberField(TEXT("z"), 0.44);
+				Game->Send(F);
+				Phase = 2;
+			}
+			else if (Phase == 2)
+			{
+				if (ACubeBomb** B = Bombs.Find(TestBomb))
+					if (*B) Game->Log(FString::Printf(TEXT("bombtest: %s pos %.2f %.2f %.2f prev %.2f %.2f %.2f stopped %lld actor %s"), *(*B)->State, (*B)->Pos.X, (*B)->Pos.Y, (*B)->Pos.Z, (*B)->Prev.X, (*B)->Prev.Y, (*B)->Prev.Z, (*B)->Stopped, *((*B)->GetActorLocation() / CubeSpec::BlockCm).ToString()));
+			}
+		}, 0.1f, true, 6.f);
+	}
 	if (FParse::Value(FCommandLine::Get(), TEXT("-quitafter="), Seconds) && Seconds > 0)
 	{
 		FTimerHandle Handle;
@@ -509,7 +547,6 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 		// Already resting on a block: the parachute stays folded, whatever frame repeats the record.
 		Bomb->bLanded = CubeBombs::Descend(Game->World, Bomb->Pos.X, Bomb->Pos.Y, Bomb->Pos.Z) == Bomb->Pos.Z;
 	}
-	else if (Bomb->Parachute) Bomb->Parachute->SetVisibility(false);
 	else if (B.State == TEXT("flying"))
 	{
 		// Heard late, it is flown as far as it has come.
@@ -519,8 +556,10 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 		const int32 Ticks = FMath::Min(CubeSpec::BombFlightTicks, FMath::FloorToInt32(B.Age / (CubeSpec::TickSeconds * 1000)));
 		for (int32 T = 0; T < Ticks && !Bomb->Stopped; T++) TickBomb(Bomb);
 	}
+	if (B.State != TEXT("free") && Bomb->Parachute) Bomb->Parachute->SetVisibility(false);
 	Bomb->Prev = Bomb->Pos;
 	if (B.State != TEXT("held")) Bomb->SetActorLocation(Bomb->Pos * CubeSpec::BlockCm);
+	if (FParse::Param(FCommandLine::Get(), TEXT("bombtest"))) Game->Log(FString::Printf(TEXT("handlebomb: %s at %.2f %.2f %.2f age %.0f -> pos %.2f %.2f %.2f vel %.2f %.2f %.2f stopped %lld"), *B.State, At.X, At.Y, At.Z, B.Age, Bomb->Pos.X, Bomb->Pos.Y, Bomb->Pos.Z, Bomb->Vel.X, Bomb->Vel.Y, Bomb->Vel.Z, Bomb->Stopped));
 	UpdateHolding();
 }
 
@@ -549,7 +588,9 @@ void ACubePlayerPawn::TickBomb(ACubeBomb* Bomb)
 	}
 	else if (Bomb->State == TEXT("flying") && !Bomb->Stopped)
 	{
-		if (CubeBombs::Fly(Game->World, Bomb->Pos, Bomb->Vel) != ECubeFlight::Flying) Bomb->Stopped = FMath::Max<int64>(1, TickCount);
+		const FVector Before = Bomb->Pos;
+		const ECubeFlight Flight = CubeBombs::Fly(Game->World, Bomb->Pos, Bomb->Vel);
+		if (Flight != ECubeFlight::Flying) { Bomb->Stopped = FMath::Max<int64>(1, TickCount); if (FParse::Param(FCommandLine::Get(), TEXT("bombtest"))) Game->Log(FString::Printf(TEXT("tickbomb: stopped (%d) from %.2f %.2f %.2f at %.2f %.2f %.2f vel %.2f %.2f %.2f; block there %s"), (int32)Flight, Before.X, Before.Y, Before.Z, Bomb->Pos.X, Bomb->Pos.Y, Bomb->Pos.Z, Bomb->Vel.X, Bomb->Vel.Y, Bomb->Vel.Z, *Game->World.KindAt(FMath::FloorToInt32(Bomb->Pos.X + Bomb->Vel.X / 10), FMath::FloorToInt32(Bomb->Pos.Y + Bomb->Vel.Y / 10), FMath::FloorToInt32(Bomb->Pos.Z + Bomb->Vel.Z / 10)).ToString())); }
 	}
 	// The server's word on where it went off comes soon; one that never comes is taken away after three seconds.
 	else if (Bomb->State == TEXT("flying") && TickCount - Bomb->Stopped > 60)

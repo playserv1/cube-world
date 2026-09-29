@@ -239,7 +239,7 @@ void FCubeSocket::ReadFrames()
 			// The converter does not null-terminate: take exactly the converted length.
 			const FUTF8ToTCHAR Converted((const ANSICHAR*)Payload.GetData(), Payload.Num());
 			const FString Text(Converted.Length(), Converted.Get());
-			if (CubeSocketVerbose()) UE_LOG(LogCubeWorld, Log, TEXT("socket: text %s"), *Text.Left(90));
+			if (CubeSocketVerbose()) UE_LOG(LogCubeWorld, Log, TEXT("socket: text %s"), *Text.Left(600));
 			OnMessage.Broadcast(Text);
 			if (State != EState::Open) return;
 		}
