@@ -8,6 +8,7 @@ import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlo
 import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
 import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tickEffects } from "./bombfx.js";
 import { buildTombstone } from "./tombstone.js";
+import { refusal } from "./rooms.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
 const toClient = p => ({ x: p.x, y: p.z, z: p.y });
@@ -20,7 +21,9 @@ const $ = id => document.getElementById(id);
 
 const state = { player: null, socket: null, room: null, server: null, color: "grey", region: -1, regions: [],
   regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, placed: false,
-  health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null };
+  health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null,
+  // A room that turned the player away is not tried again before this time (performance.now()), per room name.
+  notBefore: {} };
 const world = new VoxelWorld();
 const chunks = new Map();
 const avatars = new Map();
@@ -42,7 +45,7 @@ async function api(method, path, body, retried = false) {
   const json = await res.json().catch(() => ({}));
   // A player's access token lasts 15 minutes: on a 401 the session is refreshed once and the call repeated.
   if (res.status === 401 && !retried && state.player?.refresh_token) { await refreshSession(); return api(method, path, body, true); }
-  if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${json.code || json.title || ""}`);
+  if (!res.ok) throw Object.assign(new Error(`${method} ${path} → ${res.status} ${json.code || json.title || ""}`), { status: res.status, code: json.code });
   return json;
 }
 
@@ -92,7 +95,7 @@ async function refreshServers() {
     li.innerHTML = `<span>${room.room_name} · ${room.players}/${room.capacity}</span>`;
     const button = document.createElement("button");
     button.textContent = room.room_name === state.room ? "here" : "enter";
-    button.onclick = () => enter(room.room_name).catch(e => log(e.message));
+    button.onclick = () => enter(room.room_name).catch(e => log(refusal({ code: e.code }).message ?? e.message));
     li.append(button);
     $("servers").append(li);
   }
@@ -127,7 +130,12 @@ async function enter(roomName, teleport = true) {
       if (state.socket === socket) onFrame(frame);
     };
     socket.onclose = e => {
-      if (state.socket === socket) { log(`disconnected: ${e.reason || e.code}`); state.room = null; }
+      if (state.socket === socket) {
+        const turned = refusal({ reason: e.reason });
+        if (turned.message) state.notBefore[roomName] = performance.now() + turned.waitMs;
+        log(turned.message ?? `disconnected: ${e.reason || e.code}`);
+        state.room = null;
+      }
       if (state.socket !== socket) state.switching = false;
     };
   } catch (e) {
@@ -607,10 +615,17 @@ function gameTick() {
     }
   }
 
-  // A crossing that fails is tried again three seconds later, not on every tick.
+  // A crossing that fails is tried again three seconds later, not on every tick; a room an operator closed, or
+  // removed the player from, waits longer (rooms.js).
   const here = roomOfRegion(regionAt(me.x));
-  if (!OFFLINE && here && here !== state.room && !state.switching && performance.now() >= (state.crossAfter ?? 0))
-    enter(here, false).catch(e => { state.switching = false; state.crossAfter = performance.now() + 3000; log(e.message); });
+  const now = performance.now();
+  if (!OFFLINE && here && here !== state.room && !state.switching && now >= (state.crossAfter ?? 0) && now >= (state.notBefore[here] ?? 0))
+    enter(here, false).catch(e => {
+      state.switching = false;
+      const turned = refusal({ code: e.code });
+      if (turned.message) state.notBefore[here] = now + turned.waitMs; else state.crossAfter = now + 3000;
+      log(turned.message ?? e.message);
+    });
 }
 
 let accumulator = 0;

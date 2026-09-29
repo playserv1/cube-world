@@ -118,6 +118,12 @@ private:
 	bool bSwitching = false;
 	/** A crossing that fails is tried again three seconds later, not on every tick. */
 	double CrossAfter = 0;
+	/** A room that turned the player away (an operator closed it, or removed them) is not tried again before this time. */
+	TMap<FString, double> NotBefore;
+	/** Whether RoomName may be tried now. */
+	bool MayTry(const FString& RoomName) const { return FPlatformTime::Seconds() >= NotBefore.FindRef(RoomName); }
+	/** Notes an operator's close or removal of RoomName (from the socket's close reason or the join's problem code); returns the message for the player, empty for anything else. */
+	FString TurnedAway(const FString& RoomName, const FString& ReasonOrCode);
 	TArray<FString> Candidates;
 	FTimerHandle RetryTimer;
 };

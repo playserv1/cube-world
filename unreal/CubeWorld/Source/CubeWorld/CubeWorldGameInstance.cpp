@@ -116,6 +116,26 @@ void UCubeWorldGameInstance::StartPlay(const FString& Name)
 	}));
 }
 
+// An operator's close is followed by the room opening again fresh within a minute or two; an operator's removal holds
+// for as long as that room lives. The same rules as web/rooms.js.
+FString UCubeWorldGameInstance::TurnedAway(const FString& RoomName, const FString& ReasonOrCode)
+{
+	double Wait = 0;
+	FString Message;
+	if (ReasonOrCode == TEXT("room_closed_by_operator") || ReasonOrCode == TEXT("room_closed"))
+	{
+		Wait = 30;
+		Message = TEXT("This room was closed by an operator. It opens again fresh in a minute or two.");
+	}
+	else if (ReasonOrCode == TEXT("removed_by_operator") || ReasonOrCode == TEXT("removed_from_room"))
+	{
+		Wait = 60;
+		Message = TEXT("An operator removed you from this room. You can still walk into the other regions.");
+	}
+	if (!Message.IsEmpty()) NotBefore.Add(RoomName, FPlatformTime::Seconds() + Wait);
+	return Message;
+}
+
 void UCubeWorldGameInstance::Browse()
 {
 	Status = TEXT("Looking for servers...");
@@ -133,7 +153,7 @@ void UCubeWorldGameInstance::Browse()
 		}
 		Self->Candidates.Empty();
 		for (const FPlayServRoomListing& R : Page.Rooms)
-			if (R.PlacementState == EPlayServPlacementState::Open || R.PlacementState == EPlayServPlacementState::Unknown) Self->Candidates.Add(R.RoomName);
+			if ((R.PlacementState == EPlayServPlacementState::Open || R.PlacementState == EPlayServPlacementState::Unknown) && Self->MayTry(R.RoomName)) Self->Candidates.Add(R.RoomName);
 		Self->Candidates.Sort();
 		if (Self->Candidates.Num() == 0)
 		{
@@ -161,7 +181,8 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		{
 			Self->bSwitching = false;
 			Self->CrossAfter = FPlatformTime::Seconds() + 3;
-			Self->Log(FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message));
+			const FString Turned = Self->TurnedAway(RoomName, Error.ProblemCode);
+			Self->Log(Turned.IsEmpty() ? FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message) : Turned);
 			if (!Self->IsConnected())
 			{
 				if (Self->Candidates.Num() > 0) { const FString Next = Self->Candidates[0]; Self->Candidates.RemoveAt(0); Self->Enter(Next, bTeleport); }
@@ -212,12 +233,13 @@ void UCubeWorldGameInstance::Connect(const FString& RoomName, const FString& Hos
 		Weak->Log(Weak->Status);
 		if (bLive) { Weak->Socket.Reset(); Weak->Room.Empty(); Weak->Reconnect(); }
 	});
-	NewSocket->OnClosed.AddLambda([Weak, WeakSocket](const FString& Reason)
+	NewSocket->OnClosed.AddLambda([Weak, WeakSocket, RoomName](const FString& Reason)
 	{
 		if (!Weak.IsValid()) return;
 		if (Weak->Socket == WeakSocket.Pin())
 		{
-			Weak->Log(FString::Printf(TEXT("disconnected: %s"), *Reason));
+			const FString Turned = Weak->TurnedAway(RoomName, Reason);
+			Weak->Log(Turned.IsEmpty() ? FString::Printf(TEXT("disconnected: %s"), *Reason) : Turned);
 			Weak->Socket.Reset();
 			Weak->Room.Empty();
 			Weak->bSigningIn = false;
@@ -274,7 +296,7 @@ void UCubeWorldGameInstance::MaybeCross(double X)
 {
 	if (!bPlaced || bSwitching || !IsConnected() || FPlatformTime::Seconds() < CrossAfter) return;
 	const FString Here = RoomOfRegion(FMath::FloorToInt32(X / World.RegionSize));
-	if (!Here.IsEmpty() && Here != Room) Enter(Here, false);
+	if (!Here.IsEmpty() && Here != Room && MayTry(Here)) Enter(Here, false);
 }
 
 FString UCubeWorldGameInstance::NameOf(const FString& Id) const
