@@ -35,9 +35,9 @@ public class PresenceTests
     }
 
     [Fact]
-    public void The_new_server_announces_the_arrival_at_once()
+    public void The_new_server_does_not_announce_the_pose_it_heard_again_as_if_it_were_new()
     {
-        Assert.Equal(0, WorldPresence.Arriving(SpawnOnBlue(), SeenOnRed(Now - 200), Now).seen_at);
+        Assert.Equal(Now - 200, WorldPresence.Arriving(SpawnOnBlue(), SeenOnRed(Now - 200), Now).seen_at);
     }
 
     [Fact]
