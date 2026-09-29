@@ -176,7 +176,9 @@ public sealed partial class CubeWorldServer
         var (from, to) = World.Columns(_region);
         var cubes = Platform.Table<WorldCube>();
         var rows = await ReadAll(cubes.Where(c => c.x >= from && c.x < to));
-        foreach (var row in rows) await cubes.DeleteAsync(row.Id);
+        // 16 at a time: one by one, a well-built region takes a minute and a half to come back.
+        await Parallel.ForEachAsync(rows, new ParallelOptions { MaxDegreeOfParallelism = 16 },
+            async (row, ct) => await cubes.DeleteAsync(row.Id, ct));
         return rows.Count;
     }
 }
