@@ -139,7 +139,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     {
         var name = session.DisplayName ?? session.Id;
         var inventory = await LoadInventory(session.Id);
-        var player = new Player(session, inventory, Spawn(session.Id, name));
+        var player = new Player(session, inventory, WorldPresence.Arriving(Spawn(session.Id, name), _elsewhere.GetValueOrDefault(session.Id), Now));
 
         _players[session.Id] = player;
         InRoom(room => room.AddPlayer(new WorldPlayer { Id = session.Id, DisplayName = name }));

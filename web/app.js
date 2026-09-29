@@ -121,6 +121,8 @@ async function enter(roomName, teleport = true) {
         state.switching = false;
         previous?.close();
         onFrame(frame, teleport || !state.placed);
+        // The new server hears where the player stands with the next tick's move, even if they stand still.
+        lastPose = "";
         refreshServers().catch(() => {});
         return;
       }

@@ -41,6 +41,19 @@ public sealed class WorldPresence
     public int sneaking { get; set; }
     public int sprinting { get; set; }
     public long seen_at { get; set; }
+
+    /// <summary>
+    /// Where a player who joins this server stands. One who walked over a border from another server is still
+    /// where that server last saw them, with the health they had; only a player nobody has seen in the last 5 s
+    /// starts at <paramref name="spawn"/>.
+    /// </summary>
+    public static WorldPresence Arriving(WorldPresence spawn, WorldPresence? heard, long now) =>
+        heard is null || now - heard.seen_at >= 5000 || heard.health <= 0 ? spawn : new()
+        {
+            player_id = spawn.player_id, name = spawn.name, server = spawn.server, color = spawn.color,
+            x = heard.x, y = heard.y, z = heard.z, yaw = heard.yaw, pitch = heard.pitch, health = heard.health,
+            sneaking = heard.sneaking, sprinting = heard.sprinting,
+        };
 }
 
 /// <summary>A hit on a player another server hosts: written by the attacker's server, applied by the victim's.</summary>
