@@ -24,7 +24,10 @@ public:
 	virtual void Destroyed() override;
 
 	void Setup(const FString& PlayerId, const FString& Name, UMaterialInterface* SkinBase);
-	/** Server coordinates in blocks; yaw and pitch are Minecraft's, in radians. */
+	/**
+	 * Server coordinates in blocks; yaw and pitch are Minecraft's, in radians. The avatar walks there at a steady
+	 * pace and gets there a bit after the next position is due, so it neither dashes nor waits (web/follow.js).
+	 */
 	void SetTarget(double X, double Y, double Z, double Yaw, double Pitch, bool bSneaking, double Health);
 	void Hurt();
 	bool IsDead() const { return Health <= 0; }
@@ -49,6 +52,10 @@ private:
 	UPROPERTY() UMaterialInstanceDynamic* Skin = nullptr;
 	UPROPERTY() ACubeTombstone* Tomb = nullptr;
 	FVector Last = FVector::ZeroVector;
+	/** What is drawn: the actor walks from here toward TX, TY, TZ, Yaw, Pitch. */
+	double ShownYaw = 0, ShownPitch = 0;
+	/** Seconds between positions of this player, measured; when the last came; when the avatar reaches it. */
+	double Interval = 0.1, HeardAt = 0, ArriveAt = 0, DrawnAt = 0;
 	double Swing = 0, Amount = 0;
 	double HurtUntil = 0;
 	bool bPlaced = false;

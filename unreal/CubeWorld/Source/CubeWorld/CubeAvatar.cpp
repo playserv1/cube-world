@@ -120,15 +120,32 @@ void ACubeAvatar::Destroyed()
 	Super::Destroyed();
 }
 
+namespace
+{
+	constexpr double SnapBlocks = 5;       // a respawn or a jump across regions is shown at once
+	constexpr double MinInterval = 0.04, MaxInterval = 0.3;
+	constexpr double Slack = 1.5;          // the walk takes a bit longer than an interval, so an uneven one rarely leaves it standing
+}
+
 void ACubeAvatar::SetTarget(double X, double Y, double Z, double InYaw, double InPitch, bool bInSneaking, double InHealth)
 {
-	TX = X; TY = Y; TZ = Z; Yaw = InYaw; Pitch = InPitch; bSneaking = bInSneaking; Health = InHealth;
-	if (!bPlaced)
+	bSneaking = bInSneaking; Health = InHealth;
+	const double Now = FPlatformTime::Seconds();
+	const bool bSame = X == TX && Y == TY && Z == TZ && InYaw == Yaw && InPitch == Pitch;
+	if (bPlaced && bSame) return;
+	if (bPlaced) Interval = FMath::Max(MinInterval, Interval * 0.8 + FMath::Min(Now - HeardAt, MaxInterval) * 0.2);
+	HeardAt = Now;
+	TX = X; TY = Y; TZ = Z; Yaw = InYaw; Pitch = InPitch;
+	const FVector Target = FVector(X, Y, Z) * CubeSpec::BlockCm;
+	if (!bPlaced || FVector::Dist(GetActorLocation(), Target) > SnapBlocks * CubeSpec::BlockCm)
 	{
-		SetActorLocation(FVector(X, Y, Z) * CubeSpec::BlockCm);
-		Last = GetActorLocation();
+		SetActorLocation(Target);
+		if (!bPlaced) Last = Target;
+		ShownYaw = Yaw; ShownPitch = Pitch;
+		ArriveAt = DrawnAt = Now;
 		bPlaced = true;
 	}
+	else ArriveAt = Now + Interval * Slack;
 }
 
 void ACubeAvatar::Hurt()
@@ -144,11 +161,17 @@ void ACubeAvatar::Tick(float DeltaSeconds)
 	const bool bDead = IsDead();
 	if (IsHidden() != bDead) SetActorHiddenInGame(bDead);
 	if (Tomb) Tomb->Show(bDead, FVector(TX, TY, TZ), Yaw);
+	// This frame covers its share of the way left, so the avatar arrives at ArriveAt whatever the frame rate.
+	const double Now = FPlatformTime::Seconds(), Dt = Now - DrawnAt, Left = ArriveAt - DrawnAt;
+	DrawnAt = Now;
+	const double K = Left <= Dt ? 1 : FMath::Max(0.0, Dt / Left);
 	const FVector Target = FVector(TX, TY, TZ) * CubeSpec::BlockCm;
-	const FVector Position = FMath::Lerp(GetActorLocation(), Target, FMath::Min(1.f, DeltaSeconds * 20.f));
+	const FVector Position = FMath::Lerp(GetActorLocation(), Target, K);
 	SetActorLocation(Position);
+	ShownYaw += FMath::FindDeltaAngleRadians(ShownYaw, Yaw) * K;
+	ShownPitch += (Pitch - ShownPitch) * K;
 	// Minecraft's yaw 0 faces +y; Unreal's yaw 0 faces +x: the model turns by yaw + 90°.
-	SetActorRotation(FRotator(0, FMath::RadiansToDegrees(Yaw) + 90.f, 0));
+	SetActorRotation(FRotator(0, FMath::RadiansToDegrees(ShownYaw) + 90.f, 0));
 
 	const double Distance = FVector::Dist2D(Position, Last) / CubeSpec::BlockCm;
 	Last = Position;
@@ -160,7 +183,7 @@ void ACubeAvatar::Tick(float DeltaSeconds)
 	LeftArm->SetRelativeRotation(FRotator(-(A * 2 * Amount * 0.5 + (bSneaking ? 0.4 : 0)) * Deg, 0, 0));
 	RightLeg->SetRelativeRotation(FRotator(-A * 1.4 * Amount * Deg, 0, 0));
 	LeftLeg->SetRelativeRotation(FRotator(-B * 1.4 * Amount * Deg, 0, 0));
-	Head->SetRelativeRotation(FRotator(-FMath::RadiansToDegrees(Pitch), 0, 0));
+	Head->SetRelativeRotation(FRotator(-FMath::RadiansToDegrees(ShownPitch), 0, 0));
 	Body->SetRelativeRotation(FRotator(bSneaking ? -0.5 * Deg : 0, 0, 0));
 	Head->SetRelativeLocation(FVector(0, 0, bSneaking ? 24 - 4.2 : 24) * Px);
 	Body->SetRelativeLocation(FVector(0, 0, bSneaking ? 24 - 3.2 : 24) * Px);
