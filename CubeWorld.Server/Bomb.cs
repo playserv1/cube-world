@@ -19,10 +19,10 @@ public sealed class WorldBomb
     public double x { get; set; }
     public double y { get; set; }
     public double z { get; set; }
-    /// <summary>Flying: the motion it was thrown with, blocks per tick.</summary>
-    public double vx { get; set; }
-    public double vy { get; set; }
-    public double vz { get; set; }
+    /// <summary>Flying: the motion it was thrown with, blocks per tick. Empty on a bomb that was never thrown.</summary>
+    public double? vx { get; set; }
+    public double? vy { get; set; }
+    public double? vz { get; set; }
     public long dropped_at { get; set; }
     /// <summary>When it entered its state, Unix milliseconds.</summary>
     public long at { get; set; }

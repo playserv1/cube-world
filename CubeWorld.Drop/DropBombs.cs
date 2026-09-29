@@ -12,6 +12,9 @@ public sealed class WorldBomb
     public double x { get; set; }
     public double y { get; set; }
     public double z { get; set; }
+    public double vx { get; set; }   // the servers read these as numbers: a bomb that has not been thrown writes 0
+    public double vy { get; set; }
+    public double vz { get; set; }
     public long dropped_at { get; set; }
     public long at { get; set; }
 }

@@ -182,7 +182,7 @@ public sealed partial class CubeWorldServer
             return new LiveBomb
             {
                 Record = bomb, Z = z, Owned = owned && bomb.state == Bomb.Flying,
-                P = [bomb.x, bomb.y, bomb.z], V = [bomb.vx, bomb.vy, bomb.vz],
+                P = [bomb.x, bomb.y, bomb.z], V = [bomb.vx ?? 0, bomb.vy ?? 0, bomb.vz ?? 0],
             };
         }
     }
