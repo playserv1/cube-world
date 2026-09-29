@@ -57,23 +57,31 @@ public sealed partial class CubeWorldServer
 
     // ── where the players are ───────────────────────────────────────────────────────────────────────
 
-    /// <summary>Our players' positions go out 5 times a second; everyone's, ours and the others', reach the clients 10 times.</summary>
+    /// <summary>
+    /// Our players' positions go out 20 times a second, as often as their clients send them; everyone's, ours and the
+    /// others', reach the clients 10 times. The steps are fixed, so a late one does not push the next ones back.
+    /// </summary>
     private async Task ShareMovesAsync()
     {
+        var next = Environment.TickCount64;
         for (var tick = 0; ; tick++)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            next += 50;
+            var wait = next - Environment.TickCount64;
+            if (wait > 0) await Task.Delay((int)wait); else next = Environment.TickCount64;
+
+            foreach (var player in _players.Values.Where(p => p.Moved || Now - p.Pose.seen_at > 2000))
+            {
+                player.Moved = false;
+                player.Pose.seen_at = Now;
+                Platform.RuntimeData.Write(Uplink, "WorldPresence", player.Pose.player_id, player.Pose);
+            }
 
             if (tick % 2 == 0)
-                foreach (var player in _players.Values.Where(p => p.Moved || Now - p.Pose.seen_at > 2000))
-                {
-                    player.Moved = false;
-                    player.Pose.seen_at = Now;
-                    Platform.RuntimeData.Write(Uplink, "WorldPresence", player.Pose.player_id, player.Pose);
-                }
-
-            var everyone = _players.Values.Select(p => p.Pose).Concat(Others());
-            Broadcast(new { type = "players", players = everyone });
+            {
+                var everyone = _players.Values.Select(p => p.Pose).Concat(Others());
+                Broadcast(new { type = "players", players = everyone });
+            }
         }
     }
 
