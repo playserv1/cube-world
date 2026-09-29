@@ -81,7 +81,13 @@ void ACubePlayerPawn::Bind()
 	// After a border crossing the player stands where they were, in the world the client already holds, and keeps
 	// walking while the new server's welcome is on its way: no start screen, no jump to the region's middle.
 	const bool bCrossingIn = Game->Crossing.bSet;
-	if (bCrossingIn) Body.Teleport(Game->Crossing.X, Game->Crossing.Y, Game->Crossing.Z); else Body.Teleport(36, 12, 0);
+	if (bCrossingIn)
+	{
+		const FCubeCrossing& C = Game->Crossing;
+		Body.Teleport(C.X, C.Y, C.Z);
+		Body.VX = C.VX; Body.VY = C.VY; Body.VZ = C.VZ;
+	}
+	else Body.Teleport(36, 12, 0);
 	Game->bPlaced = bCrossingIn;
 	if (APlayerController* PC = Cast<APlayerController>(GetController()))
 	{
@@ -90,6 +96,16 @@ void ACubePlayerPawn::Bind()
 		PC->PlayerCameraManager->ViewPitchMax = 89.9f;
 	}
 	CaptureMouse(bCrossingIn);
+	// The players seen a moment ago stand where they were until the next server's list takes over.
+	if (bCrossingIn) HandlePlayers(Game->Players);
+	// The pawn stands at the crossing pose: the view the crossing camera held is its own from here.
+	if (bCrossingIn)
+	{
+		SetActorLocation(FVector(Body.X, Body.Y, Body.Z) * CubeSpec::BlockCm);
+		if (APlayerController* View = Cast<APlayerController>(GetController()))
+			View->SetControlRotation(FRotator(-FMath::RadiansToDegrees(Game->Crossing.Pitch), FMath::RadiansToDegrees(Game->Crossing.Yaw) + 90.f, 0));
+		Game->EndCrossingView();
+	}
 
 	if (Game->PlayerName.IsEmpty())
 	{
@@ -248,14 +264,18 @@ void ACubePlayerPawn::Unstick()
 void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 {
 	// A crossing keeps the body where the client has walked it meanwhile; the server's pose is where the crossing began.
-	if (Game->bPlaced && FMath::Abs(You.X - Body.X) + FMath::Abs(You.Y - Body.Y) + FMath::Abs(You.Z - Body.Z) < 12) { Unstick(); return; }
-	Spawn(You.X, You.Y, You.Z);
-	LastPose.Empty();
-	for (auto& Pair : Avatars) if (Pair.Value) Pair.Value->Destroy();
-	Avatars.Empty();
-	TArray<FString> Ids;
-	Bombs.GetKeys(Ids);
-	for (const FString& Id : Ids) RemoveBomb(Id);
+	const bool bKeep = Game->bPlaced && FMath::Abs(You.X - Body.X) + FMath::Abs(You.Y - Body.Y) + FMath::Abs(You.Z - Body.Z) < 12;
+	if (bKeep) Unstick();
+	else
+	{
+		Spawn(You.X, You.Y, You.Z);
+		LastPose.Empty();
+		for (auto& Pair : Avatars) if (Pair.Value) Pair.Value->Destroy();
+		Avatars.Empty();
+		TArray<FString> Ids;
+		Bombs.GetKeys(Ids);
+		for (const FString& Id : Ids) RemoveBomb(Id);
+	}
 	if (!bMouseCaptured) CaptureMouse(true);
 
 	// -selftest: once in, walk forward for a second, place a block ahead, dig it back, hit whoever is near.
@@ -400,8 +420,14 @@ void ACubePlayerPawn::HandlePlayers(const TArray<FCubePresence>& Players)
 		}
 		Avatar->SetTarget(P.X, P.Y, P.Z, P.Yaw, P.Pitch, P.bSneaking, P.Health);
 	}
+	// A player missing from the list is most often walking over a border: the next server lists them a second or two
+	// later. They walk on as they were going meanwhile, and only one gone for 4 s leaves.
 	for (auto It = Avatars.CreateIterator(); It; ++It)
-		if (!Seen.Contains(It.Key())) { if (It.Value()) It.Value()->Destroy(); It.RemoveCurrent(); }
+	{
+		if (Seen.Contains(It.Key()) || !It.Value()) { if (!It.Value()) It.RemoveCurrent(); continue; }
+		if (It.Value()->MissingFor() > 4.0) { It.Value()->Destroy(); It.RemoveCurrent(); }
+		else It.Value()->MarkMissing();
+	}
 }
 
 void ACubePlayerPawn::UpdateAim()
@@ -489,7 +515,7 @@ void ACubePlayerPawn::GameTick()
 		DigTick();
 		SendMove(Yaw, Pitch);
 	}
-	Game->LastBody = { true, Body.X, Body.Y, Body.Z, Yaw, Pitch };
+	Game->LastBody = { true, Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.VX, Body.VY, Body.VZ };
 	Game->MaybeCross(Body.X, Body.Y);
 }
 

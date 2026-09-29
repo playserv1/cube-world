@@ -31,6 +31,9 @@ public:
 	void SetTarget(double X, double Y, double Z, double Yaw, double Pitch, bool bSneaking, double Health);
 	void Hurt();
 	bool IsDead() const { return Health <= 0; }
+	/** Not in the latest list: walks on the way it was going for a moment (a border crossing), and leaves after a while. */
+	void MarkMissing() { if (MissingSince == 0) MissingSince = FPlatformTime::Seconds(); }
+	double MissingFor() const { return MissingSince == 0 ? 0 : FPlatformTime::Seconds() - MissingSince; }
 	/** Where a bomb they hold sits: the right arm, which swings as they walk. */
 	USceneComponent* Hand() const { return RightArm; }
 
@@ -56,6 +59,9 @@ private:
 	double ShownYaw = 0, ShownPitch = 0;
 	/** Seconds between positions of this player, measured; when the last came; when the avatar reaches it. */
 	double Interval = 0.1, HeardAt = 0, ArriveAt = 0, DrawnAt = 0;
+	/** Blocks a second, from the last two poses heard: how a missing player is carried on. */
+	double VX = 0, VY = 0;
+	double MissingSince = 0;
 	double Swing = 0, Amount = 0;
 	double HurtUntil = 0;
 	bool bPlaced = false;

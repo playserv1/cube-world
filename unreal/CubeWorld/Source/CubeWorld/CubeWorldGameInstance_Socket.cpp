@@ -108,7 +108,7 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		Crossing.bSet = !bTeleport && bPlaced;
 		bWelcomed = false;
 		Travelling = RoomName;
-		Players.Empty();
+		if (!Crossing.bSet) Players.Empty();
 		Log(FString::Printf(TEXT("leaving the Unreal server for %s (C#)"), *RoomName));
 		if (APlayerController* PC = GetFirstLocalPlayerController()) PC->ClientTravel(TEXT("/Engine/Maps/Entry"), ETravelType::TRAVEL_Absolute);
 		else bSwitching = false;
@@ -185,14 +185,20 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	bDead = false;
 	Status.Empty();
 	OnSocketFrame(Frame, RoomName, bTeleport);   // the regions
-	World.Clear();
+	// A fresh join starts from the generated terrain; a crossing keeps the world on screen and applies only what differs.
+	const bool bKeepWorld = bCrossed && bPlaced;
+	Snapshot.Reset();
+	if (!bKeepWorld) World.Clear();
 	const TArray<TSharedPtr<FJsonValue>>* WorldJson;
 	if (Frame->TryGetArrayField(TEXT("world"), WorldJson))
 		for (const auto& V : *WorldJson)
 		{
 			const TSharedPtr<FJsonObject> C = V->AsObject();
-			World.Set((int32)Num(C, TEXT("x")), (int32)Num(C, TEXT("y")), (int32)Num(C, TEXT("z")), FName(*Str(C, TEXT("kind"))));
+			const FIntVector At((int32)Num(C, TEXT("x")), (int32)Num(C, TEXT("y")), (int32)Num(C, TEXT("z")));
+			const FName Kind(*Str(C, TEXT("kind")));
+			if (bKeepWorld) Snapshot.Add(At, Kind); else World.Set(At.X, At.Y, At.Z, Kind);
 		}
+	if (bKeepWorld) ApplySnapshot();
 	const TSharedPtr<FJsonObject>* InventoryJson;
 	if (Frame->TryGetObjectField(TEXT("inventory"), InventoryJson))
 	{
@@ -209,7 +215,7 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	Crossing = FCubeCrossing();
 	bWorldLoaded = true;
 	Log(FString::Printf(TEXT("%s %s (C#)"), bCrossed ? TEXT("crossed into") : TEXT("entered"), *RoomName));
-	OnWelcome.Broadcast(WelcomePose, true);
+	OnWelcome.Broadcast(WelcomePose, !bKeepWorld);
 	bPlaced = true;
 	const TArray<TSharedPtr<FJsonValue>>* BombsJson;
 	if (Frame->TryGetArrayField(TEXT("bombs"), BombsJson))

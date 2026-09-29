@@ -132,7 +132,13 @@ void ACubeAvatar::SetTarget(double X, double Y, double Z, double InYaw, double I
 	bSneaking = bInSneaking; Health = InHealth;
 	const double Now = FPlatformTime::Seconds();
 	const bool bSame = X == TX && Y == TY && Z == TZ && InYaw == Yaw && InPitch == Pitch;
+	MissingSince = 0;
 	if (bPlaced && bSame) return;
+	if (bPlaced)
+	{
+		const double Gap = FMath::Clamp(Now - HeardAt, 0.05, 1.0);
+		VX = FMath::Clamp((X - TX) / Gap, -8.0, 8.0); VY = FMath::Clamp((Y - TY) / Gap, -8.0, 8.0);
+	}
 	if (bPlaced) Interval = FMath::Max(MinInterval, Interval * 0.8 + FMath::Min(Now - HeardAt, MaxInterval) * 0.2);
 	HeardAt = Now;
 	TX = X; TY = Y; TZ = Z; Yaw = InYaw; Pitch = InPitch;
@@ -161,6 +167,13 @@ void ACubeAvatar::Tick(float DeltaSeconds)
 	const bool bDead = IsDead();
 	if (IsHidden() != bDead) SetActorHiddenInGame(bDead);
 	if (Tomb) Tomb->Show(bDead, FVector(TX, TY, TZ), Yaw);
+	// A player between two servers is carried on at the pace they had, for up to a second and a half.
+	if (MissingSince > 0 && FPlatformTime::Seconds() - MissingSince < 1.5)
+	{
+		const double Step = FMath::Min((double)DeltaSeconds, 0.1);
+		TX += VX * Step; TY += VY * Step;
+		ArriveAt = FPlatformTime::Seconds() + Step;
+	}
 	// This frame covers its share of the way left, so the avatar arrives at ArriveAt whatever the frame rate.
 	const double Now = FPlatformTime::Seconds(), Dt = Now - DrawnAt, Left = ArriveAt - DrawnAt;
 	DrawnAt = Now;

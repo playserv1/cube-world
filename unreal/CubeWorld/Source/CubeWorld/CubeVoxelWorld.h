@@ -40,6 +40,15 @@ public:
 	TArray<FIntPoint> AllChunks() const;
 	void Clear() { Overrides.Empty(); Hidden.Empty(); }
 	const TMap<FIntVector, FName>& GetOverrides() const { return Overrides; }
+	/** Replaces every changed block at once and returns the blocks that differ: a snapshot applied without a rebuild of all. */
+	TArray<FIntVector> ReplaceOverrides(const TMap<FIntVector, FName>& Next)
+	{
+		TArray<FIntVector> Changed;
+		for (const auto& P : Overrides) { const FName* N = Next.Find(P.Key); if (!N || *N != P.Value) Changed.Add(P.Key); }
+		for (const auto& P : Next) if (!Overrides.Contains(P.Key)) Changed.Add(P.Key);
+		Overrides = Next;
+		return Changed;
+	}
 
 	/** Walks the ray block by block (Amanatides & Woo) and returns the first solid block and the face it entered. */
 	bool Raycast(const FVector& Origin, const FVector& Direction, double Reach, FCubeRayHit& OutHit) const;

@@ -9,6 +9,9 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "TimerManager.h"
+#include "Camera/CameraActor.h"
+#include "Containers/Ticker.h"
+#include "CubeSpec.h"
 
 void UCubeWorldGameInstance::Init()
 {
@@ -31,7 +34,28 @@ void UCubeWorldGameInstance::Shutdown()
 void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 {
 	if (!LoadedWorld || CubeIsServerProcess() || LoadedWorld->GetNetMode() == NM_DedicatedServer) return;
-	LoadedWorld->SpawnActor<ACubeWorldActor>();
+	// The world is drawn the moment the map is up, not when the server's game state arrives (a network client's BeginPlay
+	// waits for it): after a crossing the screen shows the same world at once.
+	if (ACubeWorldActor* WorldActor = LoadedWorld->SpawnActor<ACubeWorldActor>()) WorldActor->Init();
+	// The crossing pose is the latest one the old world had, not the one from when the travel began: the player walked on.
+	if (Crossing.bSet && LastBody.bSet) { Crossing = LastBody; Crossing.bSet = true; }
+	// Until the next server hands over the pawn the view stays at the player's eyes, not at the map's origin.
+	if (Crossing.bSet && LoadedWorld->GetNetMode() == NM_Client)
+	{
+		EndCrossingView();
+		const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
+		const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
+		CrossingCamera = LoadedWorld->SpawnActor<ACameraActor>(Eye, Look);
+		const double Until = FPlatformTime::Seconds() + 5;
+		TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
+		CrossingViewTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak, Until](float)
+		{
+			if (!Weak.IsValid() || !Weak->CrossingCamera.IsValid() || FPlatformTime::Seconds() > Until) { if (Weak.IsValid()) Weak->EndCrossingView(); return false; }
+			APlayerController* PC = Weak->GetFirstLocalPlayerController();
+			if (PC && PC->GetViewTarget() != Weak->CrossingCamera.Get()) PC->SetViewTarget(Weak->CrossingCamera.Get());
+			return true;
+		}));
+	}
 	// Back in the local map after an Unreal server: the C# server waiting for us is reached now.
 	if (SocketPlan.bSet && LoadedWorld->GetNetMode() == NM_Standalone)
 	{
@@ -39,6 +63,17 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		SocketPlan = FSocketPlan();
 		ConnectSocket(Plan.RoomName, Plan.Host, Plan.Port, Plan.bSecure, Plan.ReservationToken, Plan.bTeleport);
 	}
+}
+
+void UCubeWorldGameInstance::EndCrossingView()
+{
+	if (CrossingViewTicker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(CrossingViewTicker); CrossingViewTicker.Reset(); }
+	if (CrossingCamera.IsValid())
+	{
+		if (APlayerController* PC = GetFirstLocalPlayerController()) if (PC->GetPawn()) PC->SetViewTarget(PC->GetPawn());
+		CrossingCamera->Destroy();
+	}
+	CrossingCamera.Reset();
 }
 
 void UCubeWorldGameInstance::Log(const FString& Text)
@@ -189,7 +224,11 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		if (bUnreal && !bDoorOnly)
 		{
 			// A pool room's connect is the platform's wss front; Iris's UDP address rides in the attribute udp.
-			const FString Udp = Result.Ticket.Attributes.FindRef(TEXT("udp"));
+			// By the machine's address, not its name: a name lookup costs half a second at every crossing.
+			FString Udp = Result.Ticket.Attributes.FindRef(TEXT("udp"));
+			const FString Ip = Result.Ticket.Attributes.FindRef(TEXT("playserv_public_ip"));
+			FString UdpHost, UdpPort;
+			if (!Ip.IsEmpty() && Udp.Split(TEXT(":"), &UdpHost, &UdpPort, ESearchCase::IgnoreCase, ESearchDir::FromEnd)) Udp = Ip + TEXT(":") + UdpPort;
 			const FString Url = Udp.IsEmpty() ? PlayServ::Rooms::BuildTravelUrl(Result.Ticket) : FString::Printf(TEXT("%s?rsv=%s"), *Udp, *Result.Ticket.ReservationToken);
 			Self->TravelToUnrealServer(RoomName, Url, bTeleport);
 			return;
@@ -231,7 +270,8 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 	bWelcomed = false;
 	bWorldLoaded = false;
 	Travelling = RoomName;
-	Players.Empty();
+	// A crossing keeps the players it knows: the next world shows them at once, where they were.
+	if (!Crossing.bSet) Players.Empty();
 	Log(FString::Printf(TEXT("travelling to %s (Unreal) at %s"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
 	PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
 }
@@ -307,7 +347,10 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 	Health = You.Health;
 	bDead = false;
 	Status.Empty();
-	World.Clear();
+	// A fresh join starts from the generated terrain; a crossing keeps the world on screen and applies only what differs.
+	bSnapshotDiff = bCrossed;
+	Snapshot.Reset();
+	if (!bCrossed) World.Clear();
 	bWorldLoaded = false;
 	ChunksExpected = ChunkCount;
 	ChunksReceived = 0;
@@ -320,14 +363,29 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 	if (ChunkCount == 0) OnWorldChunk(TArray<FCubeCellRep>(), true);
 }
 
+void UCubeWorldGameInstance::ApplySnapshot()
+{
+	TMap<FIntVector, FName> Next;
+	for (const auto& P : Snapshot) if (P.Value != NAME_None) Next.Add(P.Key, P.Value);
+	const TArray<FIntVector> Changed = World.ReplaceOverrides(Next);
+	Snapshot.Reset();
+	bSnapshotDiff = false;
+	if (Changed.Num() > 0) OnCubes.Broadcast(Changed);
+}
+
 // The body is placed only once the whole world is here: it must not fall through blocks that have not arrived.
 void UCubeWorldGameInstance::OnWorldChunk(const TArray<FCubeCellRep>& Cells, bool bLast)
 {
-	for (const FCubeCellRep& C : Cells) World.Set(C.X, C.Y, C.Z, CubeSpec::KindOf(C.Kind));
+	for (const FCubeCellRep& C : Cells)
+	{
+		if (bSnapshotDiff) Snapshot.Add(FIntVector(C.X, C.Y, C.Z), CubeSpec::KindOf(C.Kind));
+		else World.Set(C.X, C.Y, C.Z, CubeSpec::KindOf(C.Kind));
+	}
 	ChunksReceived++;
 	if (!bLast) return;
 	bWorldLoaded = true;
-	OnWelcome.Broadcast(WelcomePose, true);
+	if (bSnapshotDiff) ApplySnapshot();
+	OnWelcome.Broadcast(WelcomePose, !bSnapshotDiff);
 	bPlaced = true;
 	for (const FPendingCubes& P : PendingCubes) ApplyCubes(P.Changes, P.Falls, P.bRemote);
 	PendingCubes.Empty();

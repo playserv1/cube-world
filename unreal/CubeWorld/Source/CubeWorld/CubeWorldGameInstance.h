@@ -5,6 +5,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Engine/GameInstance.h"
 #include "CubeVoxelWorld.h"
 #include "CubeTextures.h"
@@ -39,6 +40,8 @@ struct FCubeCrossing
 {
 	bool bSet = false;
 	double X = 0, Y = 0, Z = 0, Yaw = 0, Pitch = 0;
+	/** The body's speed, so a walk over a border goes on at the same pace. */
+	double VX = 0, VY = 0, VZ = 0;
 };
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnWelcome, const FCubePose& /*You*/, bool /*bTeleport*/);
@@ -72,6 +75,8 @@ public:
 	/** Called by the pawn every tick with its x and y: crosses into the region's server when a border is passed. */
 	void MaybeCross(double X, double Y);
 	void Log(const FString& Text);
+	/** The pawn of the next server is placed: the view is its own again. */
+	void EndCrossingView();
 
 	/** True once this server's welcome arrived and until the connection goes. */
 	bool IsConnected() const { return bWelcomed; }
@@ -164,6 +169,14 @@ private:
 	FSocketPlan SocketPlan;
 	bool bWelcomed = false;
 	bool bWorldLoaded = false;
+	/** After a crossing the world the client holds stays; the next server's snapshot is gathered here and only its differences
+	 * are applied, so nothing on screen is torn down. */
+	/** Holds the view where the player stands while the next server's pawn is on its way after a crossing. */
+	TWeakObjectPtr<class ACameraActor> CrossingCamera;
+	FTSTicker::FDelegateHandle CrossingViewTicker;
+	bool bSnapshotDiff = false;
+	TMap<FIntVector, FName> Snapshot;
+	void ApplySnapshot();
 	/** The room travelled to, until its welcome names it. */
 	FString Travelling;
 	/** A crossing that fails is tried again three seconds later, not on every tick. */

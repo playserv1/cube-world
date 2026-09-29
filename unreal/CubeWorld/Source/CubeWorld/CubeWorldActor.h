@@ -29,6 +29,8 @@ class CUBEWORLD_API ACubeWorldActor : public AActor
 public:
 	ACubeWorldActor();
 	virtual void BeginPlay() override;
+	/** Loads the materials, the sky and every chunk's mesh; called as soon as the map is up, and again (no-op) at BeginPlay. */
+	void Init();
 	virtual void Tick(float DeltaSeconds) override;
 
 	/** Materials for everything drawn from the atlas; the pawn borrows them for the held-block icon. */

@@ -82,6 +82,12 @@ UProceduralMeshComponent* ACubeWorldActor::NewMesh(const FString& Name)
 void ACubeWorldActor::BeginPlay()
 {
 	Super::BeginPlay();
+	Init();
+}
+
+void ACubeWorldActor::Init()
+{
+	if (Game) return;
 	Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
 	if (!Game) return;
 
@@ -99,8 +105,10 @@ void ACubeWorldActor::BeginPlay()
 	RebuildAll();
 }
 
-void ACubeWorldActor::RebuildAllFromWelcome(const FCubePose&, bool)
+void ACubeWorldActor::RebuildAllFromWelcome(const FCubePose&, bool bTeleport)
 {
+	// After a crossing the snapshot's differences arrive as ordinary changes: nothing is torn down.
+	if (!bTeleport) return;
 	for (auto& Pair : Cracks) if (Pair.Value) Pair.Value->DestroyComponent();
 	Cracks.Empty();
 	for (FCubeFalling& F : Falling) if (F.Mesh) F.Mesh->DestroyComponent();
