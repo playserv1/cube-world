@@ -1,12 +1,13 @@
-# Publishes the browser client (web/) to GitHub Pages on every push that touches it.
-# Pages must be enabled in the repository settings with source "GitHub Actions"; serve it over
-# plain http on a custom domain (Enforce HTTPS off) while the game servers speak ws://, because
-# a page on https may not open an insecure WebSocket.
+# Publishes the browser client (web/) to GitHub Pages on every push that touches it, at
+# https://playserv1.github.io/cube-world/. Pages is set to "GitHub Actions" in the repository settings
+# and the github-pages environment allows the dev and main branches. The game servers speak wss://,
+# so the https page may connect to them.
 name: Publish web client to GitHub Pages
 
-# Manual until Pages is enabled in the repository settings (source "GitHub Actions" and a custom
-# domain served over http); on a push it would only fail while Pages is off.
 on:
+  push:
+    branches: [dev, main]
+    paths: ['web/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
