@@ -20,7 +20,6 @@ public sealed class CubeWorldServer : PlatformGameServer
     private readonly ConcurrentDictionary<string, WorldPresence> _elsewhere = new();
     private readonly Dictionary<string, LiveBomb> _bombs = new();
     private readonly List<Change> _heard = new();
-    private readonly Random _random = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));
     private int _region = -1;
@@ -266,11 +265,13 @@ public sealed class CubeWorldServer : PlatformGameServer
 
     /// <summary>
     /// Players here are hurt, players elsewhere get a WorldHit, both judged against the world as it stood before the
-    /// blast, as Minecraft does; then the blocks go through platform data as every change does.
+    /// blast, as Minecraft does. Then the bomb is recorded as exploded, and <see cref="OnBomb"/> breaks this region's
+    /// blocks; every other server breaks its own when it hears the record. The centre is rounded to a thousandth so
+    /// the record carries exactly the point every server works the blast out from.
     /// </summary>
     private void Explode(WorldBomb bomb, double[] at)
     {
-        var (cx, cy, cz) = (at[0], at[1], at[2]);
+        var (cx, cy, cz) = (Math.Round(at[0], 3), Math.Round(at[1], 3), Math.Round(at[2], 3));
 
         foreach (var player in _players.Values.Where(p => !p.Dead))
             if (_world.Blast(cx, cy, cz, Spec.BombPower, HitboxOf(player.Pose), EyeHeightOf(player.Pose)) is { } blast)
@@ -287,8 +288,18 @@ public sealed class CubeWorldServer : PlatformGameServer
                 Platform.RuntimeData.Write(Uplink, "WorldHit", hit.hit_id, hit);
             }
 
-        Publish(_world.Explode(cx, cy, cz, Spec.BombPower, _random, bomb.holder, _server));
         Share(Next(bomb, Bomb.Exploded, bomb.holder, cx, cy, cz), owned: false);
+    }
+
+    /// <summary>
+    /// A bomb went off, here or on another server: this server breaks the blocks of its own region and no others.
+    /// A region whose server is not up when the bomb goes off keeps its blocks.
+    /// </summary>
+    private void Crater(WorldBomb bomb)
+    {
+        if (_region < 0) return;
+        Publish(_world.Explode(bomb.x, bomb.y, bomb.z, Spec.BombPower, new Random(Bomb.BlastSeed(bomb.bomb_id)),
+            bomb.holder, _server, _region));
     }
 
     private static WorldBomb Next(WorldBomb bomb, string state, string holder, double x, double y, double z) => new()
@@ -311,6 +322,7 @@ public sealed class CubeWorldServer : PlatformGameServer
 
         if (Bomb.Over(bomb.state)) _bombs.Remove(bomb.bomb_id);
         else _bombs[bomb.bomb_id] = LiveBomb.Of(bomb, _world, owned, Now);
+        if (bomb.state == Bomb.Exploded) Crater(bomb);
 
         foreach (var player in _players.Values)
             if (player.Bomb == bomb.bomb_id && (bomb.state != Bomb.Held || bomb.holder != player.Pose.player_id)) player.Bomb = null;

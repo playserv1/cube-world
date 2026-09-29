@@ -158,8 +158,11 @@ public sealed class World
     /// An explosion as Minecraft's: rays go out from the centre towards every point of a 16 × 16 × 16 cube's
     /// surface, each with an intensity of power × (0.7 to 1.3). Every 0.3 blocks a ray loses 0.225 and, in a
     /// block, (blast resistance + 0.3) × 0.3; a block the ray still has intensity for is destroyed. Nothing drops.
+    /// With <paramref name="region"/> only that region's blocks are broken, though the rays are worked out
+    /// through the whole world: each server breaks its own share of a blast, and with the same
+    /// <paramref name="random"/> seed the shares add up to the one crater.
     /// </summary>
-    public WorldUpdate Explode(double cx, double cy, double cz, double power, Random random, string by, string on)
+    public WorldUpdate Explode(double cx, double cy, double cz, double power, Random random, string by, string on, int? region = null)
     {
         var destroyed = new HashSet<(int x, int y, int z)>();
         for (var i = 0; i < 16; i++)
@@ -183,6 +186,8 @@ public sealed class World
                         x += dx * 0.3; y += dy * 0.3; z += dz * 0.3;
                     }
                 }
+
+        if (region is { } only) destroyed.RemoveWhere(b => RegionOf(b.x) != only);
 
         var update = new WorldUpdate();
         foreach (var (x, y, z) in destroyed.OrderBy(b => b.z)) Set(x, y, z, "air", by, on, update);

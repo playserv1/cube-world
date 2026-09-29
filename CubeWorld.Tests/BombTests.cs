@@ -23,6 +23,44 @@ public class BombTests
     }
 
     [Fact]
+    public void A_blast_on_a_border_breaks_only_the_blocks_of_the_region_it_is_worked_out_for()
+    {
+        var world = new World();
+
+        var update = world.Explode(World.RegionSize, 12.5, 0, Spec.BombPower, new Random(1), "p", "a", region: 0);
+
+        Assert.NotEmpty(update.Changes);
+        Assert.All(update.Changes, c => Assert.Equal(0, World.RegionOf(c.Cube.x)));
+        Assert.Equal("air", world.KindAt(World.RegionSize - 1, 12, -1));
+        Assert.Equal("grass", world.KindAt(World.RegionSize, 12, -1));
+    }
+
+    [Fact]
+    public void Two_servers_working_out_one_blast_from_its_seed_break_together_what_one_world_would()
+    {
+        var seed = Bomb.BlastSeed("bomb-7");
+        HashSet<(string, string)> Broken(int? region) =>
+            new World().Explode(World.RegionSize, 12.5, 0, Spec.BombPower, new Random(seed), "p", "a", region)
+                .Changes.Select(c => (c.Cube.key, c.Cube.kind)).ToHashSet();
+
+        var whole = Broken(null);
+        var left = Broken(0);
+        var right = Broken(1);
+
+        Assert.NotEmpty(left);
+        Assert.NotEmpty(right);
+        Assert.Empty(left.Intersect(right));
+        Assert.Equal(whole, left.Union(right).ToHashSet());
+    }
+
+    [Fact]
+    public void A_bomb_blasts_with_the_same_seed_on_every_server()
+    {
+        Assert.Equal(1872573689, Bomb.BlastSeed("bomb-7"));
+        Assert.NotEqual(Bomb.BlastSeed("bomb-7"), Bomb.BlastSeed("bomb-8"));
+    }
+
+    [Fact]
     public void Stone_stands_up_to_a_blast_that_takes_dirt()
     {
         var world = new World();

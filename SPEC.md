@@ -93,6 +93,7 @@ and death. Every world change goes through platform data so the other servers se
 - Players hold no tools, so stone, bricks and gold take the by-hand time and drop nothing.
 - No hunger: regeneration runs as if food were full. No day and night, mobs, crafting, water or redstone.
 - A hit on a player another server hosts travels through platform data (WorldHit), so anyone within reach can be hit, whichever region they stand in.
+- A blast across a border is broken by both servers, each in its own region only: each hears the bomb go off and works the same blast out from its centre and a seed taken from the bomb's id. A region with no server up when the bomb goes off keeps its half of the crater.
 - The world is a small flat slab with a ceiling at 64, and its floor colours mark the three servers.
 - Every player starts with 64 of each block and a cloud function adds one of each per minute.
 - A dead player leaves the map until they respawn; a tombstone with their name stands where they fell (Minecraft lets the body fall over and vanish). Every server knows from the player's presence (health 0), so the tombstone shows wherever you stand.

@@ -39,6 +39,17 @@ public static class Bomb
     public static bool Over(string state) => Rank(state) == 3;
 
     /// <summary>
+    /// The seed a bomb's blast is worked out with, the same on every server (FNV-1a of its id; a string's
+    /// GetHashCode differs from process to process).
+    /// </summary>
+    public static int BlastSeed(string bombId)
+    {
+        var hash = 2166136261u;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(bombId)) hash = (hash ^ b) * 16777619u;
+        return (int)(hash & 0x7fffffff);
+    }
+
+    /// <summary>
     /// One tick under the parachute: down by <see cref="Spec.ParachuteSpeed"/> until it rests on a block. A bomb a
     /// block was put on climbs out on top. Returns the new height.
     /// </summary>
