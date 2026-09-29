@@ -55,6 +55,10 @@ public static class Bomb
     public static IEnumerable<WorldBomb> Surplus(IEnumerable<WorldBomb> bombs, int max) =>
         bombs.Where(b => b.state == Free).OrderByDescending(b => b.dropped_at).ThenByDescending(b => b.bomb_id).Skip(max);
 
+    /// <summary>The bombs still in play over <paramref name="region"/>: when its room closes they go up in smoke.</summary>
+    public static IEnumerable<WorldBomb> InRegion(IEnumerable<WorldBomb> bombs, int region) =>
+        bombs.Where(b => !Over(b.state) && World.RegionOf(b.x) == region);
+
     /// <summary>Whether a player standing in <paramref name="p"/> is close enough to pick the bomb up.</summary>
     public static bool InPickupReach(Hitbox p, double x, double y, double z)
     {

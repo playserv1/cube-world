@@ -65,14 +65,14 @@ public sealed class CubeWorldServer : PlatformGameServer
         _ = Task.Run(ShareMovesAsync);
         _ = Task.Run(TickAsync);
 
+        _rooms.GetOrCreate(RoomName);
         while (true)
         {
+            // The room is gone only when the platform ended it: the operator closed it, or it reached its lifetime.
             if (_rooms.Find(RoomName) is null or { IsDisposed: true })
             {
-                _rooms.Remove(RoomName);
-                _rooms.GetOrCreate(RoomName);
-                foreach (var player in _players.Values)
-                    InRoom(room => room.AddPlayer(new WorldPlayer { Id = player.Pose.player_id, DisplayName = player.Pose.name }));
+                await CloseAsync();
+                return;
             }
             Platform.RuntimeData.Write(Uplink, "WorldRegion", $"{_region}", Claim(_region));
             try { _regions = await LiveRegionsAsync(); } catch { }
@@ -80,6 +80,41 @@ public sealed class CubeWorldServer : PlatformGameServer
             Subscribe();
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
+    }
+
+    /// <summary>
+    /// The room was closed. Its region goes back to the generated terrain (every change in it is deleted, and every
+    /// server and client hears the deletes), the bombs over it go up in smoke, and the process ends. Docker starts it
+    /// again on the same machine, where it claims its region again and opens the room fresh.
+    /// </summary>
+    private async Task CloseAsync()
+    {
+        try
+        {
+            await Platform.Log($"{RoomName} was closed: clearing region {_region} and restarting");
+            lock (_world)
+                foreach (var bomb in Bomb.InRegion(_bombs.Values.Select(b => b.Record), _region).ToArray())
+                    Share(Next(bomb, Bomb.Fizzled, bomb.holder, bomb.x, bomb.y, _bombs[bomb.bomb_id].Z), owned: false);
+
+            var (from, to) = World.Columns(_region);
+            var cubes = Platform.Table<WorldCube>();
+            var ids = new List<string>();
+            string? cursor = null;
+            do
+            {
+                var page = await cubes.Where(c => c.x >= from && c.x < to).Take(200).WithCursor(cursor).ToPageAsync();
+                ids.AddRange(page.Items.Select(r => r.Id));
+                cursor = page.NextCursor;
+            } while (!string.IsNullOrEmpty(cursor));
+            foreach (var id in ids) await cubes.DeleteAsync(id);
+            await Platform.Log($"{RoomName}: region {_region} cleared, {ids.Count} changed blocks deleted");
+        }
+        catch (Exception e) { await Platform.Log($"{RoomName}: region {_region} not fully cleared: {e.Message}"); }
+
+        // The platform has its answer and the players their close code already; this gives the smoke and the logs
+        // time to leave before the process does.
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        Environment.Exit(0);
     }
 
     private static void Subscribe()

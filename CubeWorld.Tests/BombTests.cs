@@ -244,4 +244,19 @@ public class BombTests
         Assert.Equal(["done"], plan.Sweep);
         Assert.Equal(2, plan.Free);
     }
+
+    [Fact]
+    public void A_closed_region_puts_out_the_bombs_over_it_and_leaves_the_others_and_the_spent_ones()
+    {
+        CubeWorld.Server.WorldBomb At(string id, double x, string state) => new() { bomb_id = id, x = x, y = 5, state = state };
+        var bombs = new[]
+        {
+            At("free-here", 30, Bomb.Free), At("held-here", 47.9, Bomb.Held), At("free-left", 23.9, Bomb.Free),
+            At("free-right", 48, Bomb.Free), At("gone-here", 30, Bomb.Exploded),
+        };
+
+        var put = Bomb.InRegion(bombs, region: 1).Select(b => b.bomb_id).OrderBy(id => id);
+
+        Assert.Equal(["free-here", "held-here"], put);
+    }
 }

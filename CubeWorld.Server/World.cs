@@ -94,6 +94,12 @@ public sealed class World
 
     public IEnumerable<WorldCube> Overrides => _overrides.Values;
 
+    /// <summary>The region a column belongs to: region r is the columns r·<see cref="RegionSize"/> up to the next region's first.</summary>
+    public static int RegionOf(double x) => (int)Math.Floor(x / RegionSize);
+
+    /// <summary>The columns of <paramref name="region"/>: <c>From</c> is its first, <c>To</c> the next region's first.</summary>
+    public static (int From, int To) Columns(int region) => (region * RegionSize, (region + 1) * RegionSize);
+
     public static bool Inside(int x, int y, int z) => x is >= 0 and < Width && y is >= 0 and < Depth && z is >= MinZ and < MaxZ;
 
     public static string Generated(int x, int y, int z)

@@ -227,4 +227,15 @@ public class WorldTests
         Assert.False(inventory.Give("bedrock"));
         Assert.Equal(inventory.Stacks, Inventory.Parse(inventory.ToRecord("p").stacks).Stacks);
     }
+
+    [Fact]
+    public void A_region_is_its_own_stretch_of_columns_and_a_border_block_belongs_to_the_next_region()
+    {
+        Assert.Equal((0, 24), World.Columns(0));
+        Assert.Equal((24, 48), World.Columns(1));
+        Assert.Equal((48, 72), World.Columns(2));
+        Assert.Equal(0, World.RegionOf(23.9));
+        Assert.Equal(1, World.RegionOf(24));
+        Assert.Equal(2, World.RegionOf(71.5));
+    }
 }
