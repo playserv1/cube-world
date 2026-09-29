@@ -20,3 +20,6 @@ unreal/CubeWorld/.vs/
 .claude/worktrees/
 unreal/CubeWorld/Content/Developers/
 unreal/CubeWorld/Content/Collections/
+
+# The dedicated server key (sk_*) stays out of git.
+unreal/CubeWorld/Config/DedicatedServerGame.ini

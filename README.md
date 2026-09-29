@@ -62,33 +62,51 @@ one other player, for looking at blocks, physics and the model.
 
 Deploying the servers and the function is in `RUNBOOK.md`.
 
-## The Unreal client
+## The Unreal dedicated server and client
 
-`unreal/CubeWorld` is a UE 5.8 C++ project that plays on the same servers as the browser client:
-sign-in, the room list and the join ticket go through the PlayServ Unreal SDK (the plugin under
-`Plugins/PlayServSDK`, copied from `playserv-platform/unreal`), and the game socket speaks the
-browser client's JSON frames, so a player in Unreal and a player in a browser share one world.
-The world, the physics, the textures and the player model are ports of the browser client's
-(`Source/CubeWorld/CubePhysics.cpp`, `CubeVoxelWorld.cpp`, `CubeTextures.cpp`, `CubeAvatar.cpp`, and the bombs
-and tombstones in `CubeBombs.cpp` and `CubeTombstone.cpp`);
-`CubeSocket.cpp` is a small WebSocket client over the engine's TCP socket, because the engine's
-own client asks the server for `//` and is refused.
+`unreal/CubeWorld` is a UE 5.8 C++ project with the same game on Unreal's own dedicated server: the
+three servers, the three regions, the shared world through platform data and the seamless crossing are
+the C# server's, ported (`Source/CubeWorld/CubeWorldGameMode.cpp` is `CubeWorldServer.cs`,
+`CubeServerWorld.cpp` is `World.cs`), and the client replicates with the server over **Iris**, Unreal's
+replication system (`net.Iris.UseIrisReplication=1` in `Config/DefaultEngine.ini`,
+`SetupIrisSupport` in the module's `Build.cs`). The Unreal servers play in the project's `ue`
+environment, a copy of `dev`, so the C# servers and the browser client in `dev` are untouched; the two
+do not share a world, because a browser cannot speak Unreal's netcode.
+
+| Piece | Where |
+|---|---|
+| The server signs in, loads the world, claims a region, opens its room | `CubeWorldGameMode.cpp`: `StartServer` → `LoadWorld` → `ClaimRegion` → `OpenRoom` (`PlayServ::Rooms::StartHosting` + `StartRoom`, or `StartRoomPlayServHosted` when the platform started the process) |
+| Players are admitted by the platform's ticket | `PreLogin` → `PlayServ::Rooms::VerifyTicket`; the SDK reports the roster to the platform by itself |
+| The rules: reach, digging by hardness, damage, knockback, bombs, explosions | `CubeWorldGameMode.cpp`, `CubeServerWorld.cpp`; the numbers in `CubeSpec.h` |
+| Servers share the world through the platform | the SDK entity classes in `CubeEntities.h` (`WorldCube`, `WorldPresence`, `WorldHit`, `WorldRegion`, `WorldBomb`, `CubeInventory`); each server writes its changes and polls the others' by the `at` / `seen_at` timestamps, since the Unreal SDK has no table subscription |
+| What every client sees, over Iris | `CubeWorldState.cpp`: the presence list and the regions as replicated properties; block batches, digs, hits, deaths and bombs as multicast RPCs |
+| What one player sends and gets | `CubePlayerPawn.cpp`: server RPCs for moves (client-simulated, as Minecraft's), digs, placements, hits, throws; client RPCs for the welcome, the world in chunks, the inventory |
+| The client's session and the crossing | `CubeWorldGameInstance.cpp`: sign-in, `Browse`, `JoinRoom` with the ticket, `ClientTravel` to the room's address; a border crossing travels to the next server and hands it the position |
 
 Needs Unreal Engine 5.8 (`D:\EpicGames\UE_5.8`) and Visual Studio 2022 or later with the C++ workload.
-The platform settings are in `Config/DefaultGame.ini` (`BaseURL`, the public `pk_` client key, the
-room type `cubeworld`).
+The platform settings are in `Config/DefaultGame.ini` (`BaseURL`, the public `pk_` client key of environment
+`ue`, the room type `cubeworld`); the server's `sk_` key goes in `Config/DedicatedServerGame.ini`, which
+git ignores (copy `DedicatedServerGame.example.ini`).
 
-Build the editor target, create the material assets once, then run or package:
+**The Launcher's engine cannot build a Server target** (it ships no `UnrealServer` binaries), so on a
+developer machine the server is the editor run headless with `-server`. Build the editor target, create the
+material assets once, then start the servers and a client:
 
 ```bash
 D:\EpicGames\UE_5.8\UE_5.8\Engine\Build\BatchFiles\Build.bat CubeWorldEditor Win64 Development -Project="<repo>\unreal\CubeWorld\CubeWorld.uproject" -WaitMutex -NoHotReload
 D:\EpicGames\UE_5.8\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "<repo>\unreal\CubeWorld\CubeWorld.uproject" -run=pythonscript -script="<repo>\unreal\CubeWorld\Scripts\MakeAssets.py" -unattended -nopause -nosplash
-D:\EpicGames\UE_5.8\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe "<repo>\unreal\CubeWorld\CubeWorld.uproject" -game -windowed -resx=1280 -resy=720 -name=YourName
-D:\EpicGames\UE_5.8\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat BuildCookRun -project="<repo>\unreal\CubeWorld\CubeWorld.uproject" -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory="<repo>\unreal\CubeWorld\Saved\Packaged"
+powershell -File <repo>\unreal\CubeWorld\Scripts\RunServers.ps1          # alpha:7777, beta:7778, gamma:7779
+powershell -File <repo>\unreal\CubeWorld\Scripts\RunClient.ps1 -Name Ann
 ```
 
-The package lands in `Saved/Packaged/Windows/CubeWorld.exe`; give the whole `Windows` folder to whoever
-wants to play. Keys: WASD, mouse, Space, Shift sprints, Ctrl sneaks, hold the left button to break,
-the right places (or throws the bomb in the hand; walk into a bomb to pick it up), 1-9 or the wheel pick a block, Enter plays, Esc frees the mouse. Command-line flags
-for unattended runs: `-name=`, `-autoplay`, `-screenshot=<seconds>`, `-quitafter=<seconds>`,
-`-selftest`, `-frametest`, `-logframes`, `-debughud`.
+Each server registers its room under this machine's address; the `ue` environment is flagged for local
+development, so a private address is accepted. Players on another machine reach it only if that address
+routes to it (a LAN, or `-PublicHost=<address>` with the UDP ports forwarded). The servers' logs are
+`Saved/Logs/server-<name>.log`, a client's `Saved/Logs/client-<name>.log`. Keys: WASD, mouse, Space, Shift
+sprints, Ctrl sneaks, hold the left button to break, the right places (or throws the bomb in the hand; walk
+into a bomb to pick it up), 1-9 or the wheel pick a block, Enter plays, Esc frees the mouse. Command-line flags
+for unattended runs: `-name=`, `-autoplay`, `-screenshot=<seconds>`, `-quitafter=<seconds>`, `-selftest`,
+`-walkto=<x>`, `-debughud`.
+
+Putting the server on the platform's machine pool takes a Linux server build, which needs an engine built from
+source and the Linux cross-toolchain: `RUNBOOK.md`, "Part E".

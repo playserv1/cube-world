@@ -84,6 +84,35 @@ To take a region away for good, remove its machine: `remove_pool_machine` closes
 machine and lowers the pool's size by one, so no replacement is requested. Closing the room alone brings it
 back, because the server's process restarts on the same machine.
 
+
+## Part E — the Unreal dedicated server
+
+The Unreal servers (`unreal/CubeWorld`, README "The Unreal dedicated server and client") play in the
+project's `ue` environment, a copy of `dev` made on 2026-09-29, so they never race the C# servers for the
+regions. What that environment has, and how it was set up (all through the agent's MCP tools):
+
+| Step | How |
+|---|---|
+| The environment | `create_env(name="ue", copy_from_env_id=<dev>)`; then `set_env_local_development(env_id=<ue>, true)` so a server on a developer's machine may register a private address |
+| The room type | the copy carried `cubeworld` (`game_server`, multi-room, never deployed: no build is needed, a server with an `sk_` key registers rooms by itself); `set_room_configuration(capacity=16, reservation_ttl=10, room_lifetime=2592000, max_rooms=10)`, no idle close |
+| The schema | the copy carried every table; `WorldCube` got one extra field, `at` (integer, indexed), the time of the last change, which the servers poll by |
+| The keys | a client key for `Config/DefaultGame.ini` and a server key for each developer's `Config/DedicatedServerGame.ini` (dashboard → API keys → environment `ue`; never in git) |
+| The functions | the copy carried `cubeworld-refill` and `cubeworld-drop`; they run against `ue` like against `dev` |
+
+**On a developer machine** the three servers are the editor run headless (`Scripts/RunServers.ps1`); the
+platform lists their rooms (`list_game_sessions(env="ue")`) exactly as it lists the C# servers', and the admin's
+**Remove player** and **Delete room** work the same way: the room's server turns the players away, clears its
+region and exits (start it again by hand, since no Docker restarts it there).
+
+**On the platform's machine pool** the server must be a Linux image, and that needs an engine built from
+source (the Launcher's engine has no Server target) with the Linux cross-toolchain installed:
+
+1. Build and package the server: `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -server -serverplatform=Linux -noclient -build -cook -stage -pak -archive -archivedirectory=<out>`.
+2. Push the image: `playserv image push --slug cubeworld --src <out>\LinuxServer --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag ue-1.0.0` (logged in with an `sk_` key of environment `ue`).
+3. The pool: `set_machine_pool(env="ue", executor_slug="cubeworld", desired_size=3, rooms_per_machine=1, image_version="ue-1.0.0")`. One process per machine, as the C# pool; each claims a region and opens `<colour>-<machine>`. The process reads `PLAYSERV_DEPLOYMENT_TOKEN` for its credential and `PLAYSERV_PUBLIC_IP` for the address it registers, and needs the machine's UDP port 7777 reachable (the image runs with host networking).
+
+The room type may instead be declared `process-per-room` (`playserv functions declare cubeworld --kind game_server --hosting-mode process-per-room`): then the platform starts a process only when a player asks for a room, and the server registers with `StartRoomPlayServHosted`, which the game mode already does when the launch names a room. That is the platform's documented path for Unreal servers, but it is not the three standing regions the demo shows.
+
 ## Tear-down
 
 agent (MCP): `destroy_machine_pool(executor_slug=$SLUG)` — it closes every room and destroys every machine — then delete the project. `remove_pool_machine` takes out one machine and lowers `desired_size` by one.

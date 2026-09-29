@@ -1,11 +1,12 @@
 #include "CubePlayerPawn.h"
 #include "CubeWorld.h"
 #include "CubeWorldGameInstance.h"
+#include "CubeWorldGameMode.h"
 #include "CubeAvatar.h"
 #include "CubeWorldActor.h"
 #include "CubeBombs.h"
-#include "ProceduralMeshComponent.h"
 #include "CubeTombstone.h"
+#include "ProceduralMeshComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
@@ -14,10 +15,10 @@
 #include "GameFramework/PlayerInput.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
-#include "Dom/JsonObject.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
 #include "EngineUtils.h"
+#include "Net/UnrealNetwork.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "TimerManager.h"
@@ -33,13 +34,36 @@ ACubePlayerPawn::ACubePlayerPawn()
 	Camera->SetFieldOfView(CubeSpec::Fov);
 	bUseControllerRotationYaw = false;
 	bUseControllerRotationPitch = false;
+	// The pawn is the player's own channel to the server: nobody else needs it, others see the presence list.
+	bReplicates = true;
+	bOnlyRelevantToOwner = true;
+	bNetLoadOnClient = false;
+	bReplicateUsingRegisteredSubObjectList = true;
+	SetReplicatingMovement(false);
+}
+
+void ACubePlayerPawn::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME_CONDITION(ACubePlayerPawn, PlayerId, COND_OwnerOnly);
+}
+
+void ACubePlayerPawn::OnRep_PlayerId()
+{
+	if (Game && !PlayerId.IsEmpty()) Game->PlayerId = PlayerId;
 }
 
 void ACubePlayerPawn::BeginPlay()
 {
 	Super::BeginPlay();
+	if (GetNetMode() == NM_DedicatedServer) return;
 	Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
-	if (!Game) return;
+}
+
+// The local player's pawn binds once it is possessed: on a network client the controller arrives after BeginPlay.
+void ACubePlayerPawn::Bind()
+{
+	if (!Game || bBound || !IsLocallyControlled()) return;
 	SkinMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Skin.M_Skin"));
 	if (!SkinMaterial) SkinMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
 
@@ -50,8 +74,11 @@ void ACubePlayerPawn::BeginPlay()
 	Game->OnPlayers.AddUObject(this, &ACubePlayerPawn::HandlePlayers);
 	Game->OnCube.AddUObject(this, &ACubePlayerPawn::HandleCube);
 	Game->OnBomb.AddUObject(this, &ACubePlayerPawn::HandleBomb);
+	bBound = true;
+	OnRep_PlayerId();
 
 	Body.Teleport(36, 12, 0);
+	Game->bPlaced = false;
 	if (APlayerController* PC = Cast<APlayerController>(GetController()))
 	{
 		PC->SetControlRotation(FRotator(-15.f, 135.f, 0));
@@ -60,13 +87,30 @@ void ACubePlayerPawn::BeginPlay()
 	}
 	CaptureMouse(false);
 
-	FString Name;
-	if (!FParse::Value(FCommandLine::Get(), TEXT("-name="), Name) || Name.IsEmpty())
-		Name = FString::Printf(TEXT("Player-%04d"), FMath::RandRange(0, 9999));
-	Game->PlayerName = Name;
+	if (Game->PlayerName.IsEmpty())
+	{
+		FString Name;
+		if (!FParse::Value(FCommandLine::Get(), TEXT("-name="), Name) || Name.IsEmpty())
+			Name = FString::Printf(TEXT("Player-%04d"), FMath::RandRange(0, 9999));
+		Game->PlayerName = Name;
+	}
 
-	// Unattended runs: -autoplay signs in at once, -screenshot=<s> saves Saved/Screenshots/cube.png after
-	// that many seconds, -quitafter=<s> ends the process.
+	// On a server: say who we are and, after a border crossing, where we were.
+	if (GetNetMode() == NM_Client)
+	{
+		const FCubeCrossing& C = Game->Crossing;
+		APlayerController* View = Cast<APlayerController>(GetController());
+		if (C.bSet && View) View->SetControlRotation(FRotator(-FMath::RadiansToDegrees(C.Pitch), FMath::RadiansToDegrees(C.Yaw) + 90.f, 0));
+		ServerHello(Game->PlayerName, C.bSet, C.X, C.Y, C.Z);
+		return;
+	}
+	SetupUnattended();
+}
+
+// Unattended runs from the menu map: -autoplay signs in at once, -screenshot=<s> saves Saved/Screenshots/cube.png
+// after that many seconds, -quitafter=<s> ends the process, -selftest walks, places, digs and hits once in.
+void ACubePlayerPawn::SetupUnattended()
+{
 	if (FParse::Param(FCommandLine::Get(), TEXT("autoplay")))
 	{
 		FTimerHandle Handle;
@@ -76,102 +120,12 @@ void ACubePlayerPawn::BeginPlay()
 	if (FParse::Value(FCommandLine::Get(), TEXT("-screenshot="), Seconds) && Seconds > 0)
 	{
 		FTimerHandle Handle;
-		GetWorldTimerManager().SetTimer(Handle, []() { FScreenshotRequest::RequestScreenshot(TEXT("cube.png"), false, false); }, Seconds, false);
-	}
-	// -selftest: after the welcome, walk forward for a second, place a block ahead, dig it back, hit whoever is near.
-	if (FParse::Param(FCommandLine::Get(), TEXT("selftest")))
-	{
-		FTimerHandle H1, H2, H3, H4, H5;
-		GetWorldTimerManager().SetTimer(H1, [this]() { bMouseCaptured = true; TestForward = 1.f; Game->Log(FString::Printf(TEXT("selftest: walking from %.2f %.2f"), Body.X, Body.Y)); }, 5.f, false);
-		GetWorldTimerManager().SetTimer(H2, [this]() { TestForward = 0.f; Game->Log(FString::Printf(TEXT("selftest: stopped at %.2f %.2f (ground %d)"), Body.X, Body.Y, Body.bOnGround)); }, 6.f, false);
-		GetWorldTimerManager().SetTimer(H3, [this]()
-		{
-			const int32 X = FMath::FloorToInt32(Body.X) + 2, Y = FMath::FloorToInt32(Body.Y);
-			const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-			F->SetStringField(TEXT("op"), TEXT("place")); F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), -1);
-			F->SetNumberField(TEXT("nx"), 0); F->SetNumberField(TEXT("ny"), 0); F->SetNumberField(TEXT("nz"), 1); F->SetStringField(TEXT("kind"), TEXT("gold"));
-			Game->Send(F);
-			Game->Log(FString::Printf(TEXT("selftest: placed gold at %d %d 0"), X, Y));
-		}, 7.f, false);
-		GetWorldTimerManager().SetTimer(H4, [this]()
-		{
-			const int32 X = FMath::FloorToInt32(Body.X) + 2, Y = FMath::FloorToInt32(Body.Y);
-			Game->Log(FString::Printf(TEXT("selftest: world says %s at %d %d 0, gold left %d"), *Game->World.KindAt(X, Y, 0).ToString(), X, Y, Game->Inventory.FindRef(TEXT("gold"))));
-			const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-			F->SetStringField(TEXT("op"), TEXT("dig")); F->SetStringField(TEXT("state"), TEXT("start")); F->SetNumberField(TEXT("x"), X - 2); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), -1);
-			Game->Send(F);
-			Game->Log(FString::Printf(TEXT("selftest: digging grass under the feet at %d %d -1"), X - 2, Y));
-		}, 8.f, false);
-		GetWorldTimerManager().SetTimer(H5, [this]()
-		{
-			const int32 X = FMath::FloorToInt32(Body.X) + 2, Y = FMath::FloorToInt32(Body.Y);
-			Game->Log(FString::Printf(TEXT("selftest: after dig %s at %d %d -1, dirt %d, players seen %d"), *Game->World.KindAt(X - 2, Y, -1).ToString(), X - 2, Y, Game->Inventory.FindRef(TEXT("dirt")), Game->Players.Num()));
-			for (const FCubePresence& P : Game->Players) if (P.Id != Game->PlayerId) { const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>(); F->SetStringField(TEXT("op"), TEXT("attack")); F->SetStringField(TEXT("target"), P.Id); Game->Send(F); Game->Log(FString::Printf(TEXT("selftest: hit %s"), *P.Name)); }
-		}, 11.f, false);
-		Game->OnCube.AddLambda([this](int32 X, int32 Y, int32 Z, FName Kind) { Game->Log(FString::Printf(TEXT("cube %d %d %d -> %s"), X, Y, Z, *Kind.ToString())); });
-		Game->OnDig.AddLambda([this](const FString&, int32 X, int32 Y, int32 Z, int32 Stage) { if (Stage <= 0 || Stage == 9) Game->Log(FString::Printf(TEXT("dig %d %d %d stage %d"), X, Y, Z, Stage)); });
-	}
-	// -frametest: send twenty placements the server must refuse, count the answers, and report.
-	if (FParse::Param(FCommandLine::Get(), TEXT("frametest")))
-	{
-		static int32 Answers = 0;
-		Game->OnInventory.AddLambda([]() { Answers++; });
-		for (int32 I = 0; I < 20; I++)
-		{
-			FTimerHandle H;
-			GetWorldTimerManager().SetTimer(H, [this]()
-			{
-				const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-				F->SetStringField(TEXT("op"), TEXT("place")); F->SetNumberField(TEXT("x"), 36); F->SetNumberField(TEXT("y"), 13); F->SetNumberField(TEXT("z"), -1);
-				F->SetNumberField(TEXT("nx"), 0); F->SetNumberField(TEXT("ny"), 0); F->SetNumberField(TEXT("nz"), 1); F->SetStringField(TEXT("kind"), TEXT("gold"));
-				Game->Send(F);
-			}, 5.f + I * 0.1f, false);
-		}
-		FTimerHandle Done;
-		GetWorldTimerManager().SetTimer(Done, [this]() { Game->Log(FString::Printf(TEXT("frametest: %d of 20 refusals answered"), Answers)); }, 9.f, false);
-	}
-	// -bombtest: walk onto the first free bomb, throw it ahead, and log where it is on every tick.
-	if (FParse::Param(FCommandLine::Get(), TEXT("bombtest")))
-	{
-		static int32 Phase = 0;
-		static FString TestBomb;
-		FTimerHandle H;
-		GetWorldTimerManager().SetTimer(H, [this]()
-		{
-			if (Phase == 0)
-			{
-				for (const auto& Pair : Bombs)
-					if (Pair.Value && Pair.Value->State == TEXT("free"))
-					{
-						TestBomb = Pair.Key;
-						const FVector P = Pair.Value->Pos;
-						Body.Teleport(P.X, P.Y, FMath::Max(0.0, P.Z));
-						Game->Log(FString::Printf(TEXT("bombtest: standing on bomb %s at %.1f %.1f %.1f"), *TestBomb, P.X, P.Y, P.Z));
-						Phase = 1;
-						return;
-					}
-				Game->Log(FString::Printf(TEXT("bombtest: no free bomb yet (%d bombs known)"), Bombs.Num()));
-			}
-			else if (Phase == 1 && !Game->Holding.IsEmpty())
-			{
-				Game->Log(FString::Printf(TEXT("bombtest: holding %s, throwing"), *Game->Holding));
-				const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-				F->SetStringField(TEXT("op"), TEXT("throw"));
-				F->SetNumberField(TEXT("x"), 0.9); F->SetNumberField(TEXT("y"), 0); F->SetNumberField(TEXT("z"), 0.44);
-				Game->Send(F);
-				Phase = 2;
-			}
-			else if (Phase == 2)
-			{
-				if (ACubeBomb** B = Bombs.Find(TestBomb))
-					if (*B) Game->Log(FString::Printf(TEXT("bombtest: %s pos %.2f %.2f %.2f prev %.2f %.2f %.2f stopped %lld actor %s"), *(*B)->State, (*B)->Pos.X, (*B)->Pos.Y, (*B)->Pos.Z, (*B)->Prev.X, (*B)->Prev.Y, (*B)->Prev.Z, (*B)->Stopped, *((*B)->GetActorLocation() / CubeSpec::BlockCm).ToString()));
-			}
-		}, 0.1f, true, 6.f);
+		Game->GetTimerManager().SetTimer(Handle, []() { FScreenshotRequest::RequestScreenshot(TEXT("cube.png"), false, false); }, Seconds, false);
 	}
 	if (FParse::Value(FCommandLine::Get(), TEXT("-quitafter="), Seconds) && Seconds > 0)
 	{
 		FTimerHandle Handle;
-		GetWorldTimerManager().SetTimer(Handle, []() { FPlatformMisc::RequestExit(false); }, Seconds, false);
+		Game->GetTimerManager().SetTimer(Handle, []() { FPlatformMisc::RequestExit(false); }, Seconds, false);
 	}
 }
 
@@ -236,7 +190,7 @@ void ACubePlayerPawn::OnSlot(int32 Index) { if (Game) Game->Slot = FMath::Clamp(
 void ACubePlayerPawn::OnConfirm()
 {
 	if (!Game) return;
-	if (Game->bDead) { const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>(); F->SetStringField(TEXT("op"), TEXT("respawn")); Game->Send(F); return; }
+	if (Game->bDead) { ServerRespawn(); return; }
 	if (!Game->IsConnected() && !Game->IsSigningIn()) { Game->StartPlay(Game->PlayerName); return; }
 	if (Game->IsConnected()) CaptureMouse(true);
 }
@@ -259,13 +213,7 @@ void ACubePlayerPawn::OnDig(bool bHeld)
 	}
 	// A click on a player is a hit; digging is handled on the tick while the button stays down.
 	UpdateAim();
-	if (Aim.bPlayer)
-	{
-		const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-		F->SetStringField(TEXT("op"), TEXT("attack"));
-		F->SetStringField(TEXT("target"), Aim.PlayerId);
-		Game->Send(F);
-	}
+	if (Aim.bPlayer) ServerAttack(Aim.PlayerId);
 }
 
 void ACubePlayerPawn::OnPlace()
@@ -276,12 +224,7 @@ void ACubePlayerPawn::OnPlace()
 	if (!Aim.bBlock) return;
 	const FName Kind = Game->Hotbar.IsValidIndex(Slot()) ? Game->Hotbar[Slot()] : NAME_None;
 	if (Kind == NAME_None || Game->Inventory.FindRef(Kind) <= 0) return;
-	const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-	F->SetStringField(TEXT("op"), TEXT("place"));
-	F->SetNumberField(TEXT("x"), Aim.Hit.Block.X); F->SetNumberField(TEXT("y"), Aim.Hit.Block.Y); F->SetNumberField(TEXT("z"), Aim.Hit.Block.Z);
-	F->SetNumberField(TEXT("nx"), Aim.Hit.Normal.X); F->SetNumberField(TEXT("ny"), Aim.Hit.Normal.Y); F->SetNumberField(TEXT("nz"), Aim.Hit.Normal.Z);
-	F->SetStringField(TEXT("kind"), Kind.ToString());
-	Game->Send(F);
+	ServerPlace(Aim.Hit.Block.X, Aim.Hit.Block.Y, Aim.Hit.Block.Z, Aim.Hit.Normal.X, Aim.Hit.Normal.Y, Aim.Hit.Normal.Z, CubeSpec::KindIndex(Kind));
 }
 
 void ACubePlayerPawn::Spawn(double X, double Y, double Z)
@@ -298,9 +241,9 @@ void ACubePlayerPawn::Unstick()
 	while (CubePhysics::Overlaps(Body, Solid) && Guard++ < 80) { Body.Z = FMath::Floor(Body.Z) + 1; Body.PZ = Body.Z; }
 }
 
-void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
+void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 {
-	if (bTeleport) Spawn(You.X, You.Y, You.Z);
+	Spawn(You.X, You.Y, You.Z);
 	LastPose.Empty();
 	for (auto& Pair : Avatars) if (Pair.Value) Pair.Value->Destroy();
 	Avatars.Empty();
@@ -308,6 +251,90 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 	Bombs.GetKeys(Ids);
 	for (const FString& Id : Ids) RemoveBomb(Id);
 	if (!bMouseCaptured) CaptureMouse(true);
+
+	// -selftest: once in, walk forward for a second, place a block ahead, dig it back, hit whoever is near.
+	static bool bTested = false;
+	if (FParse::Param(FCommandLine::Get(), TEXT("selftest")) && !bTested)
+	{
+		bTested = true;
+		FTimerHandle H1, H2, H3, H4, H5;
+		GetWorldTimerManager().SetTimer(H1, FTimerDelegate::CreateWeakLambda(this, [this]() { bMouseCaptured = true; TestForward = 1.f; Game->Log(FString::Printf(TEXT("selftest: walking from %.2f %.2f"), Body.X, Body.Y)); }), 3.f, false);
+		GetWorldTimerManager().SetTimer(H2, FTimerDelegate::CreateWeakLambda(this, [this]() { TestForward = 0.f; Game->Log(FString::Printf(TEXT("selftest: stopped at %.2f %.2f (ground %d)"), Body.X, Body.Y, Body.bOnGround)); }), 4.f, false);
+		GetWorldTimerManager().SetTimer(H3, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			// On top of the highest block two columns ahead, wherever the ground is (the world may hold craters).
+			const int32 X = FMath::FloorToInt32(Body.X) + 2, Y = FMath::FloorToInt32(Body.Y);
+			int32 Z = FMath::FloorToInt32(Body.Z) + 1;
+			while (Z > CubeSpec::MinZ && !Game->World.IsSolid(X, Y, Z)) Z--;
+			TestPlaced = FIntVector(X, Y, Z + 1);
+			ServerPlace(X, Y, Z, 0, 0, 1, CubeSpec::KindIndex(TEXT("gold")));
+			Game->Log(FString::Printf(TEXT("selftest: placed gold at %d %d %d"), X, Y, Z + 1));
+		}), 5.f, false);
+		GetWorldTimerManager().SetTimer(H4, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			const FIntVector& P = TestPlaced;
+			Game->Log(FString::Printf(TEXT("selftest: world says %s at %d %d %d, gold left %d"), *Game->World.KindAt(P.X, P.Y, P.Z).ToString(), P.X, P.Y, P.Z, Game->Inventory.FindRef(TEXT("gold"))));
+			TestDug = FIntVector(FMath::FloorToInt32(Body.X), FMath::FloorToInt32(Body.Y), FMath::FloorToInt32(Body.Z) - 1);
+			ServerDig(TestDug.X, TestDug.Y, TestDug.Z, true);
+			Game->Log(FString::Printf(TEXT("selftest: digging %s under the feet at %d %d %d"), *Game->World.KindAt(TestDug.X, TestDug.Y, TestDug.Z).ToString(), TestDug.X, TestDug.Y, TestDug.Z));
+		}), 6.f, false);
+		GetWorldTimerManager().SetTimer(H5, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			const FIntVector& D = TestDug;
+			Game->Log(FString::Printf(TEXT("selftest: after dig %s at %d %d %d, dirt %d, players seen %d"), *Game->World.KindAt(D.X, D.Y, D.Z).ToString(), D.X, D.Y, D.Z, Game->Inventory.FindRef(TEXT("dirt")), Game->Players.Num()));
+			for (const FCubePresence& P : Game->Players) if (P.Id != Game->PlayerId) { ServerAttack(P.Id); Game->Log(FString::Printf(TEXT("selftest: hit %s"), *P.Name)); }
+		}), 9.f, false);
+		Game->OnCube.AddLambda([this](int32 X, int32 Y, int32 Z, FName Kind) { Game->Log(FString::Printf(TEXT("cube %d %d %d -> %s"), X, Y, Z, *Kind.ToString())); });
+		Game->OnDig.AddLambda([this](const FString&, int32 X, int32 Y, int32 Z, int32 Stage) { if (Stage <= 0 || Stage == 9) Game->Log(FString::Printf(TEXT("dig %d %d %d stage %d"), X, Y, Z, Stage)); });
+	}
+	// -bombtest: walk onto the first free bomb, throw it ahead, and say what became of it.
+	if (FParse::Param(FCommandLine::Get(), TEXT("bombtest")))
+	{
+		static int32 Phase = 0;
+		static FString TestBomb;
+		FTimerHandle HB;
+		GetWorldTimerManager().SetTimer(HB, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			if (Phase == 0)
+			{
+				for (const auto& Pair : Bombs)
+					if (Pair.Value && Pair.Value->State == TEXT("free"))
+					{
+						TestBomb = Pair.Key;
+						const FVector P = Pair.Value->Pos;
+						Body.Teleport(P.X, P.Y, FMath::Max(0.0, P.Z));
+						Game->Log(FString::Printf(TEXT("bombtest: standing on bomb %s at %.1f %.1f %.1f"), *TestBomb, P.X, P.Y, P.Z));
+						Phase = 1;
+						return;
+					}
+				Game->Log(FString::Printf(TEXT("bombtest: no free bomb yet (%d bombs known)"), Bombs.Num()));
+			}
+			else if (Phase == 1 && !Game->Holding.IsEmpty())
+			{
+				Game->Log(FString::Printf(TEXT("bombtest: holding %s, throwing"), *Game->Holding));
+				ServerThrow(0.9f, 0.f, 0.44f);
+				Phase = 2;
+			}
+			else if (Phase == 2)
+			{
+				if (ACubeBomb** B = Bombs.Find(TestBomb))
+					if (*B) Game->Log(FString::Printf(TEXT("bombtest: %s at %.2f %.2f %.2f stopped %lld"), *(*B)->State, (*B)->Pos.X, (*B)->Pos.Y, (*B)->Pos.Z, (*B)->Stopped));
+			}
+		}), 0.5f, true, 6.f);
+	}
+	// -walkto=<x>: keep walking towards that x (a border crossing test).
+	float Target;
+	if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), Target))
+	{
+		FTimerHandle H;
+		GetWorldTimerManager().SetTimer(H, FTimerDelegate::CreateWeakLambda(this, [this, Target]()
+		{
+			TestWalkTo = Target;
+			bMouseCaptured = true; TestForward = 1.f; bSprintHeld = true;
+		}), 2.f, false);
+		FTimerHandle Where;
+		GetWorldTimerManager().SetTimer(Where, FTimerDelegate::CreateWeakLambda(this, [this]() { Game->Log(FString::Printf(TEXT("walkto: at %.1f %.1f %.1f yaw %.0f in %s"), Body.X, Body.Y, Body.Z, GetControlRotation().Yaw, *Game->Room)); }), 1.f, true);
+	}
 }
 
 void ACubePlayerPawn::HandleRespawn(const FCubePose& You)
@@ -316,22 +343,22 @@ void ACubePlayerPawn::HandleRespawn(const FCubePose& You)
 	CaptureMouse(true);
 }
 
-void ACubePlayerPawn::HandleHurt(const FString& PlayerId, double, double KX, double KY, double Strength)
+void ACubePlayerPawn::HandleHurt(const FString& InPlayerId, double, double KX, double KY, double Strength)
 {
-	if (PlayerId == Game->PlayerId)
+	if (InPlayerId == Game->PlayerId)
 	{
 		HurtUntil = FPlatformTime::Seconds() + CubeSpec::HurtTicks * CubeSpec::TickSeconds;
 		if (Strength > 0) CubePhysics::Knockback(Body, KX, KY, Strength);
 		return;
 	}
-	if (ACubeAvatar** A = Avatars.Find(PlayerId)) if (*A) (*A)->Hurt();
+	if (ACubeAvatar** A = Avatars.Find(InPlayerId)) if (*A) (*A)->Hurt();
 }
 
-void ACubePlayerPawn::HandleDeath(const FString& PlayerId, const FString& By)
+void ACubePlayerPawn::HandleDeath(const FString& InPlayerId, const FString& By)
 {
-	if (PlayerId == Game->PlayerId) { CaptureMouse(false); bDigging = false; }
-	FString Who = PlayerId == Game->PlayerId ? TEXT("you") : PlayerId, Killer = By;
-	for (const FCubePresence& P : Game->Players) { if (P.Id == PlayerId) Who = P.Name; if (P.Id == By) Killer = P.Name; }
+	if (InPlayerId == Game->PlayerId) { CaptureMouse(false); bDigging = false; }
+	FString Who = InPlayerId == Game->PlayerId ? TEXT("you") : InPlayerId, Killer = By;
+	for (const FCubePresence& P : Game->Players) { if (P.Id == InPlayerId) Who = P.Name; if (P.Id == By) Killer = P.Name; }
 	Game->Log(FString::Printf(TEXT("%s died%s"), *Who, By.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" to %s"), *Killer)));
 }
 
@@ -401,22 +428,10 @@ void ACubePlayerPawn::DigTick()
 	const bool bWant = bDigHeld && bMouseCaptured && !Game->bDead && Aim.bBlock;
 	const FIntVector Target = bWant ? Aim.Hit.Block : FIntVector::ZeroValue;
 	if (bWant == bDigging && (!bWant || Target == DigTarget)) return;
-	if (bDigging)
-	{
-		const TSharedRef<FJsonObject> Stop = MakeShared<FJsonObject>();
-		Stop->SetStringField(TEXT("op"), TEXT("dig")); Stop->SetStringField(TEXT("state"), TEXT("stop"));
-		Stop->SetNumberField(TEXT("x"), DigTarget.X); Stop->SetNumberField(TEXT("y"), DigTarget.Y); Stop->SetNumberField(TEXT("z"), DigTarget.Z);
-		Game->Send(Stop);
-	}
+	if (bDigging) ServerDig(DigTarget.X, DigTarget.Y, DigTarget.Z, false);
 	bDigging = bWant;
 	DigTarget = Target;
-	if (bWant)
-	{
-		const TSharedRef<FJsonObject> Start = MakeShared<FJsonObject>();
-		Start->SetStringField(TEXT("op"), TEXT("dig")); Start->SetStringField(TEXT("state"), TEXT("start"));
-		Start->SetNumberField(TEXT("x"), Target.X); Start->SetNumberField(TEXT("y"), Target.Y); Start->SetNumberField(TEXT("z"), Target.Z);
-		Game->Send(Start);
-	}
+	if (bWant) ServerDig(Target.X, Target.Y, Target.Z, true);
 }
 
 void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
@@ -424,12 +439,7 @@ void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
 	const FString Pose = FString::Printf(TEXT("%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d"), Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
 	if (Pose == LastPose) return;
 	LastPose = Pose;
-	const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-	F->SetStringField(TEXT("op"), TEXT("move"));
-	F->SetNumberField(TEXT("x"), Body.X); F->SetNumberField(TEXT("y"), Body.Y); F->SetNumberField(TEXT("z"), Body.Z);
-	F->SetNumberField(TEXT("yaw"), Yaw); F->SetNumberField(TEXT("pitch"), Pitch);
-	F->SetBoolField(TEXT("onGround"), Body.bOnGround); F->SetBoolField(TEXT("sneaking"), Body.bSneaking); F->SetBoolField(TEXT("sprinting"), Body.bSprinting);
-	Game->Send(F);
+	ServerMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
 }
 
 void ACubePlayerPawn::GameTick()
@@ -439,12 +449,12 @@ void ACubePlayerPawn::GameTick()
 	Bombs.GenerateValueArray(Live);
 	for (ACubeBomb* Bomb : Live) if (Bomb) TickBomb(Bomb);
 	if (!Game->bPlaced) return;
+	// A -walkto test steers itself every tick: two client windows on one desktop fight over the mouse.
+	if (TestWalkTo.IsSet()) if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(0, TestWalkTo.GetValue() > Body.X ? 0.f : 180.f, 0));
+	const FRotator View = GetControlRotation();
+	const double Yaw = CubeSpec::YawFromUnreal(View.Yaw), Pitch = CubeSpec::PitchFromUnreal(View.Pitch);
 	if (!Game->bDead)
 	{
-		// Minecraft's yaw is Unreal's yaw minus 90°; its pitch is positive looking down.
-		const FRotator View = GetControlRotation();
-		const double Yaw = FMath::DegreesToRadians(FRotator::NormalizeAxis(View.Yaw - 90.f));
-		const double Pitch = -FMath::DegreesToRadians(FRotator::NormalizeAxis(View.Pitch));
 		FCubeInput Input;
 		if (bMouseCaptured)
 		{
@@ -462,15 +472,15 @@ void ACubePlayerPawn::GameTick()
 		DigTick();
 		SendMove(Yaw, Pitch);
 	}
+	Game->LastBody = { true, Body.X, Body.Y, Body.Z, Yaw, Pitch };
 	Game->MaybeCross(Body.X);
 }
 
 void ACubePlayerPawn::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	const double PawnStart = FPlatformTime::Seconds();
-	ON_SCOPE_EXIT { const double Ms = (FPlatformTime::Seconds() - PawnStart) * 1000; if (Ms > 20) UE_LOG(LogCubeWorld, Log, TEXT("slow: pawn tick %.0f ms"), Ms); };
-	if (!Game) return;
+	if (!bBound) Bind();
+	if (!Game || !bBound) return;
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { GameTick(); Accumulator -= CubeSpec::TickSeconds; }
 	const double Partial = Accumulator / CubeSpec::TickSeconds;
@@ -504,6 +514,85 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 		const FVector Center = (FVector(Aim.Hit.Block) + FVector(0.5)) * CubeSpec::BlockCm;
 		DrawDebugBox(GetWorld(), Center, FVector(CubeSpec::BlockCm * 0.502f), FColor(0, 0, 0, 160), false, -1.f, 0, 1.5f);
 	}
+}
+
+// ── to the server ────────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+	ACubeWorldGameMode* ServerOf(const AActor* Actor)
+	{
+		return Actor && Actor->HasAuthority() ? Cast<ACubeWorldGameMode>(Actor->GetWorld()->GetAuthGameMode()) : nullptr;
+	}
+}
+
+void ACubePlayerPawn::ServerHello_Implementation(const FString& Name, bool bCross, float X, float Y, float Z)
+{
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnHello(this, Name, bCross, X, Y, Z);
+}
+
+void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+{
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(this, X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting);
+}
+
+void ACubePlayerPawn::ServerDig_Implementation(int32 X, int32 Y, int32 Z, bool bStart)
+{
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnDig(this, X, Y, Z, bStart);
+}
+
+void ACubePlayerPawn::ServerPlace_Implementation(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, uint8 Kind)
+{
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnPlace(this, X, Y, Z, NX, NY, NZ, CubeSpec::KindOf(Kind));
+}
+
+void ACubePlayerPawn::ServerAttack_Implementation(const FString& Target)
+{
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnAttack(this, Target);
+}
+
+void ACubePlayerPawn::ServerRespawn_Implementation()
+{
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnRespawn(this);
+}
+
+void ACubePlayerPawn::ServerThrow_Implementation(float DX, float DY, float DZ)
+{
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnThrow(this, DX, DY, DZ);
+}
+
+// ── from the server ──────────────────────────────────────────────────────────────────────────────
+
+void ACubePlayerPawn::ClientWelcome_Implementation(const FCubeWelcomeRep& W, const TArray<FCubeStackRep>& Stacks)
+{
+	if (!Game) return;
+	Game->OnWelcomed(W.Server, W.Color, W.Room, W.Region, FCubePose{ W.X, W.Y, W.Z, W.Health }, Stacks, W.Chunks);
+}
+
+void ACubePlayerPawn::ClientWorldChunk_Implementation(const TArray<FCubeCellRep>& Cells, bool bLast)
+{
+	if (Game) Game->OnWorldChunk(Cells, bLast);
+}
+
+void ACubePlayerPawn::ClientBombs_Implementation(const TArray<FCubeBombRep>& InBombs)
+{
+	if (!Game) return;
+	for (const FCubeBombRep& B : InBombs) Game->OnBombFrame(B);
+}
+
+void ACubePlayerPawn::ClientInventory_Implementation(const TArray<FCubeStackRep>& Stacks)
+{
+	if (Game) Game->SetInventory(Stacks);
+}
+
+void ACubePlayerPawn::ClientRespawn_Implementation(float X, float Y, float Z)
+{
+	if (Game) Game->OnRespawnFrame(FCubePose{ X, Y, Z, CubeSpec::MaxHealth });
+}
+
+void ACubePlayerPawn::ClientTurnedAway_Implementation(const FString& Reason)
+{
+	if (Game) Game->TurnedAwayBy(Reason);
 }
 
 // ── bombs ────────────────────────────────────────────────────────────────────────────────────────
@@ -559,7 +648,6 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 	if (B.State != TEXT("free") && Bomb->Parachute) Bomb->Parachute->SetVisibility(false);
 	Bomb->Prev = Bomb->Pos;
 	if (B.State != TEXT("held")) Bomb->SetActorLocation(Bomb->Pos * CubeSpec::BlockCm);
-	if (FParse::Param(FCommandLine::Get(), TEXT("bombtest"))) Game->Log(FString::Printf(TEXT("handlebomb: %s at %.2f %.2f %.2f age %.0f -> pos %.2f %.2f %.2f vel %.2f %.2f %.2f stopped %lld"), *B.State, At.X, At.Y, At.Z, B.Age, Bomb->Pos.X, Bomb->Pos.Y, Bomb->Pos.Z, Bomb->Vel.X, Bomb->Vel.Y, Bomb->Vel.Z, Bomb->Stopped));
 	UpdateHolding();
 }
 
@@ -588,9 +676,7 @@ void ACubePlayerPawn::TickBomb(ACubeBomb* Bomb)
 	}
 	else if (Bomb->State == TEXT("flying") && !Bomb->Stopped)
 	{
-		const FVector Before = Bomb->Pos;
-		const ECubeFlight Flight = CubeBombs::Fly(Game->World, Bomb->Pos, Bomb->Vel);
-		if (Flight != ECubeFlight::Flying) { Bomb->Stopped = FMath::Max<int64>(1, TickCount); if (FParse::Param(FCommandLine::Get(), TEXT("bombtest"))) Game->Log(FString::Printf(TEXT("tickbomb: stopped (%d) from %.2f %.2f %.2f at %.2f %.2f %.2f vel %.2f %.2f %.2f; block there %s"), (int32)Flight, Before.X, Before.Y, Before.Z, Bomb->Pos.X, Bomb->Pos.Y, Bomb->Pos.Z, Bomb->Vel.X, Bomb->Vel.Y, Bomb->Vel.Z, *Game->World.KindAt(FMath::FloorToInt32(Bomb->Pos.X + Bomb->Vel.X / 10), FMath::FloorToInt32(Bomb->Pos.Y + Bomb->Vel.Y / 10), FMath::FloorToInt32(Bomb->Pos.Z + Bomb->Vel.Z / 10)).ToString())); }
+		if (CubeBombs::Fly(Game->World, Bomb->Pos, Bomb->Vel) != ECubeFlight::Flying) Bomb->Stopped = FMath::Max<int64>(1, TickCount);
 	}
 	// The server's word on where it went off comes soon; one that never comes is taken away after three seconds.
 	else if (Bomb->State == TEXT("flying") && TickCount - Bomb->Stopped > 60)
@@ -623,10 +709,7 @@ void ACubePlayerPawn::PlaceHeld(ACubeBomb* Bomb)
 void ACubePlayerPawn::ThrowBomb()
 {
 	const FVector Look = Camera->GetForwardVector();
-	const TSharedRef<FJsonObject> F = MakeShared<FJsonObject>();
-	F->SetStringField(TEXT("op"), TEXT("throw"));
-	F->SetNumberField(TEXT("x"), Look.X); F->SetNumberField(TEXT("y"), Look.Y); F->SetNumberField(TEXT("z"), Look.Z);
-	Game->Send(F);
+	ServerThrow(Look.X, Look.Y, Look.Z);
 }
 
 // A dead player leaves the map, you too: your tombstone stands where you fell until you respawn.

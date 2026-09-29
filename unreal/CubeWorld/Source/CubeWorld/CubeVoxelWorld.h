@@ -1,6 +1,7 @@
-// The client's copy of the world: a superflat terrain and the oaks generated on the fly, plus the
-// records that override them (kind "air" is a dug-out generated block). Same rules as the server's
-// World.cs and the browser's voxels.js; coordinates are the server's (x, y on the ground, z up).
+// A copy of the world: a superflat terrain and the oaks generated on the fly, plus the records that override
+// them (kind "air" is a dug-out generated block). The client draws from it and moves through it, the server judges
+// by it. Same rules as the C# server's World.cs and the browser's voxels.js; coordinates are the server's
+// (x, y on the ground, z up).
 #pragma once
 
 #include "CoreMinimal.h"
@@ -23,9 +24,6 @@ public:
 
 	FCubeVoxelWorld();
 
-	void Configure(int32 InWidth, int32 InDepth, int32 InMinZ, int32 InMaxZ, int32 InRegionSize,
-		const TMap<int32, FName>& InLayers, const TArray<FIntPoint>& Trees, const TArray<FBlockDef>& InBlocks);
-
 	const FBlockDef& Block(FName Kind) const;
 	bool Inside(int32 X, int32 Y, int32 Z) const { return X >= 0 && X < Width && Y >= 0 && Y < Depth && Z >= MinZ && Z < MaxZ; }
 	FName Generated(int32 X, int32 Y, int32 Z) const;
@@ -41,6 +39,7 @@ public:
 	TSet<FIntPoint> ChunksAround(int32 X, int32 Y) const;
 	TArray<FIntPoint> AllChunks() const;
 	void Clear() { Overrides.Empty(); Hidden.Empty(); }
+	const TMap<FIntVector, FName>& GetOverrides() const { return Overrides; }
 
 	/** Walks the ray block by block (Amanatides & Woo) and returns the first solid block and the face it entered. */
 	bool Raycast(const FVector& Origin, const FVector& Direction, double Reach, FCubeRayHit& OutHit) const;

@@ -3,20 +3,11 @@
 FCubeVoxelWorld::FCubeVoxelWorld()
 {
 	Air.Kind = TEXT("air");
-	Layers = { { -4, TEXT("bedrock") }, { -3, TEXT("dirt") }, { -2, TEXT("dirt") }, { -1, TEXT("grass") } };
+	Layers = CubeSpec::Layers();
 	Trees = CubeBuildTrees(CubeTreeSpots());
+	for (const FBlockDef& B : CubeSpec::Blocks()) Blocks.Add(B.Kind, B);
 }
 
-void FCubeVoxelWorld::Configure(int32 InWidth, int32 InDepth, int32 InMinZ, int32 InMaxZ, int32 InRegionSize,
-	const TMap<int32, FName>& InLayers, const TArray<FIntPoint>& InTrees, const TArray<FBlockDef>& InBlocks)
-{
-	Width = InWidth; Depth = InDepth; MinZ = InMinZ; MaxZ = InMaxZ; RegionSize = InRegionSize;
-	Layers = InLayers;
-	Trees = CubeBuildTrees(InTrees.Num() ? InTrees : CubeTreeSpots());
-	Blocks.Empty();
-	for (const FBlockDef& B : InBlocks) Blocks.Add(B.Kind, B);
-	Clear();
-}
 
 const FBlockDef& FCubeVoxelWorld::Block(FName Kind) const
 {

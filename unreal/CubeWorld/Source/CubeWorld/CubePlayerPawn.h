@@ -1,12 +1,15 @@
 // The player: a first-person camera over the Minecraft body simulated in CubePhysics at 20 ticks a
 // second, the keys and mouse, aiming, digging, placing and hitting, bombs picked up and thrown, the tombstones
-// of the dead, and the reports to the server.
+// of the dead. Movement is the client's, as Minecraft's is, and reported to the server every tick; everything
+// else is a request the server judges. The pawn is replicated to its owner only: other players are drawn from
+// the presence list the server replicates for everyone (CubeWorldState).
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 #include "CubePhysics.h"
 #include "CubeVoxelWorld.h"
+#include "CubeWorldState.h"
 #include "CubePlayerPawn.generated.h"
 
 class UCameraComponent;
@@ -26,6 +29,23 @@ struct FCubeAim
 	FString PlayerId;
 };
 
+/** The welcome: which server this is and where the player stands. */
+USTRUCT()
+struct FCubeWelcomeRep
+{
+	GENERATED_BODY()
+	UPROPERTY() FString Server;
+	UPROPERTY() FString Color;
+	UPROPERTY() FString Room;
+	UPROPERTY() int32 Region = -1;
+	UPROPERTY() float X = 0;
+	UPROPERTY() float Y = 0;
+	UPROPERTY() float Z = 0;
+	UPROPERTY() float Health = 20;
+	/** How many world chunks follow. */
+	UPROPERTY() int32 Chunks = 0;
+};
+
 UCLASS()
 class CUBEWORLD_API ACubePlayerPawn : public APawn
 {
@@ -36,16 +56,41 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* Input) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	FCubeBody Body;
 	FCubeAim Aim;
 	double HurtUntil = 0;
 	bool bMouseCaptured = false;
 
+	/** The PlayServ player id the server admitted this connection as; set by the server, read by its owner. */
+	UPROPERTY(ReplicatedUsing=OnRep_PlayerId) FString PlayerId;
+
 	/** The aimed block, if any, for the HUD and the outline. */
 	const FCubeAim& CurrentAim() const { return Aim; }
 
+	// ---- to the server ----------------------------------------------------------------------
+	/** Who this is, and where they were when they crossed a border (bCross), else the server's spawn. */
+	UFUNCTION(Server, Reliable) void ServerHello(const FString& Name, bool bCross, float X, float Y, float Z);
+	UFUNCTION(Server, Unreliable) void ServerMove(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	UFUNCTION(Server, Reliable) void ServerDig(int32 X, int32 Y, int32 Z, bool bStart);
+	UFUNCTION(Server, Reliable) void ServerPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, uint8 Kind);
+	UFUNCTION(Server, Reliable) void ServerAttack(const FString& Target);
+	UFUNCTION(Server, Reliable) void ServerRespawn();
+	UFUNCTION(Server, Reliable) void ServerThrow(float DX, float DY, float DZ);
+
+	// ---- from the server --------------------------------------------------------------------
+	UFUNCTION(Client, Reliable) void ClientWelcome(const FCubeWelcomeRep& Welcome, const TArray<FCubeStackRep>& Stacks);
+	UFUNCTION(Client, Reliable) void ClientWorldChunk(const TArray<FCubeCellRep>& Cells, bool bLast);
+	UFUNCTION(Client, Reliable) void ClientBombs(const TArray<FCubeBombRep>& InBombs);
+	UFUNCTION(Client, Reliable) void ClientInventory(const TArray<FCubeStackRep>& Stacks);
+	UFUNCTION(Client, Reliable) void ClientRespawn(float X, float Y, float Z);
+	/** An operator closed the room or removed this player; the connection closes right after. */
+	UFUNCTION(Client, Reliable) void ClientTurnedAway(const FString& Reason);
+
 private:
+	UFUNCTION() void OnRep_PlayerId();
+	void Bind();
 	void GameTick();
 	void DigTick();
 	void UpdateAim();
@@ -66,6 +111,7 @@ private:
 	void Spawn(double X, double Y, double Z);
 	void Unstick();
 	void CaptureMouse(bool bCapture);
+	void SetupUnattended();
 	ACubeWorldActor* WorldActor() const;
 
 	// input
@@ -100,5 +146,8 @@ private:
 	bool bDigging = false;
 	FIntVector DigTarget;
 	FString LastPose;
+	FIntVector TestPlaced, TestDug;
+	TOptional<float> TestWalkTo;
 	float Fov = 70.f;
+	bool bBound = false;
 };

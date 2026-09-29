@@ -2,7 +2,7 @@
 	"FileVersion": 3,
 	"EngineAssociation": "5.8",
 	"Category": "",
-	"Description": "Cube World: the Unreal client, playing on the same servers as the browser client.",
+	"Description": "Cube World: an Unreal dedicated server and its client on PlayServ, replicating over Iris.",
 	"Modules": [
 		{
 			"Name": "CubeWorld",
@@ -24,6 +24,10 @@
 		},
 		{
 			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "Iris",
 			"Enabled": true
 		}
 	]

@@ -1,88 +1,35 @@
 #include "CubeWorldGameInstance.h"
 #include "CubeWorld.h"
-#include "CubeSocket.h"
-#include "Dom/JsonObject.h"
-#include "Serialization/JsonReader.h"
-#include "Serialization/JsonSerializer.h"
-#include "Policies/CondensedJsonPrintPolicy.h"
+#include "CubeWorldActor.h"
 #include "PlayServ.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
-
-namespace
-{
-	FString ToText(const TSharedRef<FJsonObject>& Object)
-	{
-		FString Out;
-		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
-		FJsonSerializer::Serialize(Object, Writer);
-		return Out;
-	}
-
-	double Num(const TSharedPtr<FJsonObject>& O, const TCHAR* Field, double Default = 0)
-	{
-		double V = Default;
-		if (O.IsValid()) O->TryGetNumberField(FStringView(Field), V);
-		return V;
-	}
-
-	FString Str(const TSharedPtr<FJsonObject>& O, const TCHAR* Field)
-	{
-		FString V;
-		if (O.IsValid()) O->TryGetStringField(FStringView(Field), V);
-		return V;
-	}
-
-	FCubePresence ReadPresence(const TSharedPtr<FJsonObject>& P)
-	{
-		FCubePresence R;
-		R.Id = Str(P, TEXT("player_id")); R.Name = Str(P, TEXT("name")); R.Server = Str(P, TEXT("server")); R.Color = Str(P, TEXT("color"));
-		R.X = Num(P, TEXT("x")); R.Y = Num(P, TEXT("y")); R.Z = Num(P, TEXT("z")); R.Yaw = Num(P, TEXT("yaw")); R.Pitch = Num(P, TEXT("pitch"));
-		R.Health = Num(P, TEXT("health"), 20);
-		R.bSneaking = Num(P, TEXT("sneaking")) == 1; R.bSprinting = Num(P, TEXT("sprinting")) == 1;
-		return R;
-	}
-
-	FCubeBombFrame ReadBomb(const TSharedPtr<FJsonObject>& Frame)
-	{
-		FCubeBombFrame R;
-		const TSharedPtr<FJsonObject>* B;
-		if (!Frame.IsValid() || !Frame->TryGetObjectField(TEXT("bomb"), B)) return R;
-		R.Id = Str(*B, TEXT("bomb_id")); R.State = Str(*B, TEXT("state")); R.Holder = Str(*B, TEXT("holder"));
-		R.X = Num(*B, TEXT("x")); R.Y = Num(*B, TEXT("y")); R.Z = Num(*B, TEXT("z"));
-		R.VX = Num(*B, TEXT("vx")); R.VY = Num(*B, TEXT("vy")); R.VZ = Num(*B, TEXT("vz"));
-		R.Age = Num(Frame, TEXT("age"));
-		double Height;
-		if (Frame->TryGetNumberField(TEXT("z"), Height)) R.Height = Height;
-		return R;
-	}
-
-	FCubePose ReadPose(const TSharedPtr<FJsonObject>& P)
-	{
-		FCubePose R;
-		R.X = Num(P, TEXT("x")); R.Y = Num(P, TEXT("y")); R.Z = Num(P, TEXT("z")); R.Health = Num(P, TEXT("health"), 20);
-		return R;
-	}
-}
+#include "TimerManager.h"
 
 void UCubeWorldGameInstance::Init()
 {
 	Super::Init();
-	Textures.Build();
+	if (!IsRunningDedicatedServer()) Textures.Build();
+	Hotbar = CubeSpec::Hotbar();
+	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCubeWorldGameInstance::HandlePostLoadMap);
+	if (GEngine) GEngine->OnNetworkFailure().AddUObject(this, &UCubeWorldGameInstance::HandleNetworkFailure);
 }
 
 void UCubeWorldGameInstance::Shutdown()
 {
-	if (Socket.IsValid()) Socket->Close();
-	if (Pending.IsValid()) Pending->Close();
-	Socket.Reset();
-	Pending.Reset();
+	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
+	if (GEngine) GEngine->OnNetworkFailure().RemoveAll(this);
 	Super::Shutdown();
 }
 
-bool UCubeWorldGameInstance::IsConnected() const
+// The world on screen lives on the client alone; the server has no picture to draw.
+void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 {
-	return Socket.IsValid() && Socket->IsConnected();
+	if (!LoadedWorld || IsRunningDedicatedServer() || LoadedWorld->GetNetMode() == NM_DedicatedServer) return;
+	LoadedWorld->SpawnActor<ACubeWorldActor>();
 }
 
 void UCubeWorldGameInstance::Log(const FString& Text)
@@ -94,10 +41,11 @@ void UCubeWorldGameInstance::Log(const FString& Text)
 
 void UCubeWorldGameInstance::StartPlay(const FString& Name)
 {
-	if (bSigningIn || IsConnected()) return;
+	if (bSigningIn || IsConnected() || bSwitching) return;
 	PlayerName = Name;
 	bSigningIn = true;
 	Status = TEXT("Signing in...");
+	if (PlayServ::Auth::IsLoggedIn() && !PlayerId.IsEmpty()) { Browse(); return; }
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
 	PlayServ::Auth::LoginAnonymous(Name, FPlayServAuthCallback::CreateLambda([Weak](bool bOk, const FString& InPlayerId, const FPlayServError& Error)
 	{
@@ -122,18 +70,24 @@ FString UCubeWorldGameInstance::TurnedAway(const FString& RoomName, const FStrin
 {
 	double Wait = 0;
 	FString Message;
-	if (ReasonOrCode == TEXT("room_closed_by_operator") || ReasonOrCode == TEXT("room_closed"))
+	if (ReasonOrCode.Contains(TEXT("room_closed")))
 	{
 		Wait = 30;
 		Message = TEXT("This room was closed by an operator. It opens again fresh in a minute or two.");
 	}
-	else if (ReasonOrCode == TEXT("removed_by_operator") || ReasonOrCode == TEXT("removed_from_room"))
+	else if (ReasonOrCode.Contains(TEXT("removed")))
 	{
 		Wait = 60;
 		Message = TEXT("An operator removed you from this room. You can still walk into the other regions.");
 	}
-	if (!Message.IsEmpty()) NotBefore.Add(RoomName, FPlatformTime::Seconds() + Wait);
+	if (!Message.IsEmpty() && !RoomName.IsEmpty()) NotBefore.Add(RoomName, FPlatformTime::Seconds() + Wait);
 	return Message;
+}
+
+void UCubeWorldGameInstance::TurnedAwayBy(const FString& Reason)
+{
+	const FString Message = TurnedAway(Room.IsEmpty() ? Travelling : Room, Reason);
+	Log(Message.IsEmpty() ? FString::Printf(TEXT("turned away: %s"), *Reason) : Message);
 }
 
 void UCubeWorldGameInstance::Browse()
@@ -173,6 +127,7 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 	bSwitching = true;
 	Status = FString::Printf(TEXT("Joining %s..."), *RoomName);
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
+	// The SDK is not handed the controller: the travel is ours, so the position survives a border crossing.
 	PlayServ::Rooms::JoinRoom(RoomName, nullptr, FPlayServJoinCallback::CreateLambda([Weak, RoomName, bTeleport](bool bOk, const FPlayServJoinResult& Result, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
@@ -185,109 +140,59 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 			Self->Log(Turned.IsEmpty() ? FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message) : Turned);
 			if (!Self->IsConnected())
 			{
-				if (Self->Candidates.Num() > 0) { const FString Next = Self->Candidates[0]; Self->Candidates.RemoveAt(0); Self->Enter(Next, bTeleport); }
+				if (Self->Candidates.Num() > 0) { const FString NextRoom = Self->Candidates[0]; Self->Candidates.RemoveAt(0); Self->Enter(NextRoom, bTeleport); }
 				else Self->GetTimerManager().SetTimer(Self->RetryTimer, [Weak]() { if (Weak.IsValid()) Weak->Browse(); }, 3.f, false);
 			}
 			return;
 		}
-		const FPlayServRoomConnect& C = Result.Ticket.Connect;
-		FString Host = C.Host, Path = TEXT("/"), Override;
-		int32 Port = C.Port;
-		// The pool machines speak wss; the SDK's transport enum has no wss yet, so anything it did not
-		// read as plain ws is taken as TLS. -wsplain / -wssecure force it, -wshost=host:port redirects.
-		bool bSecure = C.Transport != EPlayServRoomTransport::Ws;
-		if (FParse::Param(FCommandLine::Get(), TEXT("wsplain"))) bSecure = false;
-		if (FParse::Param(FCommandLine::Get(), TEXT("wssecure"))) bSecure = true;
-		if (FParse::Value(FCommandLine::Get(), TEXT("-wshost="), Override) && !Override.IsEmpty())
-		{
-			FString PortText;
-			if (Override.Split(TEXT(":"), &Host, &PortText)) Port = FCString::Atoi(*PortText); else Host = Override;
-		}
-		Self->Connect(RoomName, Host, Port, Path, bSecure, Result.Ticket.ReservationToken, bTeleport);
+		APlayerController* PC = Self->GetFirstLocalPlayerController();
+		if (!PC) { Self->bSwitching = false; return; }
+		// A crossing keeps the body where it is; a fresh join takes the server's spawn.
+		Self->Crossing = bTeleport ? FCubeCrossing() : Self->LastBody;
+		Self->Crossing.bSet = !bTeleport && Self->bPlaced;
+		Self->bWelcomed = false;
+		Self->bWorldLoaded = false;
+		Self->Travelling = RoomName;
+		Self->Players.Empty();
+		const FString Url = PlayServ::Rooms::BuildTravelUrl(Result.Ticket);
+		Self->Log(FString::Printf(TEXT("travelling to %s at %s:%d"), *RoomName, *Result.Ticket.Connect.Host, Result.Ticket.Connect.Port));
+		PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
 	}));
 }
 
-void UCubeWorldGameInstance::Connect(const FString& RoomName, const FString& Host, int32 Port, const FString& Path, bool bSecure, const FString& ReservationToken, bool bTeleport)
+void UCubeWorldGameInstance::HandleNetworkFailure(UWorld* InWorld, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString)
 {
-	Log(FString::Printf(TEXT("connecting to %s://%s:%d"), bSecure ? TEXT("wss") : TEXT("ws"), *Host, Port));
-	TSharedPtr<FCubeSocket> NewSocket = MakeShared<FCubeSocket>(Host, Port, bSecure, Path);
-	Pending = NewSocket;
-	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
-	TWeakPtr<FCubeSocket> WeakSocket(NewSocket);
-	const FString Token = UPlayServSubsystem::Get()->GetAuth()->GetAccessToken();
-
-	NewSocket->OnConnected.AddLambda([Weak, WeakSocket, ReservationToken, Token]()
-	{
-		if (!Weak.IsValid() || !WeakSocket.IsValid()) return;
-		const TSharedRef<FJsonObject> Hello = MakeShared<FJsonObject>();
-		Hello->SetStringField(TEXT("playerId"), Weak->PlayerId);
-		Hello->SetStringField(TEXT("displayName"), Weak->PlayerName);
-		Hello->SetStringField(TEXT("token"), Token);
-		Hello->SetStringField(TEXT("reservationToken"), ReservationToken);
-		WeakSocket.Pin()->Send(ToText(Hello));
-	});
-	NewSocket->OnError.AddLambda([Weak, WeakSocket, RoomName](const FString& Error)
-	{
-		if (!Weak.IsValid()) return;
-		const bool bLive = Weak->Socket == WeakSocket.Pin();
-		Weak->bSwitching = false;
-		Weak->CrossAfter = FPlatformTime::Seconds() + 3;
-		Weak->bSigningIn = false;
-		Weak->Status = FString::Printf(TEXT("Could not reach %s: %s"), *RoomName, *Error);
-		Weak->Log(Weak->Status);
-		if (bLive) { Weak->Socket.Reset(); Weak->Room.Empty(); Weak->Reconnect(); }
-	});
-	NewSocket->OnClosed.AddLambda([Weak, WeakSocket, RoomName](const FString& Reason)
-	{
-		if (!Weak.IsValid()) return;
-		if (Weak->Socket == WeakSocket.Pin())
-		{
-			const FString Turned = Weak->TurnedAway(RoomName, Reason);
-			Weak->Log(Turned.IsEmpty() ? FString::Printf(TEXT("disconnected: %s"), *Reason) : Turned);
-			Weak->Socket.Reset();
-			Weak->Room.Empty();
-			Weak->bSigningIn = false;
-			Weak->Reconnect();
-		}
-		else Weak->bSwitching = false;
-	});
-	NewSocket->OnMessage.AddLambda([Weak, WeakSocket, RoomName, bTeleport](const FString& Text)
-	{
-		if (!Weak.IsValid() || !WeakSocket.IsValid()) return;
-		UCubeWorldGameInstance* Self = Weak.Get();
-		TSharedPtr<FJsonObject> Frame;
-		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Frame) || !Frame.IsValid()) return;
-		const FString Type = Str(Frame, TEXT("type"));
-		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
-		if (Type == TEXT("welcome") && Self->Socket != This)
-		{
-			const TSharedPtr<FCubeSocket> Previous = Self->Socket;
-			Self->Socket = This;
-			Self->Pending.Reset();
-			Self->Room = RoomName;
-			Self->bSwitching = false;
-			Self->bSigningIn = false;
-			if (Previous.IsValid()) Previous->Close();
-			Self->OnFrame(Frame, bTeleport || !Self->bPlaced);
-			Self->Log(FString::Printf(TEXT("%s %s"), Previous.IsValid() ? TEXT("crossed into") : TEXT("entered"), *RoomName));
-			return;
-		}
-		if (Self->Socket == This) Self->OnFrame(Frame, false);
-	});
-	NewSocket->Connect();
+	if (IsRunningDedicatedServer()) return;
+	Disconnected(ErrorString.IsEmpty() ? FString(ENetworkFailure::ToString(FailureType)) : ErrorString);
 }
 
-// After the live socket goes: look for a server again in a moment, keeping the sign-in.
+// A kick (an operator's close or removal) brings the client back to the menu map; look for a server again after it.
+void UCubeWorldGameInstance::ReturnToMainMenu()
+{
+	Super::ReturnToMainMenu();
+	if (!IsRunningDedicatedServer()) Disconnected(TEXT("the server closed the connection"));
+}
+
+void UCubeWorldGameInstance::Disconnected(const FString& Why)
+{
+	if (!bWelcomed && !bSwitching && Travelling.IsEmpty()) return;
+	const FString Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Why);
+	Log(Turned.IsEmpty() ? FString::Printf(TEXT("disconnected: %s"), *Why) : Turned);
+	bWelcomed = false;
+	bSwitching = false;
+	bSigningIn = false;
+	Room.Empty();
+	Travelling.Empty();
+	CrossAfter = FPlatformTime::Seconds() + 3;
+	Reconnect();
+}
+
+// After the connection goes: look for a server again in a moment, keeping the sign-in.
 void UCubeWorldGameInstance::Reconnect()
 {
 	Status = TEXT("Disconnected, reconnecting...");
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
-	GetTimerManager().SetTimer(RetryTimer, [Weak]() { if (Weak.IsValid() && !Weak->IsConnected() && !Weak->PlayerId.IsEmpty()) { Weak->bSigningIn = true; Weak->Browse(); } }, 3.f, false);
-}
-
-void UCubeWorldGameInstance::Send(const TSharedRef<FJsonObject>& Frame)
-{
-	if (IsConnected()) Socket->Send(ToText(Frame));
+	GetTimerManager().SetTimer(RetryTimer, [Weak]() { if (Weak.IsValid() && !Weak->IsConnected() && !Weak->bSwitching && !Weak->PlayerId.IsEmpty()) { Weak->bSigningIn = true; Weak->Browse(); } }, 3.f, false);
 }
 
 FString UCubeWorldGameInstance::RoomOfRegion(int32 InRegion) const
@@ -310,203 +215,116 @@ FString UCubeWorldGameInstance::NameOf(const FString& Id) const
 	return Id;
 }
 
-void UCubeWorldGameInstance::ReadCube(const TSharedPtr<FJsonObject>& Cube, bool bDelete, TArray<FIntVector>& Changed)
+// ── what the server tells this client ────────────────────────────────────────────────────────────
+
+void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& InColor, const FString& InRoom, int32 InRegion, const FCubePose& You, const TArray<FCubeStackRep>& Stacks, int32 ChunkCount)
 {
-	if (!Cube.IsValid()) return;
-	const FName Kind = bDelete ? NAME_None : FName(*Str(Cube, TEXT("kind")));
-	const int32 X = (int32)Num(Cube, TEXT("x")), Y = (int32)Num(Cube, TEXT("y")), Z = (int32)Num(Cube, TEXT("z"));
-	World.Set(X, Y, Z, Kind);
-	Changed.Add(FIntVector(X, Y, Z));
-	OnCube.Broadcast(X, Y, Z, Kind);
+	const bool bCrossed = Crossing.bSet;
+	Server = InServer; Color = InColor; Room = InRoom; Region = InRegion;
+	Travelling.Empty();
+	bSwitching = false;
+	bSigningIn = false;
+	bWelcomed = true;
+	Health = You.Health;
+	bDead = false;
+	Status.Empty();
+	World.Clear();
+	bWorldLoaded = false;
+	ChunksExpected = ChunkCount;
+	ChunksReceived = 0;
+	PendingCubes.Empty();
+	SetInventory(Stacks);
+	// The server placed the player where the hello asked: at the crossing point, or at its spawn.
+	WelcomePose = You;
+	Crossing = FCubeCrossing();
+	Log(FString::Printf(TEXT("%s %s"), bCrossed ? TEXT("crossed into") : TEXT("entered"), *InRoom));
+	if (ChunkCount == 0) OnWorldChunk(TArray<FCubeCellRep>(), true);
 }
 
-void UCubeWorldGameInstance::ReadFall(const TSharedPtr<FJsonObject>& Fall)
+// The body is placed only once the whole world is here: it must not fall through blocks that have not arrived.
+void UCubeWorldGameInstance::OnWorldChunk(const TArray<FCubeCellRep>& Cells, bool bLast)
 {
-	OnFall.Broadcast(FName(*Str(Fall, TEXT("kind"))), (int32)Num(Fall, TEXT("x")), (int32)Num(Fall, TEXT("y")), (int32)Num(Fall, TEXT("fromZ")), (int32)Num(Fall, TEXT("toZ")));
+	for (const FCubeCellRep& C : Cells) World.Set(C.X, C.Y, C.Z, CubeSpec::KindOf(C.Kind));
+	ChunksReceived++;
+	if (!bLast) return;
+	bWorldLoaded = true;
+	OnWelcome.Broadcast(WelcomePose, true);
+	bPlaced = true;
+	for (const FPendingCubes& P : PendingCubes) ApplyCubes(P.Changes, P.Falls, P.bRemote);
+	PendingCubes.Empty();
 }
 
-void UCubeWorldGameInstance::ReadInventory(const TSharedPtr<FJsonObject>& Object)
+void UCubeWorldGameInstance::ApplyCubes(const TArray<FCubeChangeRep>& Changes, const TArray<FCubeFallRep>& Falls, bool bRemote)
 {
-	if (!Object.IsValid()) return;
+	if (!bWorldLoaded) { PendingCubes.Add({ Changes, Falls, bRemote }); return; }
+	for (const FCubeFallRep& F : Falls) OnFall.Broadcast(CubeSpec::KindOf(F.Kind), F.X, F.Y, F.FromZ, F.ToZ);
+	TArray<FIntVector> Changed;
+	FString On;
+	for (const FCubeChangeRep& C : Changes)
+	{
+		const FName Kind = CubeSpec::KindOf(C.Kind);
+		World.Set(C.X, C.Y, C.Z, Kind);
+		Changed.Add(FIntVector(C.X, C.Y, C.Z));
+		OnCube.Broadcast(C.X, C.Y, C.Z, Kind);
+		if (On.IsEmpty()) On = C.On;
+	}
+	OnCubes.Broadcast(Changed);
+	if (Changed.Num() > 0 && bRemote)
+		Log(FString::Printf(TEXT("%d block%s changed on server %s -> arrived here"), Changed.Num(), Changed.Num() > 1 ? TEXT("s") : TEXT(""), *On));
+}
+
+void UCubeWorldGameInstance::SetInventory(const TArray<FCubeStackRep>& Stacks)
+{
 	Inventory.Empty();
-	for (const auto& Pair : Object->Values) Inventory.Add(FName(*Pair.Key), (int32)Pair.Value->AsNumber());
+	for (const FCubeStackRep& S : Stacks) Inventory.Add(CubeSpec::KindOf(S.Kind), S.Count);
 	OnInventory.Broadcast();
 }
 
-void UCubeWorldGameInstance::OnFrame(const TSharedPtr<FJsonObject>& Frame, bool bTeleport)
+void UCubeWorldGameInstance::SetPlayers(const TArray<FCubePresenceRep>& InPlayers)
 {
-	const FString Type = Str(Frame, TEXT("type"));
-	const double FrameStart = FPlatformTime::Seconds();
-	ON_SCOPE_EXIT { const double Ms = (FPlatformTime::Seconds() - FrameStart) * 1000; if (Ms > 20) UE_LOG(LogCubeWorld, Log, TEXT("slow: frame %s took %.0f ms"), *Type, Ms); };
-	if (Type != TEXT("players") && FParse::Param(FCommandLine::Get(), TEXT("logframes"))) UE_LOG(LogCubeWorld, Log, TEXT("frame %s"), *Type);
-	if (Type == TEXT("welcome"))
+	Players.Empty();
+	for (const FCubePresenceRep& R : InPlayers)
 	{
-		Server = Str(Frame, TEXT("server")); Color = Str(Frame, TEXT("color")); Region = (int32)Num(Frame, TEXT("region"), -1);
-		Regions.Empty();
-		const TArray<TSharedPtr<FJsonValue>>* RegionsJson;
-		if (Frame->TryGetArrayField(TEXT("regions"), RegionsJson))
-			for (const auto& V : *RegionsJson)
-			{
-				const TSharedPtr<FJsonObject> R = V->AsObject();
-				FCubeRegion Reg; Reg.Region = FCString::Atoi(*Str(R, TEXT("region"))); Reg.Room = Str(R, TEXT("room")); Reg.Color = Str(R, TEXT("color")); Reg.Server = Str(R, TEXT("server"));
-				Regions.Add(Reg);
-			}
-		TMap<int32, FName> Layers;
-		const TArray<TSharedPtr<FJsonValue>>* LayersJson;
-		if (Frame->TryGetArrayField(TEXT("layers"), LayersJson))
-			for (const auto& V : *LayersJson) Layers.Add((int32)Num(V->AsObject(), TEXT("z")), FName(*Str(V->AsObject(), TEXT("kind"))));
-		TArray<FIntPoint> Trees;
-		const TArray<TSharedPtr<FJsonValue>>* TreesJson;
-		if (Frame->TryGetArrayField(TEXT("trees"), TreesJson))
-			for (const auto& V : *TreesJson) Trees.Add(FIntPoint((int32)Num(V->AsObject(), TEXT("x")), (int32)Num(V->AsObject(), TEXT("y"))));
-		TArray<FBlockDef> Blocks;
-		const TArray<TSharedPtr<FJsonValue>>* BlocksJson;
-		if (Frame->TryGetArrayField(TEXT("blocks"), BlocksJson))
-			for (const auto& V : *BlocksJson)
-			{
-				const TSharedPtr<FJsonObject> B = V->AsObject();
-				FBlockDef Def;
-				Def.Kind = FName(*Str(B, TEXT("kind")));
-				Def.Hardness = Num(B, TEXT("Hardness"));
-				Def.bNeedsTool = B->HasTypedField<EJson::Boolean>(TEXT("NeedsTool")) && B->GetBoolField(TEXT("NeedsTool"));
-				Def.bTransparent = B->HasTypedField<EJson::Boolean>(TEXT("Transparent")) && B->GetBoolField(TEXT("Transparent"));
-				Def.bGravity = B->HasTypedField<EJson::Boolean>(TEXT("Gravity")) && B->GetBoolField(TEXT("Gravity"));
-				const FString Drop = Str(B, TEXT("Drop"));
-				Def.Drop = Drop.IsEmpty() ? NAME_None : FName(*Drop);
-				Def.BreakTicks = (int32)Num(B, TEXT("breakTicks"), -1);
-				Blocks.Add(Def);
-			}
-		World.Configure((int32)Num(Frame, TEXT("width"), 72), (int32)Num(Frame, TEXT("depth"), 24), (int32)Num(Frame, TEXT("minZ"), -4), (int32)Num(Frame, TEXT("maxZ"), 64),
-			(int32)Num(Frame, TEXT("regionSize"), 24), Layers, Trees, Blocks);
-		const TArray<TSharedPtr<FJsonValue>>* WorldJson;
-		if (Frame->TryGetArrayField(TEXT("world"), WorldJson))
-			for (const auto& V : *WorldJson)
-			{
-				const TSharedPtr<FJsonObject> C = V->AsObject();
-				World.Set((int32)Num(C, TEXT("x")), (int32)Num(C, TEXT("y")), (int32)Num(C, TEXT("z")), FName(*Str(C, TEXT("kind"))));
-			}
-		Hotbar.Empty();
-		const TArray<TSharedPtr<FJsonValue>>* HotbarJson;
-		if (Frame->TryGetArrayField(TEXT("hotbar"), HotbarJson)) for (const auto& V : *HotbarJson) Hotbar.Add(FName(*V->AsString()));
-		const TSharedPtr<FJsonObject>* InventoryJson;
-		if (Frame->TryGetObjectField(TEXT("inventory"), InventoryJson)) ReadInventory(*InventoryJson);
-		const TSharedPtr<FJsonObject>* You;
-		FCubePose Pose;
-		if (Frame->TryGetObjectField(TEXT("you"), You)) Pose = ReadPose(*You);
-		Health = Pose.Health;
-		bDead = false;
-		Status.Empty();
-		OnWelcome.Broadcast(Pose, bTeleport);
-		if (bTeleport) bPlaced = true;
-		const TArray<TSharedPtr<FJsonValue>>* BombsJson;
-		if (Frame->TryGetArrayField(TEXT("bombs"), BombsJson))
-			for (const auto& V : *BombsJson) OnBomb.Broadcast(ReadBomb(V->AsObject()));
-		// This client can show a bomb in the hand and throw it, and reads blocks batched in one "cubes" frame; the
-		// server hands bombs, and batches, only to clients that say so.
-		const TSharedRef<FJsonObject> Bombs = MakeShared<FJsonObject>();
-		Bombs->SetStringField(TEXT("op"), TEXT("bombs"));
-		Send(Bombs);
-		return;
+		FCubePresence P;
+		P.Id = R.Id; P.Name = R.Name; P.Server = R.Server; P.Color = R.Color;
+		P.X = R.X; P.Y = R.Y; P.Z = R.Z; P.Yaw = R.Yaw; P.Pitch = R.Pitch; P.Health = R.Health;
+		P.bSneaking = R.bSneaking; P.bSprinting = R.bSprinting;
+		Players.Add(P);
 	}
-	if (Type == TEXT("regions"))
-	{
-		Regions.Empty();
-		const TArray<TSharedPtr<FJsonValue>>* RegionsJson;
-		if (Frame->TryGetArrayField(TEXT("regions"), RegionsJson))
-			for (const auto& V : *RegionsJson)
-			{
-				const TSharedPtr<FJsonObject> R = V->AsObject();
-				FCubeRegion Reg; Reg.Region = FCString::Atoi(*Str(R, TEXT("region"))); Reg.Room = Str(R, TEXT("room")); Reg.Color = Str(R, TEXT("color")); Reg.Server = Str(R, TEXT("server"));
-				Regions.Add(Reg);
-			}
-		return;
-	}
-	if (Type == TEXT("cube"))
-	{
-		const TSharedPtr<FJsonObject>* C;
-		if (!Frame->TryGetObjectField(TEXT("cube"), C)) return;
-		const bool bDelete = Str(Frame, TEXT("op")) == TEXT("delete");
-		const FName Kind = bDelete ? NAME_None : FName(*Str(*C, TEXT("kind")));
-		TArray<FIntVector> Changed;
-		ReadCube(*C, bDelete, Changed);
-		OnCubes.Broadcast(Changed);
-		if (Frame->HasTypedField<EJson::Boolean>(TEXT("remote")) && Frame->GetBoolField(TEXT("remote")))
-			Log(FString::Printf(TEXT("%s on server %s -> arrived here"), Kind == NAME_None || Kind == TEXT("air") ? TEXT("removed") : TEXT("placed"), *Str(*C, TEXT("placed_on"))));
-		return;
-	}
-	if (Type == TEXT("fall"))
-	{
-		ReadFall(Frame);
-		return;
-	}
-	if (Type == TEXT("cubes"))
-	{
-		// Blocks that changed together (a blast is a hundred of them) arrive in one frame and rebuild each chunk once.
-		const TArray<TSharedPtr<FJsonValue>>* Falls;
-		if (Frame->TryGetArrayField(TEXT("falls"), Falls)) for (const auto& V : *Falls) ReadFall(V->AsObject());
-		TArray<FIntVector> Changed;
-		FString PlacedOn;
-		const TArray<TSharedPtr<FJsonValue>>* Changes;
-		if (Frame->TryGetArrayField(TEXT("changes"), Changes))
-			for (const auto& V : *Changes)
-			{
-				const TSharedPtr<FJsonObject> Change = V->AsObject();
-				const TSharedPtr<FJsonObject>* C;
-				if (!Change.IsValid() || !Change->TryGetObjectField(TEXT("cube"), C)) continue;
-				ReadCube(*C, Str(Change, TEXT("op")) == TEXT("delete"), Changed);
-				if (PlacedOn.IsEmpty()) PlacedOn = Str(*C, TEXT("placed_on"));
-			}
-		OnCubes.Broadcast(Changed);
-		if (Changed.Num() > 0 && Frame->HasTypedField<EJson::Boolean>(TEXT("remote")) && Frame->GetBoolField(TEXT("remote")))
-			Log(FString::Printf(TEXT("%d block%s changed on server %s -> arrived here"), Changed.Num(), Changed.Num() > 1 ? TEXT("s") : TEXT(""), *PlacedOn));
-		return;
-	}
-	if (Type == TEXT("bomb"))
-	{
-		OnBomb.Broadcast(ReadBomb(Frame));
-		return;
-	}
-	if (Type == TEXT("dig"))
-	{
-		OnDig.Broadcast(Str(Frame, TEXT("player")), (int32)Num(Frame, TEXT("x")), (int32)Num(Frame, TEXT("y")), (int32)Num(Frame, TEXT("z")), (int32)Num(Frame, TEXT("stage"), -1));
-		return;
-	}
-	if (Type == TEXT("inventory") || Type == TEXT("refused"))
-	{
-		const TSharedPtr<FJsonObject>* InventoryJson;
-		if (Frame->TryGetObjectField(TEXT("inventory"), InventoryJson)) ReadInventory(*InventoryJson);
-		return;
-	}
-	if (Type == TEXT("players"))
-	{
-		Players.Empty();
-		const TArray<TSharedPtr<FJsonValue>>* PlayersJson;
-		if (Frame->TryGetArrayField(TEXT("players"), PlayersJson))
-			for (const auto& V : *PlayersJson) Players.Add(ReadPresence(V->AsObject()));
-		OnPlayers.Broadcast(Players);
-		return;
-	}
-	if (Type == TEXT("hurt"))
-	{
-		const FString Who = Str(Frame, TEXT("player"));
-		if (Who == PlayerId) Health = Num(Frame, TEXT("health"));
-		OnHurt.Broadcast(Who, Num(Frame, TEXT("health")), Num(Frame, TEXT("kx")), Num(Frame, TEXT("ky")), Num(Frame, TEXT("strength")));
-		return;
-	}
-	if (Type == TEXT("death"))
-	{
-		const FString Who = Str(Frame, TEXT("player"));
-		if (Who == PlayerId) { bDead = true; Health = 0; }
-		OnDeath.Broadcast(Who, Str(Frame, TEXT("by")));
-		return;
-	}
-	if (Type == TEXT("respawn"))
-	{
-		const TSharedPtr<FJsonObject>* You;
-		FCubePose Pose;
-		if (Frame->TryGetObjectField(TEXT("you"), You)) Pose = ReadPose(*You);
-		bDead = false;
-		Health = Pose.Health;
-		OnRespawn.Broadcast(Pose);
-	}
+	OnPlayers.Broadcast(Players);
+}
+
+void UCubeWorldGameInstance::SetRegions(const TArray<FCubeRegionRep>& InRegions)
+{
+	Regions.Empty();
+	for (const FCubeRegionRep& R : InRegions) Regions.Add({ R.Region, R.Room, R.Color, R.Server });
+}
+
+void UCubeWorldGameInstance::OnHurtFrame(const FString& InPlayerId, double InHealth, double KX, double KY, double Strength)
+{
+	if (InPlayerId == PlayerId) Health = InHealth;
+	OnHurt.Broadcast(InPlayerId, InHealth, KX, KY, Strength);
+}
+
+void UCubeWorldGameInstance::OnDeathFrame(const FString& InPlayerId, const FString& By)
+{
+	if (InPlayerId == PlayerId) { bDead = true; Health = 0; }
+	OnDeath.Broadcast(InPlayerId, By);
+}
+
+void UCubeWorldGameInstance::OnRespawnFrame(const FCubePose& You)
+{
+	bDead = false;
+	Health = You.Health;
+	OnRespawn.Broadcast(You);
+}
+
+void UCubeWorldGameInstance::OnBombFrame(const FCubeBombRep& B)
+{
+	FCubeBombFrame F;
+	F.Id = B.Id; F.State = B.State; F.Holder = B.Holder;
+	F.X = B.X; F.Y = B.Y; F.Z = B.Z; F.VX = B.VX; F.VY = B.VY; F.VZ = B.VZ;
+	F.Age = B.AgeMs;
+	if (B.bHasHeight) F.Height = B.Height;
+	OnBomb.Broadcast(F);
 }

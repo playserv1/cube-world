@@ -8,13 +8,12 @@ public class CubeWorld : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
-			"Core", "CoreUObject", "Engine", "InputCore",
+			"Core", "CoreUObject", "Engine", "InputCore", "NetCore",
 			"ProceduralMeshComponent", "Json", "JsonUtilities", "Sockets", "Networking",
 			"RenderCore", "RHI", "PlayServRuntime",
 		});
 
-		// The game socket runs over OpenSSL's connect BIO, plain or TLS; the SSL module owns the certificate store.
-		PrivateDependencyModuleNames.Add("SSL");
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
+		// The dedicated server replicates over Iris (net.Iris.UseIrisReplication=1 in DefaultEngine.ini).
+		SetupIrisSupport(Target);
 	}
 }
