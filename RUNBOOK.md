@@ -75,6 +75,12 @@ Needs Docker with `buildx` (Docker Desktop on macOS and Windows) and the CLI ses
 | D6 | Out of cubes, then the refill arrives | place until the bar is empty; within a minute the function tops it up; `list_function_logs` of the refill shows `refilled N inventories` |
 | D7 | A bomb comes down on a parachute, a player picks it up and throws it across a border | walk into a bomb in tab 1: it is in the hand in tab 1 and in the figure's hand in tabs 2 and 3; right click throws it; the crater and the damage show on every server; `list_function_logs` of the drop shows `dropped bomb` every 15 s |
 | D8 | Never more than five bombs | leave the bombs lying: the sixth drop makes the oldest go up in a puff of smoke |
+| D9 | The operator removes a player | admin → the room → **Remove player** (or `remove_room_participant`): that tab says an operator removed it; walking back into that region is refused, the other regions still let it in |
+| D10 | The operator closes a room, and it comes back fresh | build something in a region, then admin → **Delete room** (or `close_room`): its tabs say the room was closed; within a minute or two the room is back under the same name, empty, and the region's floor is as generated — what was built there is gone. `list_function_logs` of the server shows `region N cleared` |
+
+To take a region away for good, remove its machine: `remove_pool_machine` closes its room, destroys the
+machine and lowers the pool's size by one, so no replacement is requested. Closing the room alone brings it
+back, because the server's process restarts on the same machine.
 
 ## Tear-down
 
