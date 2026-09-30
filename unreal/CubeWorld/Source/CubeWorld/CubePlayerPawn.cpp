@@ -100,7 +100,7 @@ void ACubePlayerPawn::Bind()
 		// A -walkto test keeps walking through the border, as a player holding the key does.
 		AxisForward = C.Forward; AxisRight = C.Strafe; bMouseCaptured = true;
 		FString WalkTo;
-		if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty()) TestForward = 1.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"))) TestForward = 1.f;
 	}
 	else Body.Teleport(36, 12, 0);
 	Game->bPlaced = bCrossingIn;
@@ -122,6 +122,7 @@ void ACubePlayerPawn::Bind()
 			View->SetControlRotation(FRotator(-FMath::RadiansToDegrees(Game->Crossing.Pitch), FMath::RadiansToDegrees(Game->Crossing.Yaw) + 90.f, 0));
 		Game->EndCrossingView();
 		PressHeldKeys();
+		HeldKeysUntil = FPlatformTime::Seconds() + 2.0;
 	}
 
 	if (Game->PlayerName.IsEmpty())
@@ -271,6 +272,41 @@ void ACubePlayerPawn::Spawn(double X, double Y, double Z)
 	Game->bPlaced = true;
 }
 
+void ACubePlayerPawn::ReadHeldKeys()
+{
+#if PLATFORM_WINDOWS
+	const UInputSettings* Settings = UInputSettings::GetInputSettings();
+	if (!Settings) return;
+	auto Down = [](const FKey& Key)
+	{
+		if (!Key.IsValid() || Key.IsGamepadKey() || Key.IsMouseButton()) return false;
+		const uint32* KeyCode = nullptr; const uint32* CharCode = nullptr;
+		FInputKeyManager::Get().GetCodesFromKey(Key, KeyCode, CharCode);
+		const uint32 Code = KeyCode ? *KeyCode : (CharCode ? *CharCode : 0);
+		return Code != 0 && (::GetAsyncKeyState((int)Code) & 0x8000) != 0;
+	};
+	auto Axis = [&](const TCHAR* Name, float& Value)
+	{
+		TArray<FInputAxisKeyMapping> Mappings;
+		Settings->GetAxisMappingByName(Name, Mappings);
+		float Sum = 0; bool bAny = false;
+		for (const FInputAxisKeyMapping& M : Mappings) if (Down(M.Key)) { Sum += M.Scale; bAny = true; }
+		if (bAny) Value = FMath::Clamp(Sum, -1.f, 1.f);
+	};
+	auto Action = [&](const TCHAR* Name, bool& Held)
+	{
+		TArray<FInputActionKeyMapping> Mappings;
+		Settings->GetActionMappingByName(Name, Mappings);
+		for (const FInputActionKeyMapping& M : Mappings) if (Down(M.Key)) { Held = true; return; }
+	};
+	Axis(TEXT("MoveForward"), AxisForward);
+	Axis(TEXT("MoveRight"), AxisRight);
+	Action(TEXT("Sprint"), bSprintHeld);
+	Action(TEXT("Sneak"), bSneakHeld);
+	Action(TEXT("Jump"), bJumpHeld);
+#endif
+}
+
 void ACubePlayerPawn::PressHeldKeys()
 {
 #if PLATFORM_WINDOWS
@@ -408,7 +444,10 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 		{
 			TestWalkTo = Target;
 			TestWalkToY = TargetYValue;
-			bMouseCaptured = true; TestForward = 1.f; bSprintHeld = true;
+			// With -holdkeys the walk is the test's own only up to the first border: past it the keys held on the real keyboard
+			// must carry the player on (the test of keys surviving a crossing).
+			bMouseCaptured = true;
+			if (!FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) || !Game->bCrossedOnce) { TestForward = 1.f; bSprintHeld = true; }
 		}), 2.f, false);
 		FTimerHandle Where;
 		GetWorldTimerManager().SetTimer(Where, FTimerDelegate::CreateWeakLambda(this, [this]() { Game->Log(FString::Printf(TEXT("walkto: at %.1f %.1f %.1f yaw %.0f in %s"), Body.X, Body.Y, Body.Z, GetControlRotation().Yaw, *Game->Room)); }), 1.f, true);
@@ -548,6 +587,7 @@ void ACubePlayerPawn::GameTick()
 		FCubeInput Input;
 		if (bMouseCaptured)
 		{
+			if (FPlatformTime::Seconds() < HeldKeysUntil) ReadHeldKeys();
 			Input.Forward = FMath::Clamp(AxisForward + TestForward, -1.f, 1.f);
 			Input.Strafe = -FMath::Clamp(AxisRight, -1.f, 1.f);   // Minecraft's strafe is positive to the left
 			Input.bJump = bJumpHeld; Input.bSneak = bSneakHeld; Input.bSprint = bSprintHeld;

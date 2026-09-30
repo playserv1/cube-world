@@ -120,6 +120,9 @@ private:
 	void Unstick();
 	/** After a crossing the new controller knows no key as held: the keys held down now are pressed for it again. */
 	void PressHeldKeys();
+	/** For a moment after a crossing the keys are read from the keyboard itself: the new controller's input takes about a second to see keys held down. */
+	void ReadHeldKeys();
+	double HeldKeysUntil = 0;
 	void CaptureMouse(bool bCapture);
 	void SetupUnattended();
 	ACubeWorldActor* WorldActor() const;

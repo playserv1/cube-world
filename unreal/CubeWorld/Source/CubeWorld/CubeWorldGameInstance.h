@@ -120,6 +120,8 @@ public:
 	double Health = 20;
 	bool bDead = false;
 	bool bPlaced = false;
+	/** Set once a border has been crossed in this run (the -holdkeys test walks by itself only up to the first one). */
+	bool bCrossedOnce = false;
 	/** The bomb in the player's hand, if any: right click throws it instead of placing a block. */
 	FString Holding;
 	FString Status = TEXT("Press Enter to play");

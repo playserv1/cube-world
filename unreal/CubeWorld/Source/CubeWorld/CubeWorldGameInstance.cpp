@@ -440,6 +440,7 @@ FString UCubeWorldGameInstance::NameOf(const FString& Id) const
 void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& InColor, const FString& InRoom, int32 InRegion, const FCubePose& You, const TArray<FCubeStackRep>& Stacks, int32 ChunkCount)
 {
 	const bool bCrossed = Crossing.bSet;
+	if (bCrossed) bCrossedOnce = true;
 	Server = InServer; Color = InColor; Room = InRoom; Region = InRegion;
 	Travelling.Empty();
 	bSwitching = false;
