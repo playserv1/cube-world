@@ -185,11 +185,12 @@ function onFrame(frame, teleport) {
       Object.assign(state, { server: frame.server, color: frame.color, region: frame.region ?? -1, regions: frame.regions ?? [],
         regionSize: frame.regionSize, hotbar: [...frame.hotbar], inventory: frame.inventory, health: frame.you.health, dead: false });
       loadLayout(frame.hotbar);
+      const before = chunks.size > 0 ? world.snapshot() : null;
       world.configure({ width: frame.width, depth: frame.depth, minY: frame.minZ, maxY: frame.maxZ, layers: frame.layers, blocks: frame.blocks,
         trees: frame.trees, regionSize: frame.regionSize, regionColors: REGION_COLORS });
       for (const c of frame.world) world.set(c.x, c.z, c.y, c.kind);
-      world.setDown(downNow());
-      rebuild(world.allChunks());
+      const down = world.setDown(downNow());
+      rebuild(down.length ? down : world.changedSince(before));
       for (const crack of cracks.values()) scene.remove(crack);
       cracks.clear();
       if (teleport) spawn(frame.you);
