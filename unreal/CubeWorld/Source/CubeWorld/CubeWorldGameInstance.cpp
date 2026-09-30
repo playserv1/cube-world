@@ -72,19 +72,12 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 					Placeholder->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
 				}
 			}
-		CrossingBlankFrames = 0;
-		const double Until = FPlatformTime::Seconds() + 5;
-		TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
-		CrossingViewTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak, Until](float)
-		{
-			if (!Weak.IsValid() || !Weak->CrossingCamera.IsValid() || FPlatformTime::Seconds() > Until) { if (Weak.IsValid()) Weak->EndCrossingView(); return false; }
-			APlayerController* PC = Weak->GetFirstLocalPlayerController();
-			if (!PC) Weak->CrossingBlankFrames++;
-			if (PC && PC->GetViewTarget() != Weak->CrossingCamera.Get()) PC->SetViewTarget(Weak->CrossingCamera.Get());
-			// The HUD stays on screen: the next server's controller gets it at once, not when the server's call arrives.
-			if (PC && (!PC->GetHUD() || !PC->GetHUD()->IsA(ACubeHUD::StaticClass()))) PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
-			return true;
-		}));
+		CrossingBlankFrames = 0; CrossingWrongFrames = 0;
+		// Held on every frame after the engine's own camera update (LevelTick: cameras, then the post-actor-tick hook), so a
+		// view target the engine switches to on its own (the next server's controller, its pawn still where that server
+		// spawned it) is never drawn.
+		CrossingViewUntil = FPlatformTime::Seconds() + 5;
+		CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
 	}
 	// Back in the local map after an Unreal server: the C# server waiting for us is reached now.
 	if (SocketPlan.bSet && LoadedWorld->GetNetMode() == NM_Standalone)
@@ -95,10 +88,23 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	}
 }
 
+void UCubeWorldGameInstance::HoldCrossingView(UWorld* InWorld, ELevelTick, float)
+{
+	if (!InWorld || InWorld->GetNetMode() == NM_DedicatedServer) return;
+	if (!CrossingCamera.IsValid() || FPlatformTime::Seconds() > CrossingViewUntil) { EndCrossingView(); return; }
+	APlayerController* PC = GetFirstLocalPlayerController();
+	if (!PC) { CrossingBlankFrames++; return; }
+	if (PC->PlayerCameraManager && FVector::Dist(PC->PlayerCameraManager->GetCameraLocation(), CrossingCamera->GetActorLocation()) > 300) CrossingWrongFrames++;
+	if (PC->GetViewTarget() != CrossingCamera.Get()) PC->SetViewTarget(CrossingCamera.Get());
+	if (PC->PlayerCameraManager) PC->PlayerCameraManager->UpdateCamera(0.f);
+	// The HUD stays on screen: the next server's controller gets it at once, not when the server's call arrives.
+	if (!PC->GetHUD() || !PC->GetHUD()->IsA(ACubeHUD::StaticClass())) PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
+}
+
 void UCubeWorldGameInstance::EndCrossingView()
 {
-	if (CrossingCamera.IsValid()) Log(FString::Printf(TEXT("crossing: %d frame(s) without a view"), CrossingBlankFrames));
-	if (CrossingViewTicker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(CrossingViewTicker); CrossingViewTicker.Reset(); }
+	if (CrossingCamera.IsValid()) Log(FString::Printf(TEXT("crossing: %d frame(s) without a view, %d held from a wrong place"), CrossingBlankFrames, CrossingWrongFrames));
+	if (CrossingViewTicker.IsValid()) { FWorldDelegates::OnWorldPostActorTick.Remove(CrossingViewTicker); CrossingViewTicker.Reset(); }
 	if (CrossingCamera.IsValid())
 	{
 		if (APlayerController* PC = GetFirstLocalPlayerController()) if (PC->GetPawn()) PC->SetViewTarget(PC->GetPawn());

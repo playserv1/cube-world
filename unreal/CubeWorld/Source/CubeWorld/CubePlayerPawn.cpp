@@ -64,6 +64,9 @@ void ACubePlayerPawn::BeginPlay()
 	Super::BeginPlay();
 	if (GetNetMode() == NM_DedicatedServer || CubeIsServerProcess()) return;
 	Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
+	// The next server spawned this pawn at its spawn point and does not replicate where it is: after a crossing it stands
+	// where the player is from its first frame, so no view of it is ever drawn from the other side of the map.
+	if (Game && Game->Crossing.bSet) SetActorLocation(FVector(Game->Crossing.X, Game->Crossing.Y, Game->Crossing.Z) * CubeSpec::BlockCm);
 }
 
 // The local player's pawn binds once it is possessed: on a network client the controller arrives after BeginPlay.
