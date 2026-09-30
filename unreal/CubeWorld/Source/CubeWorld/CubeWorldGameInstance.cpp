@@ -14,6 +14,8 @@
 #include "CubeHUD.h"
 #include "GameFramework/HUD.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/GameViewportClient.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Containers/Ticker.h"
 #include "CubeSpec.h"
 
@@ -49,6 +51,7 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		EndCrossingView();
 		const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
 		const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
+		CrossingEye = Eye; CrossingLook = Look;
 		CrossingCamera = LoadedWorld->SpawnActor<ACameraActor>(Eye, Look);
 		// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
 		if (CrossingCamera.IsValid())
@@ -59,6 +62,7 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		// The engine draws nothing while the local player has no player controller, and the next server's arrives a round
 		// trip after the map: a local placeholder (which the engine destroys when the real one comes, NetConnection.cpp)
 		// shows the world from the crossing camera meanwhile.
+		// The engine spawns a placeholder of its own in LoadMap; only when it has not is one made here.
 		if (ULocalPlayer* LocalPlayer = GetFirstGamePlayer())
 			if (!LocalPlayer->PlayerController)
 			{
@@ -68,16 +72,25 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 				{
 					Placeholder->SetPlayer(LocalPlayer);
 					Placeholder->SetControlRotation(Look);
-					Placeholder->SetViewTarget(CrossingCamera.Get());
+					AimPlaceholder(Placeholder);
 					Placeholder->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
 				}
 			}
+		if (APlayerController* Existing = GetFirstLocalPlayerController()) if (Existing->GetLocalRole() == ROLE_Authority) { AimPlaceholder(Existing); Existing->ClientSetHUD_Implementation(ACubeHUD::StaticClass()); }
 		CrossingBlankFrames = 0; CrossingWrongFrames = 0;
 		// Held on every frame after the engine's own camera update (LevelTick: cameras, then the post-actor-tick hook), so a
 		// view target the engine switches to on its own (the next server's controller, its pawn still where that server
 		// spawned it) is never drawn.
 		CrossingViewUntil = FPlatformTime::Seconds() + 5;
+		if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport && !DrawLogHandle.IsValid())
+		{
+			DrawLogUntil = FPlatformTime::Seconds() + 3;
+			DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
+		}
 		CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
+		// The world does not tick until the server's game state says play has begun, but frames are drawn all along: the
+		// view is aimed right before each draw as well.
+		if (GEngine && GEngine->GameViewport) CrossingDrawHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::AimCrossingViewBeforeDraw);
 	}
 	// Back in the local map after an Unreal server: the C# server waiting for us is reached now.
 	if (SocketPlan.bSet && LoadedWorld->GetNetMode() == NM_Standalone)
@@ -88,23 +101,73 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	}
 }
 
+void UCubeWorldGameInstance::AimPlaceholder(APlayerController* PC)
+{
+	if (!PC) return;
+	PC->SetInitialLocationAndRotation(CrossingEye, CrossingLook);
+	PC->SetControlRotation(CrossingLook);
+	if (PC->GetViewTarget() != PC) PC->SetViewTarget(PC);
+	if (APlayerCameraManager* Cam = PC->PlayerCameraManager)
+	{
+		if (LastHorizontalFov > 0) { Cam->DefaultFOV = LastHorizontalFov; Cam->SetFOV(LastHorizontalFov); }
+		Cam->UpdateCamera(0.f);
+	}
+}
+
+void UCubeWorldGameInstance::AimCrossingViewBeforeDraw()
+{
+	APlayerController* PC = GetFirstLocalPlayerController();
+	if (!PC || PC->GetLocalRole() != ROLE_Authority) return;
+	FVector Loc; FRotator Rot; PC->GetPlayerViewPoint(Loc, Rot);
+	if (FVector::Dist(Loc, CrossingEye) > 300) CrossingWrongFrames++;
+	AimPlaceholder(PC);
+	if (DrawLogHandle.IsValid())
+	{
+		FVector After; FRotator AfterRot; PC->GetPlayerViewPoint(After, AfterRot);
+		APlayerCameraManager* Cam = PC->PlayerCameraManager;
+		UE_LOG(LogCubeWorld, Log, TEXT("  aimed: before %s, after %s, actor %s, cam %s, cache t=%.3f, world t=%.3f, pc %p"), *Loc.ToString(), *After.ToString(), *(PC->GetRootComponent() ? PC->GetRootComponent()->GetComponentLocation() : FVector::ZeroVector).ToString(), Cam ? *Cam->GetCameraLocation().ToString() : TEXT("none"), Cam ? Cam->GetCameraCacheTime() : -1.f, GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f, PC);
+	}
+}
+
 void UCubeWorldGameInstance::HoldCrossingView(UWorld* InWorld, ELevelTick, float)
 {
 	if (!InWorld || InWorld->GetNetMode() == NM_DedicatedServer) return;
 	if (!CrossingCamera.IsValid() || FPlatformTime::Seconds() > CrossingViewUntil) { EndCrossingView(); return; }
 	APlayerController* PC = GetFirstLocalPlayerController();
 	if (!PC) { CrossingBlankFrames++; return; }
-	if (PC->PlayerCameraManager && FVector::Dist(PC->PlayerCameraManager->GetCameraLocation(), CrossingCamera->GetActorLocation()) > 300) CrossingWrongFrames++;
-	if (PC->GetViewTarget() != CrossingCamera.Get()) PC->SetViewTarget(CrossingCamera.Get());
-	if (PC->PlayerCameraManager) PC->PlayerCameraManager->UpdateCamera(0.f);
+	// The placeholder is the view itself, at the player's eyes: a fresh world's camera cache is not trusted by the engine in
+	// its first frames (its timestamp is 0), so the view falls back to the controller's own place, which must be right.
+	if (PC->GetLocalRole() == ROLE_Authority)
+	{
+		FVector Loc; FRotator Rot; PC->GetPlayerViewPoint(Loc, Rot);
+		if (FVector::Dist(Loc, CrossingEye) > 300) CrossingWrongFrames++;
+		AimPlaceholder(PC);
+	}
 	// The HUD stays on screen: the next server's controller gets it at once, not when the server's call arrives.
 	if (!PC->GetHUD() || !PC->GetHUD()->IsA(ACubeHUD::StaticClass())) PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
+}
+
+void UCubeWorldGameInstance::LogDrawnFrame()
+{
+	if (FPlatformTime::Seconds() > DrawLogUntil) { if (GEngine && GEngine->GameViewport) GEngine->GameViewport->OnBeginDraw().Remove(DrawLogHandle); DrawLogHandle.Reset(); return; }
+	APlayerController* PC = GetFirstLocalPlayerController();
+	FString Line = FString::Printf(TEXT("frame %llu: "), (unsigned long long)GFrameCounter);
+	if (!PC) Line += TEXT("no player controller");
+	else
+	{
+		FVector Loc; FRotator Rot;
+		PC->GetPlayerViewPoint(Loc, Rot);
+		const AActor* Target = PC->GetViewTarget();
+		Line += FString::Printf(TEXT("view %.1f %.1f %.1f yaw %.0f fov %.0f target %s pc %s pawn %s"), Loc.X / CubeSpec::BlockCm, Loc.Y / CubeSpec::BlockCm, Loc.Z / CubeSpec::BlockCm, Rot.Yaw, PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : 0.f, Target ? *Target->GetClass()->GetName() : TEXT("none"), PC->GetLocalRole() == ROLE_Authority ? TEXT("placeholder") : TEXT("server"), PC->GetPawn() ? *PC->GetPawn()->GetActorLocation().ToString() : TEXT("none"));
+	}
+	UE_LOG(LogCubeWorld, Log, TEXT("%s"), *Line);
 }
 
 void UCubeWorldGameInstance::EndCrossingView()
 {
 	if (CrossingCamera.IsValid()) Log(FString::Printf(TEXT("crossing: %d frame(s) without a view, %d held from a wrong place"), CrossingBlankFrames, CrossingWrongFrames));
 	if (CrossingViewTicker.IsValid()) { FWorldDelegates::OnWorldPostActorTick.Remove(CrossingViewTicker); CrossingViewTicker.Reset(); }
+	if (CrossingDrawHandle.IsValid()) { if (GEngine && GEngine->GameViewport) GEngine->GameViewport->OnBeginDraw().Remove(CrossingDrawHandle); CrossingDrawHandle.Reset(); }
 	if (CrossingCamera.IsValid())
 	{
 		if (APlayerController* PC = GetFirstLocalPlayerController()) if (PC->GetPawn()) PC->SetViewTarget(PC->GetPawn());

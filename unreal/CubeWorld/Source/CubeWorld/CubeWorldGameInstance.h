@@ -181,6 +181,16 @@ private:
 	double CrossingViewUntil = 0;
 	int32 CrossingBlankFrames = 0, CrossingWrongFrames = 0;
 	void HoldCrossingView(UWorld* InWorld, ELevelTick TickType, float DeltaSeconds);
+	/** Puts the placeholder controller, and so the view, at the player's eyes. */
+	void AimPlaceholder(class APlayerController* PC);
+	void AimCrossingViewBeforeDraw();
+	FDelegateHandle CrossingDrawHandle;
+	FVector CrossingEye = FVector::ZeroVector;
+	FRotator CrossingLook = FRotator::ZeroRotator;
+	/** -logcrossing: what every frame around a crossing is drawn from, for finding a wrong frame. */
+	void LogDrawnFrame();
+	FDelegateHandle DrawLogHandle;
+	double DrawLogUntil = 0;
 	bool bSnapshotDiff = false;
 	TMap<FIntVector, FName> Snapshot;
 	void ApplySnapshot();
