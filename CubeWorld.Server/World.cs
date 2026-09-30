@@ -16,7 +16,8 @@ public sealed class WorldCube
     public string placed_by { get; set; } = "";
     public string placed_on { get; set; } = "";
     /// <summary>When it was written (unix ms): the Unreal servers hear blocks written after the last one they saw.</summary>
-    public double at { get; set; }
+    [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)]
+    public double? at { get; set; }
 }
 
 [EntityName("CubeInventory")]
