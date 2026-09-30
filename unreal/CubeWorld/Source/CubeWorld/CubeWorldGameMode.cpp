@@ -923,6 +923,8 @@ void ACubeWorldGameMode::OnBomb(const FCubeBombRecord& Bomb, bool bOwned)
 	// A finished bomb's record comes round again with every push of the live table: it went off once.
 	if (Bomb.IsOver())
 	{
+		// Always let go of it, even when it went off before: a bomb left in Bombs as flying explodes again every tick.
+		Bombs.Remove(Bomb.Id);
 		if (BombsOver.Contains(Bomb.Id)) return;
 		BombsOver.Add(Bomb.Id);
 		if (BombsOver.Num() > 1000) BombsOver.Empty();

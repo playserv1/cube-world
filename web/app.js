@@ -540,6 +540,17 @@ function avatarBoxes() {
 
 const controls = new PointerLockControls(camera, renderer.domElement);
 renderer.domElement.addEventListener("click", () => { if (!controls.isLocked && !state.dead && !state.inventoryOpen) controls.lock(); });
+// The game menu (Esc), as the Unreal client's: the browser frees the mouse on Esc, and in play that opens the menu.
+// Resume goes back to the game; Exit leaves it for the start page. A click beside the buttons does nothing.
+controls.addEventListener("lock", () => { $("menu").hidden = true; });
+controls.addEventListener("unlock", () => {
+  if (!state.placed || state.dead || state.inventoryOpen) return;
+  keys.clear();
+  mouse.left = false;
+  $("menu").hidden = false;
+});
+$("resume").onclick = () => controls.lock();
+$("exit").onclick = () => { const s = state.socket; state.socket = null; s?.close?.(); location.reload(); };
 const keys = new Set();
 const mouse = { left: false };
 addEventListener("keydown", e => {

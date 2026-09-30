@@ -121,6 +121,7 @@ private:
 	/** The -walkto test sprints by itself (the keys read from the keyboard would say it does not). */
 	bool bTestSprint = false;
 	void CaptureMouse(bool bCapture);
+	void ClickMenu();
 	void SetupUnattended();
 	ACubeWorldActor* WorldActor() const;
 

@@ -1,4 +1,5 @@
 #include "CubeHUD.h"
+#include "CanvasTypes.h"
 #include "CubeWorld.h"
 #include "CubeWorldGameInstance.h"
 #include "CubePlayerPawn.h"
@@ -28,8 +29,8 @@ void ACubeHUD::DrawCentered(const FString& Text, float Y, float Scale, FLinearCo
 {
 	float W, H;
 	GetTextSize(Text, W, H, GEngine->GetLargeFont(), Scale);
-	DrawText(Text, FLinearColor::Black, Canvas->SizeX / 2 - W / 2 + 2, Y + 2, GEngine->GetLargeFont(), Scale);
-	DrawText(Text, Color, Canvas->SizeX / 2 - W / 2, Y, GEngine->GetLargeFont(), Scale);
+	DrawText(Text, FLinearColor::Black, Canvas->SizeX / UiScale / 2 - W / 2 + 2, Y + 2, GEngine->GetLargeFont(), Scale);
+	DrawText(Text, Color, Canvas->SizeX / UiScale / 2 - W / 2, Y, GEngine->GetLargeFont(), Scale);
 }
 
 // The block as a flat icon: its top face above its side face, lit as in the world.
@@ -62,7 +63,12 @@ void ACubeHUD::DrawHUD()
 	UCubeWorldGameInstance* Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
 	ACubePlayerPawn* Pawn = Cast<ACubePlayerPawn>(GetOwningPawn());
 	if (!Game || !Canvas) return;
-	const float W = Canvas->SizeX, H = Canvas->SizeY;
+	// The HUD is laid out for a 480-pixel-high screen and scaled up to the real one: at 1080p everything is 2.25 times
+	// as big, so it reads at any resolution instead of shrinking as the window grows.
+	UiScale = FMath::Clamp(Canvas->SizeY / 480.f, 1.f, 4.f);
+	Canvas->Canvas->PushAbsoluteTransform(FScaleMatrix(FVector(UiScale, UiScale, 1.f)));
+	struct FPopScale { FCanvas* C; ~FPopScale() { C->PopTransform(); } } PopScale{ Canvas->Canvas };
+	const float W = Canvas->SizeX / UiScale, H = Canvas->SizeY / UiScale;
 	const double Now = FPlatformTime::Seconds();
 
 	// Hurt vignette.
@@ -156,11 +162,38 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(TEXT("Cube World"), H / 2 - 80, 2.5f, FLinearColor::White);
 		DrawCentered(FString::Printf(TEXT("Playing as %s  (start with -name=YourName to change it)"), *Game->PlayerName), H / 2 - 20, 1.f, FLinearColor(0.8f, 0.85f, 0.9f));
 		DrawCentered(Game->Status, H / 2 + 10, 1.2f, FLinearColor::White);
-		DrawCentered(TEXT("WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak. Hold left click to break, right click places, 1-9 or the wheel picks a block, Esc frees the mouse."), H / 2 + 50, 0.9f, FLinearColor(0.7f, 0.75f, 0.8f));
+		DrawCentered(TEXT("WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak. Hold left click to break, right click places, 1-9 or the wheel picks a block, Esc opens the menu."), H / 2 + 50, 0.9f, FLinearColor(0.7f, 0.75f, 0.8f));
 		DrawCentered(TEXT("Left click a player to hit them. Bombs come down on parachutes: walk into one to pick it up, right click throws it."), H / 2 + 72, 0.9f, FLinearColor(0.7f, 0.75f, 0.8f));
 	}
 	else if (Pawn && !Pawn->bMouseCaptured)
 	{
-		DrawCentered(TEXT("Click to play"), H / 2 + 40, 1.2f, FLinearColor::White);
+		// The Esc menu: the game goes on behind it, as in Minecraft on a server.
+		FVector2D Mouse(-1, -1);
+		if (APlayerController* PC = GetOwningPlayerController()) { float MX, MY; if (PC->GetMousePosition(MX, MY)) Mouse = FVector2D(MX, MY) / UiScale; }
+		DrawRect(FLinearColor(0, 0, 0, 0.5f), 0, 0, W, H);
+		DrawCentered(TEXT("Game menu"), H / 2 - 80, 1.6f, FLinearColor::White);
+		DrawButton(TEXT("Resume"), H / 2 - 30, ResumeRect, Mouse);
+		DrawButton(TEXT("Exit"), H / 2 + 10, ExitRect, Mouse);
+		return;
 	}
+	ResumeRect = ExitRect = FBox2D(ForceInit);
+}
+
+void ACubeHUD::DrawButton(const FString& Label, float Y, FBox2D& OutRect, FVector2D Mouse)
+{
+	const float BW = 200, BH = 30, X = Canvas->SizeX / UiScale / 2 - BW / 2;
+	const bool bHover = Mouse.X >= X && Mouse.X <= X + BW && Mouse.Y >= Y && Mouse.Y <= Y + BH;
+	DrawRect(FLinearColor(0.1f, 0.1f, 0.1f, 0.9f), X - 2, Y - 2, BW + 4, BH + 4);
+	DrawRect(bHover ? FLinearColor(0.45f, 0.5f, 0.75f, 0.95f) : FLinearColor(0.35f, 0.35f, 0.38f, 0.95f), X, Y, BW, BH);
+	float TW, TH;
+	GetTextSize(Label, TW, TH, GEngine->GetLargeFont(), 1.f);
+	DrawCentered(Label, Y + BH / 2 - TH / 2, 1.f, bHover ? FLinearColor(1.f, 1.f, 0.63f) : FLinearColor::White);
+	OutRect = FBox2D(FVector2D(X, Y) * UiScale, FVector2D(X + BW, Y + BH) * UiScale);
+}
+
+int32 ACubeHUD::MenuButtonAt(FVector2D ScreenPoint) const
+{
+	if (ResumeRect.bIsValid && ResumeRect.IsInsideOrOn(ScreenPoint)) return 1;
+	if (ExitRect.bIsValid && ExitRect.IsInsideOrOn(ScreenPoint)) return 2;
+	return 0;
 }

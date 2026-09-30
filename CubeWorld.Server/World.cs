@@ -15,6 +15,8 @@ public sealed class WorldCube
     public string kind { get; set; } = "";
     public string placed_by { get; set; } = "";
     public string placed_on { get; set; } = "";
+    /// <summary>When it was written (unix ms): the Unreal servers hear blocks written after the last one they saw.</summary>
+    public long at { get; set; }
 }
 
 [EntityName("CubeInventory")]
@@ -294,7 +296,7 @@ public sealed class World
     // moment it is written, while a deleted record does not reach them. So a broken block is written as air.
     private void Set(int x, int y, int z, string kind, string by, string on, WorldUpdate update)
     {
-        var cube = new WorldCube { key = Key(x, y, z), x = x, y = y, z = z, kind = kind, placed_by = by, placed_on = on };
+        var cube = new WorldCube { key = Key(x, y, z), x = x, y = y, z = z, kind = kind, placed_by = by, placed_on = on, at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
         _overrides[cube.key] = cube;
         update.Changes.Add(new Change("upsert", cube));
     }

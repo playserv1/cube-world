@@ -26,6 +26,8 @@
 #include "UnrealClient.h"
 #include "InputKeyEventArgs.h"
 #include "CubeKeys.h"
+#include "CubeHUD.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/InputSettings.h"
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -244,9 +246,23 @@ void ACubePlayerPawn::OnConfirm()
 	if (Game->IsConnected()) CaptureMouse(true);
 }
 
+/** Esc opens the game menu and shuts it again. */
 void ACubePlayerPawn::OnRelease()
 {
+	if (!bMouseCaptured && Game && Game->IsConnected() && !Game->bDead) { CaptureMouse(true); return; }
 	CaptureMouse(false);
+}
+
+/** A click while the game menu is open: Resume goes back to the game, Exit closes it; anywhere else does nothing. */
+void ACubePlayerPawn::ClickMenu()
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	ACubeHUD* Hud = PC ? Cast<ACubeHUD>(PC->GetHUD()) : nullptr;
+	float MX, MY;
+	if (!Hud || !PC->GetMousePosition(MX, MY)) { CaptureMouse(true); return; }
+	const int32 Button = Hud->MenuButtonAt(FVector2D(MX, MY));
+	if (Button == 1) CaptureMouse(true);
+	else if (Button == 2) UKismetSystemLibrary::QuitGame(this, PC, EQuitPreference::Quit, false);
 }
 
 void ACubePlayerPawn::OnDig(bool bHeld)
@@ -256,7 +272,7 @@ void ACubePlayerPawn::OnDig(bool bHeld)
 	if (!bMouseCaptured)
 	{
 		if (Game->bDead) { OnConfirm(); return; }
-		if (Game->IsConnected()) CaptureMouse(true);
+		if (Game->IsConnected()) ClickMenu();
 		else OnConfirm();
 		return;
 	}
