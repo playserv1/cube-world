@@ -51,6 +51,8 @@ export class VoxelWorld {
     this.hidden = new Set();
     this.regionSize = 24;
     this.regionColors = ["red", "blue", "green", "yellow", "purple", "pink"];
+    // The regions no live server holds: their ground is drawn see-through, and walked on as ever.
+    this.down = new Set();
   }
 
   configure({ width, depth, minY, maxY, layers, blocks, trees, regionSize, regionColors }) {
@@ -77,6 +79,15 @@ export class VoxelWorld {
   // Region r is column r % columns of row r / columns; the web's z is the server's y, the ground's depth.
   regionOf(x, z) { return Math.floor(z / this.regionSize) * Math.floor(this.width / this.regionSize) + Math.floor(x / this.regionSize); }
   regionColor(x, z) { return this.regionColors[this.regionOf(x, z)] ?? "green"; }
+  regionCount() { return Math.floor(this.width / this.regionSize) * Math.ceil(this.depth / this.regionSize); }
+  isDown(x, z) { return this.down.has(this.regionOf(x, z)); }
+
+  // Sets the down regions. Returns the chunk ids to rebuild: every chunk when the set changed, none otherwise.
+  setDown(down) {
+    if (down.size === this.down.size && [...down].every(r => this.down.has(r))) return [];
+    this.down = new Set(down);
+    return this.allChunks();
+  }
 
   kindAt(x, y, z) {
     const k = key(x, y, z);
@@ -121,10 +132,12 @@ export class VoxelWorld {
   }
 }
 
-function faceVisible(world, kind, transparent, nx, ny, nz) {
+function faceVisible(world, kind, transparent, ghost, nx, ny, nz) {
   if (ny < world.minY) return false;
   const neighbour = world.inside(nx, ny, nz) ? world.kindAt(nx, ny, nz) : "air";
   if (neighbour === "air") return true;
+  // A block of a live region is seen through the see-through one of a down region next to it.
+  if (!ghost && world.isDown(nx, nz)) return true;
   const other = world.block(neighbour);
   if (!other.Transparent) return false;
   return transparent ? neighbour !== kind : true;
@@ -133,7 +146,7 @@ function faceVisible(world, kind, transparent, nx, ny, nz) {
 // Builds the two meshes (opaque, cutout) of one chunk.
 export function meshChunk(world, atlas, materials, id) {
   const [cx, cz] = id.split(",").map(Number);
-  const parts = { opaque: { pos: [], uv: [], col: [], idx: [] }, cutout: { pos: [], uv: [], col: [], idx: [] } };
+  const parts = { opaque: { pos: [], uv: [], col: [], idx: [] }, cutout: { pos: [], uv: [], col: [], idx: [] }, ghost: { pos: [], uv: [], col: [], idx: [] } };
   for (let x = cx * CHUNK; x < Math.min(world.width, (cx + 1) * CHUNK); x++)
     for (let z = cz * CHUNK; z < Math.min(world.depth, (cz + 1) * CHUNK); z++)
       for (let y = world.minY; y < world.maxY; y++) {
@@ -141,9 +154,10 @@ export function meshChunk(world, atlas, materials, id) {
         if (kind === "air") continue;
         const block = world.block(kind);
         const faces = kind === "grass" ? grassFaces(world.regionColor(x, z)) : FACES[kind] ?? FACES.stone;
-        const part = block.Transparent ? parts.cutout : parts.opaque;
+        const ghost = world.isDown(x, z);
+        const part = ghost ? parts.ghost : block.Transparent ? parts.cutout : parts.opaque;
         for (const side of SIDES) {
-          if (!faceVisible(world, kind, block.Transparent, x + side.n[0], y + side.n[1], z + side.n[2])) continue;
+          if (!faceVisible(world, kind, block.Transparent, ghost, x + side.n[0], y + side.n[1], z + side.n[2])) continue;
           const { u0, u1, v0, v1 } = atlas.uv(faces[side.tile]);
           const base = part.pos.length / 3;
           for (const [dx, dy, dz] of side.c) part.pos.push(x + dx, y + dy, z + dz);
@@ -173,6 +187,8 @@ export function chunkMaterials(atlas) {
   return {
     opaque: new THREE.MeshBasicMaterial({ map: atlas.texture, vertexColors: true }),
     cutout: new THREE.MeshBasicMaterial({ map: atlas.texture, vertexColors: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+    // A down region: the same blocks, see-through, drawn after the live world over it.
+    ghost: new THREE.MeshBasicMaterial({ map: atlas.texture, vertexColors: true, alphaTest: 0.05, transparent: true, opacity: 0.4, depthWrite: false }),
   };
 }
 

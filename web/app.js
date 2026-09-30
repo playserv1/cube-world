@@ -8,7 +8,7 @@ import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlo
 import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
 import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tickEffects } from "./bombfx.js";
 import { buildTombstone } from "./tombstone.js";
-import { refusal } from "./rooms.js";
+import { refusal, roomOf, downRegions } from "./rooms.js";
 import { createFollower, hear, follow } from "./follow.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
@@ -159,10 +159,14 @@ function send(message) {
 function regionAt(x, z) { return world.regionOf(x, z); }
 
 function roomOfRegion(region) {
-  const r = state.regions.find(r => Number(r.region) === region);
+  const r = roomOf(state.regions, region);
   if (r?.slug) state.roomSlugs[r.room] = r.slug;
   return r?.room;
 }
+
+// The ground of a region no live server holds is drawn see-through; it turns solid again once its room is up.
+// Offline, the one local server plays the whole world.
+function downNow() { return OFFLINE ? new Set() : downRegions(state.regions, state.region, world.regionCount()); }
 
 // ── frames from the server ───────────────────────────────────────────────────────────────────────
 
@@ -175,6 +179,7 @@ function onFrame(frame, teleport) {
       world.configure({ width: frame.width, depth: frame.depth, minY: frame.minZ, maxY: frame.maxZ, layers: frame.layers, blocks: frame.blocks,
         trees: frame.trees, regionSize: frame.regionSize, regionColors: REGION_COLORS });
       for (const c of frame.world) world.set(c.x, c.z, c.y, c.kind);
+      world.setDown(downNow());
       rebuild(world.allChunks());
       for (const crack of cracks.values()) scene.remove(crack);
       cracks.clear();
@@ -193,6 +198,7 @@ function onFrame(frame, teleport) {
     }
     case "regions":
       state.regions = frame.regions;
+      rebuild(world.setDown(downNow()));
       break;
     case "cube": {
       const c = frame.cube;
