@@ -42,6 +42,9 @@ struct FCubeCrossing
 	double X = 0, Y = 0, Z = 0, Yaw = 0, Pitch = 0;
 	/** The body's speed, so a walk over a border goes on at the same pace. */
 	double VX = 0, VY = 0, VZ = 0;
+	bool bSprinting = false, bSneaking = false;
+	/** The movement input at the border, kept until the next controller's own input arrives. */
+	float Forward = 0, Strafe = 0;
 };
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnWelcome, const FCubePose& /*You*/, bool /*bTeleport*/);

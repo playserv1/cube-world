@@ -94,6 +94,13 @@ void ACubePlayerPawn::Bind()
 		const FCubeCrossing& C = Game->Crossing;
 		Body.Teleport(C.X, C.Y, C.Z);
 		Body.VX = C.VX; Body.VY = C.VY; Body.VZ = C.VZ;
+		// Sprinting and sneaking go on as they were: the field of view does not breathe at the border.
+		Body.bSprinting = C.bSprinting; Body.bSneaking = C.bSneaking;
+		bSprintHeld = C.bSprinting; bSneakHeld = C.bSneaking;
+		// A -walkto test keeps walking through the border, as a player holding the key does.
+		AxisForward = C.Forward; AxisRight = C.Strafe; bMouseCaptured = true;
+		FString WalkTo;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty()) TestForward = 1.f;
 	}
 	else Body.Teleport(36, 12, 0);
 	Game->bPlaced = bCrossingIn;
@@ -555,7 +562,7 @@ void ACubePlayerPawn::GameTick()
 		DigTick();
 		SendMove(Yaw, Pitch);
 	}
-	Game->LastBody = { true, Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.VX, Body.VY, Body.VZ };
+	Game->LastBody = { true, Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.VX, Body.VY, Body.VZ, Body.bSprinting, Body.bSneaking, FMath::Clamp(AxisForward + TestForward, -1.f, 1.f), AxisRight };
 	Game->MaybeCross(Body.X, Body.Y);
 }
 
@@ -574,6 +581,7 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 
 	// Minecraft's angle is vertical; Unreal wants the horizontal one for the viewport's aspect.
 	const float TargetFov = CubeSpec::Fov * (Body.bSprinting ? CubeSpec::SprintFov : 1.f);
+	if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && TickCount < 40) UE_LOG(LogCubeWorld, Log, TEXT("  pawn tick: fov %.1f target %.1f sprinting %d held %d forward %.1f test %.1f captured %d dead %d placed %d ticks %d"), Fov, TargetFov, Body.bSprinting, bSprintHeld, AxisForward, TestForward, bMouseCaptured, Game->bDead, Game->bPlaced, TickCount);
 	Fov += (TargetFov - Fov) * FMath::Min(1.f, DeltaSeconds * 12.f);
 	float Aspect = 16.f / 9.f;
 	if (GEngine && GEngine->GameViewport) { FVector2D Size; GEngine->GameViewport->GetViewportSize(Size); if (Size.Y > 0) Aspect = Size.X / Size.Y; }
