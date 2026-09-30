@@ -24,6 +24,11 @@
 #include "Misc/Parse.h"
 #include "TimerManager.h"
 #include "UnrealClient.h"
+#include "InputKeyEventArgs.h"
+#include "GameFramework/InputSettings.h"
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#endif
 
 ACubePlayerPawn::ACubePlayerPawn()
 {
@@ -105,6 +110,7 @@ void ACubePlayerPawn::Bind()
 		if (APlayerController* View = Cast<APlayerController>(GetController()))
 			View->SetControlRotation(FRotator(-FMath::RadiansToDegrees(Game->Crossing.Pitch), FMath::RadiansToDegrees(Game->Crossing.Yaw) + 90.f, 0));
 		Game->EndCrossingView();
+		PressHeldKeys();
 	}
 
 	if (Game->PlayerName.IsEmpty())
@@ -252,6 +258,36 @@ void ACubePlayerPawn::Spawn(double X, double Y, double Z)
 	Body.Teleport(X, Y, Z);
 	Unstick();
 	Game->bPlaced = true;
+}
+
+void ACubePlayerPawn::PressHeldKeys()
+{
+#if PLATFORM_WINDOWS
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	const UInputSettings* Settings = UInputSettings::GetInputSettings();
+	if (!PC || !Settings) return;
+	TSet<FKey> Keys;
+	for (const TCHAR* Axis : { TEXT("MoveForward"), TEXT("MoveRight") })
+	{
+		TArray<FInputAxisKeyMapping> Mappings;
+		Settings->GetAxisMappingByName(Axis, Mappings);
+		for (const FInputAxisKeyMapping& M : Mappings) Keys.Add(M.Key);
+	}
+	for (const TCHAR* Action : { TEXT("Jump"), TEXT("Sprint"), TEXT("Sneak") })
+	{
+		TArray<FInputActionKeyMapping> Mappings;
+		Settings->GetActionMappingByName(Action, Mappings);
+		for (const FInputActionKeyMapping& M : Mappings) Keys.Add(M.Key);
+	}
+	for (const FKey& Key : Keys)
+	{
+		if (!Key.IsValid() || Key.IsGamepadKey() || Key.IsMouseButton()) continue;
+		const uint32* KeyCode = nullptr; const uint32* CharCode = nullptr;
+		FInputKeyManager::Get().GetCodesFromKey(Key, KeyCode, CharCode);
+		const uint32 Code = KeyCode ? *KeyCode : (CharCode ? *CharCode : 0);
+		if (Code && (::GetAsyncKeyState((int)Code) & 0x8000)) PC->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Pressed, 1.f));
+	}
+#endif
 }
 
 void ACubePlayerPawn::Unstick()

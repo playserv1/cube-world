@@ -173,6 +173,7 @@ private:
 	 * are applied, so nothing on screen is torn down. */
 	/** Holds the view where the player stands while the next server's pawn is on its way after a crossing. */
 	TWeakObjectPtr<class ACameraActor> CrossingCamera;
+	int32 CrossingBlankFrames = 0;
 	FTSTicker::FDelegateHandle CrossingViewTicker;
 	bool bSnapshotDiff = false;
 	TMap<FIntVector, FName> Snapshot;

@@ -118,6 +118,8 @@ private:
 	void ShowMyTomb();
 	void Spawn(double X, double Y, double Z);
 	void Unstick();
+	/** After a crossing the new controller knows no key as held: the keys held down now are pressed for it again. */
+	void PressHeldKeys();
 	void CaptureMouse(bool bCapture);
 	void SetupUnattended();
 	ACubeWorldActor* WorldActor() const;

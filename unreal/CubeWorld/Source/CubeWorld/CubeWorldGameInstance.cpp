@@ -10,6 +10,7 @@
 #include "Misc/Parse.h"
 #include "TimerManager.h"
 #include "Camera/CameraActor.h"
+#include "Engine/LocalPlayer.h"
 #include "Containers/Ticker.h"
 #include "CubeSpec.h"
 
@@ -46,12 +47,29 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
 		const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
 		CrossingCamera = LoadedWorld->SpawnActor<ACameraActor>(Eye, Look);
+		// The engine draws nothing while the local player has no player controller, and the next server's arrives a round
+		// trip after the map: a local placeholder (which the engine destroys when the real one comes, NetConnection.cpp)
+		// shows the world from the crossing camera meanwhile.
+		if (ULocalPlayer* LocalPlayer = GetFirstGamePlayer())
+			if (!LocalPlayer->PlayerController)
+			{
+				FActorSpawnParameters Params;
+				Params.ObjectFlags |= RF_Transient;
+				if (APlayerController* Placeholder = LoadedWorld->SpawnActor<APlayerController>(APlayerController::StaticClass(), Eye, Look, Params))
+				{
+					Placeholder->SetPlayer(LocalPlayer);
+					Placeholder->SetControlRotation(Look);
+					Placeholder->SetViewTarget(CrossingCamera.Get());
+				}
+			}
+		CrossingBlankFrames = 0;
 		const double Until = FPlatformTime::Seconds() + 5;
 		TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
 		CrossingViewTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak, Until](float)
 		{
 			if (!Weak.IsValid() || !Weak->CrossingCamera.IsValid() || FPlatformTime::Seconds() > Until) { if (Weak.IsValid()) Weak->EndCrossingView(); return false; }
 			APlayerController* PC = Weak->GetFirstLocalPlayerController();
+			if (!PC) Weak->CrossingBlankFrames++;
 			if (PC && PC->GetViewTarget() != Weak->CrossingCamera.Get()) PC->SetViewTarget(Weak->CrossingCamera.Get());
 			return true;
 		}));
@@ -67,6 +85,7 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 
 void UCubeWorldGameInstance::EndCrossingView()
 {
+	if (CrossingCamera.IsValid()) Log(FString::Printf(TEXT("crossing: %d frame(s) without a view"), CrossingBlankFrames));
 	if (CrossingViewTicker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(CrossingViewTicker); CrossingViewTicker.Reset(); }
 	if (CrossingCamera.IsValid())
 	{
