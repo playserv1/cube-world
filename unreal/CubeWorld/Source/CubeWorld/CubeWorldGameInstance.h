@@ -8,6 +8,7 @@
 #include "Containers/Ticker.h"
 #include "Engine/GameInstance.h"
 #include "CubeVoxelWorld.h"
+#include "CubePhysics.h"
 #include "CubeTextures.h"
 #include "CubeBombs.h"
 #include "CubeWorldState.h"
@@ -132,6 +133,20 @@ public:
 	/** The position to take on the next server; set for a crossing, unset for a fresh join. */
 	FCubeCrossing Crossing;
 
+	// ---- the body between two servers ------------------------------------------------------------
+	// From the moment the old world goes until the next server's pawn is placed (0.2 to 0.8 s, the next server's round
+	// trips) there is no pawn: the client carries the body itself, with the same physics, the keys and the mouse, and the
+	// view follows it, so the player never stops at a border. The pawn takes the body over where it has got to.
+	/** The old pawn's whole body, its physics remainder and when it was stepped last. */
+	FCubeBody LastFullBody;
+	double LastAccumulator = 0, LastBodyTime = 0;
+	FCubeBody GapBody;
+	double GapAccumulator = 0, GapLastTime = 0;
+	float GapYawDeg = 0, GapPitchDeg = 0, GapFov = 0;
+	bool bGapActive = false, bGapTestWalk = false;
+	/** Steps the carried body up to now and aims the view at its eyes. */
+	void StepGap();
+
 	FCubeVoxelWorld World;
 	FCubeTextures Textures;
 
@@ -194,6 +209,9 @@ private:
 	FRotator CrossingLook = FRotator::ZeroRotator;
 	/** -logcrossing: what every frame around a crossing is drawn from, for finding a wrong frame. */
 	void LogDrawnFrame();
+	void LogEndOfFrame();
+	FDelegateHandle EndFrameLogHandle;
+	uint64 LastDrawnFrame = 0;
 	FDelegateHandle DrawLogHandle;
 	double DrawLogUntil = 0;
 	bool bSnapshotDiff = false;
@@ -208,6 +226,8 @@ private:
 	TArray<FString> Candidates;
 	/** The room type each known room is registered under (the C# servers' or the Unreal servers'), from the browse and the regions. */
 	TMap<FString, FString> RoomSlugs;
+	/** Rooms already retried under the other room type (once each). */
+	TSet<FString> RetriedOtherType;
 	/** Browses still to answer, when the room types are listed together. */
 	int32 BrowsesPending = 0;
 	TArray<FString> BrowseFound;

@@ -111,8 +111,17 @@ async function enter(roomName, teleport = true) {
   if (roomName === state.room || state.switching) return;
   state.switching = true;
   try {
-    const slug = state.roomSlugs[roomName] ?? cfg.slug;
-    const ticket = await api("POST", `/rooms/${slug}/${roomName}:join`, {});
+    // A region's claim can carry a stale room type (a C# server that writes none keeps the Unreal one that held the
+    // region before): a room not found under one type is tried under the other.
+    let slug = state.roomSlugs[roomName] ?? cfg.slug;
+    let ticket;
+    try { ticket = await api("POST", `/rooms/${slug}/${roomName}:join`, {}); }
+    catch (e) {
+      if (e.status !== 404) throw e;
+      slug = ROOM_SLUGS.find(s => s !== slug) ?? slug;
+      ticket = await api("POST", `/rooms/${slug}/${roomName}:join`, {});
+    }
+    state.roomSlugs[roomName] = slug;
     const c = ticket.connect;
     // An Unreal server plays Unreal clients on its own port and browsers on a WebSocket one, named in its attributes.
     const door = ticket.attributes && ticket.attributes.ws;
@@ -160,7 +169,7 @@ function regionAt(x, z) { return world.regionOf(x, z); }
 
 function roomOfRegion(region) {
   const r = roomOf(state.regions, region);
-  if (r?.slug) state.roomSlugs[r.room] = r.slug;
+  if (r?.slug && !state.roomSlugs[r.room]) state.roomSlugs[r.room] = r.slug;   // a browse's type wins over a claim's
   return r?.room;
 }
 

@@ -118,11 +118,8 @@ private:
 	void ShowMyTomb();
 	void Spawn(double X, double Y, double Z);
 	void Unstick();
-	/** After a crossing the new controller knows no key as held: the keys held down now are pressed for it again. */
-	void PressHeldKeys();
-	/** For a moment after a crossing the keys are read from the keyboard itself: the new controller's input takes about a second to see keys held down. */
-	void ReadHeldKeys();
-	double HeldKeysUntil = 0;
+	/** The -walkto test sprints by itself (the keys read from the keyboard would say it does not). */
+	bool bTestSprint = false;
 	void CaptureMouse(bool bCapture);
 	void SetupUnattended();
 	ACubeWorldActor* WorldActor() const;

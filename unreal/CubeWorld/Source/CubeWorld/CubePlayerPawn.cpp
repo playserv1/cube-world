@@ -25,6 +25,7 @@
 #include "TimerManager.h"
 #include "UnrealClient.h"
 #include "InputKeyEventArgs.h"
+#include "CubeKeys.h"
 #include "GameFramework/InputSettings.h"
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -66,7 +67,11 @@ void ACubePlayerPawn::BeginPlay()
 	Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
 	// The next server spawned this pawn at its spawn point and does not replicate where it is: after a crossing it stands
 	// where the player is from its first frame, so no view of it is ever drawn from the other side of the map.
-	if (Game && Game->Crossing.bSet) SetActorLocation(FVector(Game->Crossing.X, Game->Crossing.Y, Game->Crossing.Z) * CubeSpec::BlockCm);
+	if (Game && Game->Crossing.bSet)
+	{
+		Game->StepGap();
+		SetActorLocation(FVector(Game->Crossing.X, Game->Crossing.Y, Game->Crossing.Z) * CubeSpec::BlockCm);
+	}
 }
 
 // The local player's pawn binds once it is possessed: on a network client the controller arrives after BeginPlay.
@@ -91,11 +96,17 @@ void ACubePlayerPawn::Bind()
 	const bool bCrossingIn = Game->Crossing.bSet;
 	if (bCrossingIn)
 	{
+		// The body the client carried since the old world went, up to this very moment: position, speed, the tick's
+		// remainder, sprint and sneak, so nothing jumps, stops or breathes when the pawn takes it.
+		Game->StepGap();
 		const FCubeCrossing& C = Game->Crossing;
-		Body.Teleport(C.X, C.Y, C.Z);
-		Body.VX = C.VX; Body.VY = C.VY; Body.VZ = C.VZ;
-		// Sprinting and sneaking go on as they were: the field of view does not breathe at the border.
-		Body.bSprinting = C.bSprinting; Body.bSneaking = C.bSneaking;
+		if (Game->bGapActive) { Body = Game->GapBody; Accumulator = Game->GapAccumulator; }
+		else
+		{
+			Body.Teleport(C.X, C.Y, C.Z);
+			Body.VX = C.VX; Body.VY = C.VY; Body.VZ = C.VZ;
+			Body.bSprinting = C.bSprinting; Body.bSneaking = C.bSneaking;
+		}
 		bSprintHeld = C.bSprinting; bSneakHeld = C.bSneaking;
 		// A -walkto test keeps walking through the border, as a player holding the key does.
 		AxisForward = C.Forward; AxisRight = C.Strafe; bMouseCaptured = true;
@@ -116,13 +127,13 @@ void ACubePlayerPawn::Bind()
 	// The pawn stands at the crossing pose: the view the crossing camera held is its own from here.
 	if (bCrossingIn)
 	{
-		SetActorLocation(FVector(Body.X, Body.Y, Body.Z) * CubeSpec::BlockCm);
+		const double Partial = Accumulator / CubeSpec::TickSeconds;
+		SetActorLocation(FVector(Body.PX + (Body.X - Body.PX) * Partial, Body.PY + (Body.Y - Body.PY) * Partial, Body.PZ + (Body.Z - Body.PZ) * Partial) * CubeSpec::BlockCm);
+		Camera->SetRelativeLocation(FVector(0, 0, Body.EyeHeight() * CubeSpec::BlockCm));
 		if (Game->LastFov > 0) { Fov = Game->LastFov; Camera->SetFieldOfView(Game->LastHorizontalFov); }
 		if (APlayerController* View = Cast<APlayerController>(GetController()))
-			View->SetControlRotation(FRotator(-FMath::RadiansToDegrees(Game->Crossing.Pitch), FMath::RadiansToDegrees(Game->Crossing.Yaw) + 90.f, 0));
+			View->SetControlRotation(Game->bGapActive ? FRotator(Game->GapPitchDeg, Game->GapYawDeg, 0) : FRotator(-FMath::RadiansToDegrees(Game->Crossing.Pitch), FMath::RadiansToDegrees(Game->Crossing.Yaw) + 90.f, 0));
 		Game->EndCrossingView();
-		PressHeldKeys();
-		HeldKeysUntil = FPlatformTime::Seconds() + 2.0;
 	}
 
 	if (Game->PlayerName.IsEmpty())
@@ -272,71 +283,6 @@ void ACubePlayerPawn::Spawn(double X, double Y, double Z)
 	Game->bPlaced = true;
 }
 
-void ACubePlayerPawn::ReadHeldKeys()
-{
-#if PLATFORM_WINDOWS
-	const UInputSettings* Settings = UInputSettings::GetInputSettings();
-	if (!Settings) return;
-	auto Down = [](const FKey& Key)
-	{
-		if (!Key.IsValid() || Key.IsGamepadKey() || Key.IsMouseButton()) return false;
-		const uint32* KeyCode = nullptr; const uint32* CharCode = nullptr;
-		FInputKeyManager::Get().GetCodesFromKey(Key, KeyCode, CharCode);
-		const uint32 Code = KeyCode ? *KeyCode : (CharCode ? *CharCode : 0);
-		return Code != 0 && (::GetAsyncKeyState((int)Code) & 0x8000) != 0;
-	};
-	auto Axis = [&](const TCHAR* Name, float& Value)
-	{
-		TArray<FInputAxisKeyMapping> Mappings;
-		Settings->GetAxisMappingByName(Name, Mappings);
-		float Sum = 0; bool bAny = false;
-		for (const FInputAxisKeyMapping& M : Mappings) if (Down(M.Key)) { Sum += M.Scale; bAny = true; }
-		if (bAny) Value = FMath::Clamp(Sum, -1.f, 1.f);
-	};
-	auto Action = [&](const TCHAR* Name, bool& Held)
-	{
-		TArray<FInputActionKeyMapping> Mappings;
-		Settings->GetActionMappingByName(Name, Mappings);
-		for (const FInputActionKeyMapping& M : Mappings) if (Down(M.Key)) { Held = true; return; }
-	};
-	Axis(TEXT("MoveForward"), AxisForward);
-	Axis(TEXT("MoveRight"), AxisRight);
-	Action(TEXT("Sprint"), bSprintHeld);
-	Action(TEXT("Sneak"), bSneakHeld);
-	Action(TEXT("Jump"), bJumpHeld);
-#endif
-}
-
-void ACubePlayerPawn::PressHeldKeys()
-{
-#if PLATFORM_WINDOWS
-	APlayerController* PC = Cast<APlayerController>(GetController());
-	const UInputSettings* Settings = UInputSettings::GetInputSettings();
-	if (!PC || !Settings) return;
-	TSet<FKey> Keys;
-	for (const TCHAR* Axis : { TEXT("MoveForward"), TEXT("MoveRight") })
-	{
-		TArray<FInputAxisKeyMapping> Mappings;
-		Settings->GetAxisMappingByName(Axis, Mappings);
-		for (const FInputAxisKeyMapping& M : Mappings) Keys.Add(M.Key);
-	}
-	for (const TCHAR* Action : { TEXT("Jump"), TEXT("Sprint"), TEXT("Sneak") })
-	{
-		TArray<FInputActionKeyMapping> Mappings;
-		Settings->GetActionMappingByName(Action, Mappings);
-		for (const FInputActionKeyMapping& M : Mappings) Keys.Add(M.Key);
-	}
-	for (const FKey& Key : Keys)
-	{
-		if (!Key.IsValid() || Key.IsGamepadKey() || Key.IsMouseButton()) continue;
-		const uint32* KeyCode = nullptr; const uint32* CharCode = nullptr;
-		FInputKeyManager::Get().GetCodesFromKey(Key, KeyCode, CharCode);
-		const uint32 Code = KeyCode ? *KeyCode : (CharCode ? *CharCode : 0);
-		if (Code && (::GetAsyncKeyState((int)Code) & 0x8000)) PC->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Pressed, 1.f));
-	}
-#endif
-}
-
 void ACubePlayerPawn::Unstick()
 {
 	const FCubeSolidQuery Solid = [this](int32 X, int32 Y, int32 Z) { return Game->World.IsSolid(X, Y, Z); };
@@ -447,7 +393,7 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 			// With -holdkeys the walk is the test's own only up to the first border: past it the keys held on the real keyboard
 			// must carry the player on (the test of keys surviving a crossing).
 			bMouseCaptured = true;
-			if (!FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) || !Game->bCrossedOnce) { TestForward = 1.f; bSprintHeld = true; }
+			if (!FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) || !Game->bCrossedOnce) { TestForward = 1.f; bTestSprint = true; }
 		}), 2.f, false);
 		FTimerHandle Where;
 		GetWorldTimerManager().SetTimer(Where, FTimerDelegate::CreateWeakLambda(this, [this]() { Game->Log(FString::Printf(TEXT("walkto: at %.1f %.1f %.1f yaw %.0f in %s"), Body.X, Body.Y, Body.Z, GetControlRotation().Yaw, *Game->Room)); }), 1.f, true);
@@ -573,7 +519,8 @@ void ACubePlayerPawn::GameTick()
 	for (ACubeBomb* Bomb : Live) if (Bomb) TickBomb(Bomb);
 	if (!Game->bPlaced) return;
 	// A -walkto test steers itself every tick: two client windows on one desktop fight over the mouse.
-	if (TestWalkTo.IsSet()) if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	const bool bSteer = TestWalkTo.IsSet() && !(FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) && Game->bCrossedOnce);
+	if (bSteer) if (APlayerController* PC = Cast<APlayerController>(GetController()))
 	{
 		// Along x until there, then along y (Unreal's yaw 90 is the world's +y).
 		const bool bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
@@ -587,10 +534,13 @@ void ACubePlayerPawn::GameTick()
 		FCubeInput Input;
 		if (bMouseCaptured)
 		{
-			if (FPlatformTime::Seconds() < HeldKeysUntil) ReadHeldKeys();
+			// The keys are read from the keyboard itself while the game is in front: a controller that is new after a border
+			// crossing does not see keys that were already held, and the player would stop with the key down (CubeKeys.h).
+			FCubeKeys Keys;
+			if (CubeKeys::Read(Keys)) { AxisForward = Keys.Forward; AxisRight = Keys.Strafe; bJumpHeld = Keys.bJump; bSprintHeld = Keys.bSprint; bSneakHeld = Keys.bSneak; }
 			Input.Forward = FMath::Clamp(AxisForward + TestForward, -1.f, 1.f);
 			Input.Strafe = -FMath::Clamp(AxisRight, -1.f, 1.f);   // Minecraft's strafe is positive to the left
-			Input.bJump = bJumpHeld; Input.bSneak = bSneakHeld; Input.bSprint = bSprintHeld;
+			Input.bJump = bJumpHeld; Input.bSneak = bSneakHeld; Input.bSprint = bSprintHeld || bTestSprint;
 		}
 		Input.Yaw = Yaw;
 		TArray<FCubeOtherBody> Others;
@@ -613,6 +563,8 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 	if (!Game || !bBound) return;
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { GameTick(); Accumulator -= CubeSpec::TickSeconds; }
+	// What a crossing goes on from, if the world is torn down after this frame.
+	Game->LastFullBody = Body; Game->LastAccumulator = Accumulator; Game->LastBodyTime = FPlatformTime::Seconds();
 	const double Partial = Accumulator / CubeSpec::TickSeconds;
 
 	const FVector Feet(Body.PX + (Body.X - Body.PX) * Partial, Body.PY + (Body.Y - Body.PY) * Partial, Body.PZ + (Body.Z - Body.PZ) * Partial);

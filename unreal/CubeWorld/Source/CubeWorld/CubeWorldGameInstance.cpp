@@ -12,6 +12,9 @@
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "CubeHUD.h"
+#include "CubeKeys.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/App.h"
 #include "GameFramework/HUD.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/GameViewportClient.h"
@@ -52,6 +55,17 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
 		const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
 		CrossingEye = Eye; CrossingLook = Look;
+		// The body goes on from the old pawn's very state, and the time the map took to load is walked too.
+		GapBody = LastFullBody;
+		GapAccumulator = LastAccumulator;
+		GapLastTime = LastBodyTime > 0 ? LastBodyTime : FPlatformTime::Seconds();
+		GapYawDeg = Look.Yaw; GapPitchDeg = Look.Pitch;
+		GapFov = LastFov > 0 ? LastFov : CubeSpec::Fov;
+		FString WalkTo;
+		bGapTestWalk = FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"));
+		bGapActive = true;
+		CubeKeys::StartMouse();
+		StepGap();
 		CrossingCamera = LoadedWorld->SpawnActor<ACameraActor>(Eye, Look);
 		// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
 		if (CrossingCamera.IsValid())
@@ -84,7 +98,7 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		CrossingViewUntil = FPlatformTime::Seconds() + 5;
 		if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport && !DrawLogHandle.IsValid())
 		{
-			DrawLogUntil = FPlatformTime::Seconds() + 3;
+			DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + 3);
 			DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
 		}
 		CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
@@ -99,6 +113,47 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		SocketPlan = FSocketPlan();
 		ConnectSocket(Plan.RoomName, Plan.Host, Plan.Port, Plan.bSecure, Plan.ReservationToken, Plan.bTeleport);
 	}
+}
+
+void UCubeWorldGameInstance::StepGap()
+{
+	if (!bGapActive) return;
+	const double Now = FPlatformTime::Seconds();
+	const double Dt = FMath::Clamp(Now - GapLastTime, 0.0, 0.25);
+	GapLastTime = Now;
+	// The mouse turns the view as the pawn's OnTurn and OnLookUp do (MouseX and MouseY at 0.15 degrees each).
+	const FVector2D Mouse = CubeKeys::TakeMouse();
+	GapYawDeg += Mouse.X * CubeSpec::DegreesPerMousePixel;
+	GapPitchDeg = FMath::Clamp(GapPitchDeg + (float)Mouse.Y * CubeSpec::DegreesPerMousePixel, -89.9f, 89.9f);
+	FCubeInput Input;
+	FCubeKeys Keys;
+	if (CubeKeys::Read(Keys))
+	{
+		Input.Forward = Keys.Forward; Input.Strafe = -Keys.Strafe;   // Minecraft's strafe is positive to the left
+		Input.bJump = Keys.bJump; Input.bSprint = Keys.bSprint; Input.bSneak = Keys.bSneak;
+	}
+	if (bGapTestWalk) { Input.Forward = 1; Input.bSprint = true; }
+	Input.Yaw = CubeSpec::YawFromUnreal(GapYawDeg);
+	const FCubeSolidQuery Solid = [this](int32 X, int32 Y, int32 Z) { return World.IsSolidForPhysics(X, Y, Z); };
+	GapAccumulator += Dt;
+	while (GapAccumulator >= CubeSpec::TickSeconds) { CubePhysics::Tick(GapBody, Input, Solid); GapAccumulator -= CubeSpec::TickSeconds; }
+	const double Partial = GapAccumulator / CubeSpec::TickSeconds;
+	const FVector Feet(GapBody.PX + (GapBody.X - GapBody.PX) * Partial, GapBody.PY + (GapBody.Y - GapBody.PY) * Partial, GapBody.PZ + (GapBody.Z - GapBody.PZ) * Partial);
+	CrossingEye = FVector(Feet.X, Feet.Y, Feet.Z + GapBody.EyeHeight()) * CubeSpec::BlockCm;
+	CrossingLook = FRotator(GapPitchDeg, GapYawDeg, 0);
+	// The field of view follows the sprint exactly as the pawn's does.
+	const float TargetFov = CubeSpec::Fov * (GapBody.bSprinting ? CubeSpec::SprintFov : 1.f);
+	GapFov += (TargetFov - GapFov) * FMath::Min(1.f, (float)Dt * 12.f);
+	float Aspect = 16.f / 9.f;
+	if (GEngine && GEngine->GameViewport) { FVector2D Size; GEngine->GameViewport->GetViewportSize(Size); if (Size.Y > 0) Aspect = Size.X / Size.Y; }
+	LastFov = GapFov;
+	LastHorizontalFov = FMath::RadiansToDegrees(2.f * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(GapFov / 2.f)) * Aspect));
+	// The next server hears of the player where they are now.
+	Crossing.X = GapBody.X; Crossing.Y = GapBody.Y; Crossing.Z = GapBody.Z;
+	Crossing.VX = GapBody.VX; Crossing.VY = GapBody.VY; Crossing.VZ = GapBody.VZ;
+	Crossing.Yaw = CubeSpec::YawFromUnreal(GapYawDeg); Crossing.Pitch = CubeSpec::PitchFromUnreal(GapPitchDeg);
+	Crossing.bSprinting = GapBody.bSprinting; Crossing.bSneaking = GapBody.bSneaking;
+	Crossing.Forward = Input.Forward; Crossing.Strafe = -Input.Strafe;
 }
 
 void UCubeWorldGameInstance::AimPlaceholder(APlayerController* PC)
@@ -116,6 +171,7 @@ void UCubeWorldGameInstance::AimPlaceholder(APlayerController* PC)
 
 void UCubeWorldGameInstance::AimCrossingViewBeforeDraw()
 {
+	StepGap();
 	APlayerController* PC = GetFirstLocalPlayerController();
 	if (!PC || PC->GetLocalRole() != ROLE_Authority) return;
 	FVector Loc; FRotator Rot; PC->GetPlayerViewPoint(Loc, Rot);
@@ -133,6 +189,7 @@ void UCubeWorldGameInstance::HoldCrossingView(UWorld* InWorld, ELevelTick, float
 {
 	if (!InWorld || InWorld->GetNetMode() == NM_DedicatedServer) return;
 	if (!CrossingCamera.IsValid() || FPlatformTime::Seconds() > CrossingViewUntil) { EndCrossingView(); return; }
+	StepGap();
 	APlayerController* PC = GetFirstLocalPlayerController();
 	if (!PC) { CrossingBlankFrames++; return; }
 	// The placeholder is the view itself, at the player's eyes: a fresh world's camera cache is not trusted by the engine in
@@ -149,6 +206,7 @@ void UCubeWorldGameInstance::HoldCrossingView(UWorld* InWorld, ELevelTick, float
 
 void UCubeWorldGameInstance::LogDrawnFrame()
 {
+	LastDrawnFrame = GFrameCounter;
 	if (FPlatformTime::Seconds() > DrawLogUntil) { if (GEngine && GEngine->GameViewport) GEngine->GameViewport->OnBeginDraw().Remove(DrawLogHandle); DrawLogHandle.Reset(); return; }
 	APlayerController* PC = GetFirstLocalPlayerController();
 	FString Line = FString::Printf(TEXT("frame %llu: "), (unsigned long long)GFrameCounter);
@@ -158,13 +216,22 @@ void UCubeWorldGameInstance::LogDrawnFrame()
 		FVector Loc; FRotator Rot;
 		PC->GetPlayerViewPoint(Loc, Rot);
 		const AActor* Target = PC->GetViewTarget();
-		Line += FString::Printf(TEXT("view %.1f %.1f %.1f yaw %.0f fov %.0f target %s pc %s pawn %s"), Loc.X / CubeSpec::BlockCm, Loc.Y / CubeSpec::BlockCm, Loc.Z / CubeSpec::BlockCm, Rot.Yaw, PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : 0.f, Target ? *Target->GetClass()->GetName() : TEXT("none"), PC->GetLocalRole() == ROLE_Authority ? TEXT("placeholder") : TEXT("server"), PC->GetPawn() ? *PC->GetPawn()->GetActorLocation().ToString() : TEXT("none"));
+		Line += FString::Printf(TEXT("view %.3f %.3f %.3f yaw %.1f fov %.1f target %s pc %s pawn %s"), Loc.X / CubeSpec::BlockCm, Loc.Y / CubeSpec::BlockCm, Loc.Z / CubeSpec::BlockCm, Rot.Yaw, PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : 0.f, Target ? *Target->GetClass()->GetName() : TEXT("none"), PC->GetLocalRole() == ROLE_Authority ? TEXT("placeholder") : TEXT("server"), PC->GetPawn() ? *PC->GetPawn()->GetActorLocation().ToString() : TEXT("none"));
 	}
 	UE_LOG(LogCubeWorld, Log, TEXT("%s"), *Line);
 }
 
+void UCubeWorldGameInstance::LogEndOfFrame()
+{
+	if (FPlatformTime::Seconds() > DrawLogUntil) { FCoreDelegates::OnEndFrame.Remove(EndFrameLogHandle); EndFrameLogHandle.Reset(); return; }
+	FVector2D Size = FVector2D::ZeroVector;
+	if (GEngine && GEngine->GameViewport) GEngine->GameViewport->GetViewportSize(Size);
+	UE_LOG(LogCubeWorld, Log, TEXT("end of frame %llu: drawn %d, focus %d, viewport %.0fx%.0f, world %s"), (unsigned long long)GFrameCounter, LastDrawnFrame == GFrameCounter ? 1 : 0, FApp::HasFocus() ? 1 : 0, Size.X, Size.Y, GEngine && GEngine->GameViewport && GEngine->GameViewport->GetWorld() ? *GEngine->GameViewport->GetWorld()->GetName() : TEXT("none"));
+}
+
 void UCubeWorldGameInstance::EndCrossingView()
 {
+	if (bGapActive) { bGapActive = false; CubeKeys::StopMouse(); }
 	if (CrossingCamera.IsValid()) Log(FString::Printf(TEXT("crossing: %d frame(s) without a view, %d held from a wrong place"), CrossingBlankFrames, CrossingWrongFrames));
 	if (CrossingViewTicker.IsValid()) { FWorldDelegates::OnWorldPostActorTick.Remove(CrossingViewTicker); CrossingViewTicker.Reset(); }
 	if (CrossingDrawHandle.IsValid()) { if (GEngine && GEngine->GameViewport) GEngine->GameViewport->OnBeginDraw().Remove(CrossingDrawHandle); CrossingDrawHandle.Reset(); }
@@ -304,6 +371,19 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		UCubeWorldGameInstance* Self = Weak.Get();
 		if (!bOk || !Result.Ticket.Connect.IsSet())
 		{
+			// A room joined under the wrong room type is not found: a region's claim can carry a stale type (a C# server that
+			// writes no type leaves the Unreal one that held the region before). The other type is tried once, at once.
+			if (!bOk && (Error.ProblemCode == TEXT("room_not_found") || Error.ProblemCode == TEXT("room_type_not_found") || Error.ProblemCode == TEXT("not_found")) && !Self->RetriedOtherType.Contains(RoomName))
+			{
+				const FString Tried = Self->RoomSlugs.FindRef(RoomName);
+				const FString Other = Tried == TEXT("cubeworld-ue") ? FString(TEXT("cubeworld")) : FString(TEXT("cubeworld-ue"));
+				Self->RetriedOtherType.Add(RoomName);
+				Self->RoomSlugs.Add(RoomName, Other);
+				Self->Log(FString::Printf(TEXT("%s is not a %s room, trying %s"), *RoomName, Tried.IsEmpty() ? TEXT("default") : *Tried, *Other));
+				Self->bSwitching = false;
+				Self->Enter(RoomName, bTeleport);
+				return;
+			}
 			Self->bSwitching = false;
 			Self->CrossAfter = FPlatformTime::Seconds() + 3;
 			const FString Turned = Self->TurnedAway(RoomName, Error.ProblemCode);
@@ -372,6 +452,12 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 	Travelling = RoomName;
 	// A crossing keeps the players it knows: the next world shows them at once, where they were.
 	if (!Crossing.bSet) Players.Empty();
+	if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport)
+	{
+		DrawLogUntil = FPlatformTime::Seconds() + 5;
+		if (!DrawLogHandle.IsValid()) DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
+		if (!EndFrameLogHandle.IsValid()) EndFrameLogHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UCubeWorldGameInstance::LogEndOfFrame);
+	}
 	Log(FString::Printf(TEXT("travelling to %s (Unreal) at %s"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
 	PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
 }
@@ -441,6 +527,7 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 {
 	const bool bCrossed = Crossing.bSet;
 	if (bCrossed) bCrossedOnce = true;
+	RetriedOtherType.Remove(InRoom);
 	Server = InServer; Color = InColor; Room = InRoom; Region = InRegion;
 	Travelling.Empty();
 	bSwitching = false;
@@ -539,7 +626,8 @@ void UCubeWorldGameInstance::SetRegions(const TArray<FCubeRegionRep>& InRegions)
 	for (const FCubeRegionRep& R : InRegions)
 	{
 		Regions.Add({ R.Region, R.Room, R.Color, R.Server, R.Slug });
-		if (!R.Slug.IsEmpty()) RoomSlugs.Add(R.Room, R.Slug);
+		// The room type a browse found is the platform's own word; a region's claim only fills in rooms not browsed.
+		if (!R.Slug.IsEmpty() && !RoomSlugs.Contains(R.Room)) RoomSlugs.Add(R.Room, R.Slug);
 	}
 }
 

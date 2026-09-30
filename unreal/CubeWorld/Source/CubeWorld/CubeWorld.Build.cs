@@ -18,6 +18,8 @@ public class CubeWorld : ModuleRules
 
 		// The game socket to a C# server runs over OpenSSL's connect BIO, plain or TLS; the SSL module owns the certificate store.
 		PrivateDependencyModuleNames.Add("SSL");
+		// The keys and the mouse are read straight from the system around a border crossing (CubeKeys.cpp).
+		PrivateDependencyModuleNames.AddRange(new string[] { "ApplicationCore", "Slate", "SlateCore" });
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 	}
 }
