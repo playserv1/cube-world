@@ -208,7 +208,7 @@ public sealed partial class CubeWorldServer
     /// <summary>Another server's player hit one of ours: this server applies it and deletes the hit.</summary>
     private void HearHit(WorldHit hit)
     {
-        if (Now - hit.at >= 5000 || !_players.TryGetValue(hit.victim, out var victim)) return;
+        if (hit.at is not { } at || Now - at >= 5000 || !_players.TryGetValue(hit.victim, out var victim)) return;
         lock (_world) Hurt(victim, hit.damage, (hit.kx, hit.ky), hit.strength, hit.attacker);
         Platform.RuntimeData.Delete(Uplink, "WorldHit", hit.hit_id);
     }

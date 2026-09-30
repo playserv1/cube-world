@@ -71,7 +71,7 @@ public sealed class WorldHit
     public double kx { get; set; }
     public double ky { get; set; }
     public double strength { get; set; }
-    public double at { get; set; }
+    public double? at { get; set; }
 }
 
 [EntityName("WorldRegion")]
