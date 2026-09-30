@@ -66,7 +66,9 @@ bool CubeKeys::Read(FCubeKeys& Out)
 {
 	// -fakekeys: W and Shift held on a keyboard nobody touches, for testing a crossing without the game in front.
 	static const bool bFake = FParse::Param(FCommandLine::Get(), TEXT("fakekeys"));
-	if (bFake) { Out = FCubeKeys(); Out.Forward = 1; Out.bSprint = true; return true; }
+	// -fakejump: Space held too, to climb out of craters on the way.
+	static const bool bFakeJump = FParse::Param(FCommandLine::Get(), TEXT("fakejump"));
+	if (bFake) { Out = FCubeKeys(); Out.Forward = 1; Out.bSprint = true; Out.bJump = bFakeJump; return true; }
 #if PLATFORM_WINDOWS
 	const UInputSettings* Settings = UInputSettings::GetInputSettings();
 	if (!Settings || !FPlatformApplicationMisc::IsThisApplicationForeground()) return false;
