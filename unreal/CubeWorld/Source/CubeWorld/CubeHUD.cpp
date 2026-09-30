@@ -73,14 +73,14 @@ void ACubeHUD::DrawHUD()
 	}
 
 	// Crosshair.
-	if (Game->IsConnected() && !Game->bDead)
+	if (Game->IsInPlay() && !Game->bDead)
 	{
 		DrawRect(FLinearColor(1, 1, 1, 0.9f), W / 2 - 1, H / 2 - 9, 2, 18);
 		DrawRect(FLinearColor(1, 1, 1, 0.9f), W / 2 - 9, H / 2 - 1, 18, 2);
 	}
 
 	// Server banner and the players, top left and right.
-	if (Game->IsConnected())
+	if (Game->IsInPlay())
 	{
 		const FString Banner = FString::Printf(TEXT("you are on server %s-%s"), *Game->Color, *Game->Server);
 		float BW, BH; GetTextSize(Banner, BW, BH, GEngine->GetMediumFont(), 1.f);
@@ -118,7 +118,7 @@ void ACubeHUD::DrawHUD()
 	// Hearts and hotbar, bottom centre.
 	const float SlotSize = 44, Gap = 2, BarW = 9 * SlotSize + 8 * Gap + 8;
 	const float BarX = W / 2 - BarW / 2, BarY = H - SlotSize - 14;
-	if (Game->IsConnected())
+	if (Game->IsInPlay())
 	{
 		// With a bomb in the hand the hotbar steps back: right click throws the bomb, it places nothing.
 		const bool bHolding = !Game->Holding.IsEmpty();
@@ -150,7 +150,7 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(TEXT("You died!"), H / 2 - 40, 2.f, FLinearColor::White);
 		DrawCentered(TEXT("Press Enter or click to respawn"), H / 2 + 10, 1.f, FLinearColor::White);
 	}
-	else if (!Game->IsConnected() && !Game->bPlaced)
+	else if (!Game->IsInPlay() && !Game->bPlaced)
 	{
 		DrawRect(FLinearColor(0, 0, 0, 0.5f), 0, 0, W, H);
 		DrawCentered(TEXT("Cube World"), H / 2 - 80, 2.5f, FLinearColor::White);

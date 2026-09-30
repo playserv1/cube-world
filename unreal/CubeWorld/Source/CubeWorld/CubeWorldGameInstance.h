@@ -80,6 +80,10 @@ public:
 
 	/** True once this server's welcome arrived and until the connection goes. */
 	bool IsConnected() const { return bWelcomed; }
+	/** In the game for the player: connected, or walking over a border into the next server. The HUD shows through a crossing. */
+	bool IsInPlay() const { return bWelcomed || Crossing.bSet; }
+	/** The field of view the pawn draws with (horizontal degrees), for the view held through a crossing. */
+	float LastHorizontalFov = 0, LastFov = 0;
 	/** True while the server is a C# one, reached over the JSON socket; false on an Unreal server, reached over Iris. */
 	bool IsViaSocket() const { return bViaSocket; }
 	/** A JSON frame to the C# server (nothing while on an Unreal server). */

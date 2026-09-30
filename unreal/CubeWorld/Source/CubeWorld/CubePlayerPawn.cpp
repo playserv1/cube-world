@@ -107,6 +107,7 @@ void ACubePlayerPawn::Bind()
 	if (bCrossingIn)
 	{
 		SetActorLocation(FVector(Body.X, Body.Y, Body.Z) * CubeSpec::BlockCm);
+		if (Game->LastFov > 0) { Fov = Game->LastFov; Camera->SetFieldOfView(Game->LastHorizontalFov); }
 		if (APlayerController* View = Cast<APlayerController>(GetController()))
 			View->SetControlRotation(FRotator(-FMath::RadiansToDegrees(Game->Crossing.Pitch), FMath::RadiansToDegrees(Game->Crossing.Yaw) + 90.f, 0));
 		Game->EndCrossingView();
@@ -575,6 +576,7 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 	if (GEngine && GEngine->GameViewport) { FVector2D Size; GEngine->GameViewport->GetViewportSize(Size); if (Size.Y > 0) Aspect = Size.X / Size.Y; }
 	const float Horizontal = FMath::RadiansToDegrees(2.f * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(Fov / 2.f)) * Aspect));
 	Camera->SetFieldOfView(Horizontal);
+	Game->LastHorizontalFov = Horizontal; Game->LastFov = Fov;
 
 	const double Now = FPlatformTime::Seconds();
 	for (const auto& Pair : Bombs)

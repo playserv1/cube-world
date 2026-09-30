@@ -10,6 +10,9 @@
 #include "Misc/Parse.h"
 #include "TimerManager.h"
 #include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
+#include "CubeHUD.h"
+#include "GameFramework/HUD.h"
 #include "Engine/LocalPlayer.h"
 #include "Containers/Ticker.h"
 #include "CubeSpec.h"
@@ -47,6 +50,12 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 		const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
 		const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
 		CrossingCamera = LoadedWorld->SpawnActor<ACameraActor>(Eye, Look);
+		// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
+		if (CrossingCamera.IsValid())
+		{
+			CrossingCamera->GetCameraComponent()->SetConstraintAspectRatio(false);
+			if (LastHorizontalFov > 0) CrossingCamera->GetCameraComponent()->SetFieldOfView(LastHorizontalFov);
+		}
 		// The engine draws nothing while the local player has no player controller, and the next server's arrives a round
 		// trip after the map: a local placeholder (which the engine destroys when the real one comes, NetConnection.cpp)
 		// shows the world from the crossing camera meanwhile.
@@ -60,6 +69,7 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 					Placeholder->SetPlayer(LocalPlayer);
 					Placeholder->SetControlRotation(Look);
 					Placeholder->SetViewTarget(CrossingCamera.Get());
+					Placeholder->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
 				}
 			}
 		CrossingBlankFrames = 0;
@@ -71,6 +81,8 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 			APlayerController* PC = Weak->GetFirstLocalPlayerController();
 			if (!PC) Weak->CrossingBlankFrames++;
 			if (PC && PC->GetViewTarget() != Weak->CrossingCamera.Get()) PC->SetViewTarget(Weak->CrossingCamera.Get());
+			// The HUD stays on screen: the next server's controller gets it at once, not when the server's call arrives.
+			if (PC && (!PC->GetHUD() || !PC->GetHUD()->IsA(ACubeHUD::StaticClass()))) PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
 			return true;
 		}));
 	}
@@ -312,6 +324,7 @@ void UCubeWorldGameInstance::ReturnToMainMenu()
 void UCubeWorldGameInstance::Disconnected(const FString& Why)
 {
 	if (!bWelcomed && !bSwitching && Travelling.IsEmpty()) return;
+	Crossing = FCubeCrossing();
 	if (Socket.IsValid()) { Socket->Close(); Socket.Reset(); }
 	bViaSocket = false;
 	const FString Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Why);
