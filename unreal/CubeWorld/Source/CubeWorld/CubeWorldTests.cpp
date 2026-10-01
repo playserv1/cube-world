@@ -1,6 +1,7 @@
 // The world's rules for a block whose row is deleted, checked without a platform: on the server it goes back to the
 // generated terrain, the wire names that with its own kind, and a read of the table takes for gone only what it did
 // not find and what did not change after it began.
+#include "CubePhysics.h"
 #include "CubeServerWorld.h"
 #include "CubeSpec.h"
 #include "CubeVoxelWorld.h"
@@ -103,6 +104,48 @@ bool FCubeWorldCrossingWelcomeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a crossing keeps the world"), Teleport.IsSet() && !Teleport.GetValue());
 	TestEqual(TEXT("and changes only the block the next server holds otherwise"), Changed, 1);
 	TestTrue(TEXT("which is there"), Game->World.KindAt(4, 5, 6) == TEXT("dirt") && Game->World.KindAt(1, 2, 3) == TEXT("stone"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldCrossingFallTest,
+	"CubeWorld.Crossing.AFallGoesOnOverTheBorder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// The fall rule both servers apply (World.cs PlayerFall on the C# side), and the peak the client's body keeps for it.
+bool FCubeWorldCrossingFallTest::RunTest(const FString& Parameters)
+{
+	FCubePlayerFall Fall;
+	TestEqual(TEXT("in the air, no damage yet"), Fall.Step(10, false) + Fall.Step(4, false), 0.0);
+	TestEqual(TEXT("landing from 10 hurts by 7"), Fall.Step(0, true), 7.0);
+	TestFalse(TEXT("and the fall is over"), Fall.bAirborne);
+	Fall.Step(2.5, false);
+	TestEqual(TEXT("a drop of 2.5 does not hurt"), Fall.Step(0, true), 0.0);
+
+	FCubePlayerFall Crossed;
+	Crossed.Step(5, false, TOptional<double>(10.0));
+	TestEqual(TEXT("a fall that began on the old server hurts on the next one"), Crossed.Step(0, true), 7.0);
+	FCubePlayerFall Lied;
+	Lied.Step(10, false);
+	Lied.Step(5, false, TOptional<double>(1.0));
+	TestEqual(TEXT("a client cannot make a fall shorter by saying so"), Lied.Step(0, true), 7.0);
+	FCubePlayerFall Standing;
+	TestEqual(TEXT("standing on the ground is no fall"), Standing.Step(0, true, TOptional<double>(30.0)), 0.0);
+
+	// The body: off a ten-block tower, the peak is the top all the way down, and the ground again once it lands.
+	const FCubeSolidQuery Flat = [](int32, int32, int32 Z) { return Z < 0; };
+	FCubeBody Body;
+	Body.Teleport(5, 5, 10);
+	FCubeInput Idle;
+	for (int32 I = 0; I < 10; I++) CubePhysics::Tick(Body, Idle, Flat);
+	TestTrue(TEXT("falling, the peak is the tower's top"), Body.Z < 10 && Body.Peak == 10);
+	for (int32 I = 0; I < 60; I++) CubePhysics::Tick(Body, Idle, Flat);
+	TestTrue(TEXT("landed, the peak is the ground"), Body.bOnGround && Body.Peak == Body.Z);
+
+	// Who walks in over a border: seen by another server in the last 5 s, alive.
+	TestTrue(TEXT("seen 200 ms ago"), CubeSeenJustNow(1000000 - 200, 13, 1000000));
+	TestFalse(TEXT("not seen for 5 s"), CubeSeenJustNow(1000000 - 5000, 13, 1000000));
+	TestFalse(TEXT("dead"), CubeSeenJustNow(1000000 - 200, 0, 1000000));
 	return true;
 }
 

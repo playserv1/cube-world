@@ -426,6 +426,30 @@ void ACubeWorldGameMode::Spawn(FCubeServerPlayer& P)
 	P.Health = CubeSpec::MaxHealth;
 }
 
+// A player another server saw in the last 5 s, alive, walked over the border: they go on with the health that server
+// last gave them, and stand where it last saw them unless their hello says where they crossed (newer). The crossing
+// takes the hand's charge with it, so a player cannot cross for a full-strength hit. Anyone else starts at this
+// region's spawn, whole. World.Arriving on the C# side.
+void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
+{
+	Spawn(P);
+	const FCubeElsewhere* Seen = Elsewhere.Find(P.Id);
+	const bool bHeard = Seen && CubeSeenJustNow(Seen->SeenAt, Seen->Pose.Health, Now());
+	if (bHeard)
+	{
+		P.X = Seen->Pose.X; P.Y = Seen->Pose.Y; P.Z = Seen->Pose.Z; P.Yaw = Seen->Pose.Yaw; P.Pitch = Seen->Pose.Pitch;
+		P.Health = Seen->Pose.Health;
+		P.bSneaking = Seen->Pose.bSneaking; P.bSprinting = Seen->Pose.bSprinting;
+	}
+	if (HelloPos)
+	{
+		P.X = FMath::Clamp(HelloPos->X, 0.0, (double)CubeSpec::Width_);
+		P.Y = FMath::Clamp(HelloPos->Y, 0.0, (double)CubeSpec::Depth);
+		P.Z = FMath::Clamp(HelloPos->Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
+	}
+	if (bHeard || HelloPos) P.LastAttackTick = TickCount;
+}
+
 void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, bool bCross, double X, double Y, double Z)
 {
 	if (!bServing || !Pawn || PlayerOf(Pawn)) return;
@@ -439,13 +463,8 @@ void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, boo
 	Player->Controller = Pawn->GetController();
 	Player->Id = Pawn->PlayerId;
 	Player->Name = Name.IsEmpty() ? Pawn->PlayerId : Name.Left(32);
-	Spawn(*Player);
-	if (bCross)
-	{
-		Player->X = FMath::Clamp(X, 0.0, (double)CubeSpec::Width_);
-		Player->Y = FMath::Clamp(Y, 0.0, (double)CubeSpec::Depth);
-		Player->Z = FMath::Clamp(Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
-	}
+	const FVector Crossed(X, Y, Z);
+	Arrive(*Player, bCross ? &Crossed : nullptr);
 	Players.Add(Player->Id, Player);
 	ServerLog(FString::Printf(TEXT("%s %s"), *Player->Name, bCross ? TEXT("crossed in") : TEXT("joined")));
 	LoadInventoryAndWelcome(Player->Id);
@@ -632,7 +651,7 @@ void ACubeWorldGameMode::StopDig(FCubeServerPlayer& P)
 
 // ── what the players ask ─────────────────────────────────────────────────────────────────────────
 
-void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, TOptional<double> SaidPeak)
 {
 	if (!P || P->bDead) return;
 	P->X = FMath::Clamp(X, 0.0, (double)CubeSpec::Width_);
@@ -642,21 +661,10 @@ void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double
 	P->bSneaking = bSneaking; P->bSprinting = bSprinting;
 	P->bMoved = true;
 
-	// Fall damage, from the height reached since the player last stood on the ground.
-	if (bOnGround)
-	{
-		if (P->bAirborne)
-		{
-			const double Damage = FMath::CeilToDouble(P->Peak - P->Z - CubeSpec::SafeFallDistance);
-			if (Damage > 0) Hurt(*P, Damage, false, 0, 0, 0, FString());
-		}
-		P->bAirborne = false;
-	}
-	else
-	{
-		P->Peak = P->bAirborne ? FMath::Max(P->Peak, P->Z) : P->Z;
-		P->bAirborne = true;
-	}
+	// Fall damage, from the height reached since the player last stood on the ground (on this server or, over a border,
+	// the one before: the client says its own peak).
+	const double Damage = P->Fall.Step(P->Z, bOnGround, SaidPeak);
+	if (Damage > 0) Hurt(*P, Damage, false, 0, 0, 0, FString());
 }
 
 void ACubeWorldGameMode::OnDig(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, bool bStart)
@@ -732,7 +740,7 @@ void ACubeWorldGameMode::OnRespawn(FCubeServerPlayer* P)
 	if (!P || !P->bDead) return;
 	Spawn(*P);
 	P->bDead = false;
-	P->bAirborne = false;
+	P->Fall = FCubePlayerFall();
 	P->bMoved = true;
 	SendRespawn(*P);
 }

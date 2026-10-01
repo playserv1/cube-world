@@ -60,6 +60,33 @@ public sealed class WorldPresence
         };
 }
 
+/// <summary>The fall a player is in, as their moves report it. FCubePlayerFall on the Unreal side.</summary>
+public sealed class PlayerFall
+{
+    public bool Airborne { get; private set; }
+    public double Peak { get; private set; }
+
+    /// <summary>
+    /// One move. In the air, the peak rises with it; on landing, the damage: ceil(peak - z - 3), never below 0, and the
+    /// fall is over. <paramref name="saidPeak"/> is the client's own highest point since the ground, which carries a
+    /// fall over a border: the part of it that happened on the old server counts too. It never makes a fall shorter
+    /// than the moves themselves reached.
+    /// </summary>
+    public double Step(double z, bool onGround, double? saidPeak = null)
+    {
+        if (onGround)
+        {
+            var damage = Airborne ? Math.Max(0, Math.Ceiling(Peak - z - Spec.SafeFallDistance)) : 0;
+            Airborne = false;
+            return damage;
+        }
+        Peak = Airborne ? Math.Max(Peak, z) : z;
+        if (saidPeak is { } said) Peak = Math.Max(Peak, Math.Min(said, World.MaxZ + 8));
+        Airborne = true;
+        return 0;
+    }
+}
+
 /// <summary>A hit on a player another server hosts: written by the attacker's server, applied by the victim's.</summary>
 [EntityName("WorldHit")]
 public sealed class WorldHit

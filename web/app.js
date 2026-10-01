@@ -243,6 +243,8 @@ function onFrame(frame, teleport) {
       for (const crack of cracks.values()) scene.remove(crack);
       cracks.clear();
       if (teleport) spawn(frame.you);
+      // The old server's dig ended with the player; one still held starts again on this server with the next tick.
+      state.dig = null;
       for (const id of [...bombs.keys()]) removeBomb(id);
       for (const bomb of frame.bombs ?? []) onBomb(bomb);
       // This client can show a bomb in the hand and throw it, and reads blocks batched in one "cubes" frame; the
@@ -323,7 +325,7 @@ function onHurt(frame) {
 
 function spawn(at) {
   const p = toClient(at);
-  Object.assign(me, { x: p.x, y: p.y, z: p.z, px: p.x, py: p.y, pz: p.z, vx: 0, vy: 0, vz: 0, onGround: false });
+  Object.assign(me, { x: p.x, y: p.y, z: p.z, px: p.x, py: p.y, pz: p.z, vx: 0, vy: 0, vz: 0, peak: p.y, onGround: false });
   state.placed = true;
   unstick();
 }
@@ -794,7 +796,9 @@ function gameTick() {
     const pitch = -Math.asin(Math.max(-1, Math.min(1, look.y)));
     const pose = `${me.x.toFixed(3)},${me.y.toFixed(3)},${me.z.toFixed(3)},${yaw.toFixed(3)},${pitch.toFixed(3)},${me.onGround},${me.sneaking},${me.sprinting}`;
     if (pose !== lastPose) {
-      send({ op: "move", x: me.x, y: me.z, z: me.y, yaw, pitch, onGround: me.onGround, sneaking: me.sneaking, sprinting: me.sprinting });
+      // In the air the move says the fall's highest point too: a fall that began on the old server counts on the next.
+      send({ op: "move", x: me.x, y: me.z, z: me.y, yaw, pitch, onGround: me.onGround, sneaking: me.sneaking, sprinting: me.sprinting,
+        ...(me.onGround ? {} : { peak: me.peak }) });
       lastPose = pose;
     }
   }

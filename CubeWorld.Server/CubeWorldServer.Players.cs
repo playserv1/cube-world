@@ -57,21 +57,10 @@ public sealed partial class CubeWorldServer
         pose.sprinting = command.sprinting ? 1 : 0;
         player.Moved = true;
 
-        // Fall damage, from the height reached since the player last stood on the ground.
-        if (command.onGround)
-        {
-            if (player.Airborne)
-            {
-                var damage = Math.Ceiling(player.Peak - pose.z - Spec.SafeFallDistance);
-                if (damage > 0) Hurt(player, damage, null, 0, null);
-            }
-            player.Airborne = false;
-        }
-        else
-        {
-            player.Peak = player.Airborne ? Math.Max(player.Peak, pose.z) : pose.z;
-            player.Airborne = true;
-        }
+        // Fall damage, from the height reached since the player last stood on the ground (on this server or, over a
+        // border, the one before: the client says its own peak).
+        var damage = player.Fall.Step(pose.z, command.onGround, command.peak);
+        if (damage > 0) Hurt(player, damage, null, 0, null);
     }
 
     // ── digging ─────────────────────────────────────────────────────────────────────────────────────
@@ -245,7 +234,7 @@ public sealed partial class CubeWorldServer
         player.Pose.x = spawn.x; player.Pose.y = spawn.y; player.Pose.z = spawn.z;
         player.Pose.health = Spec.MaxHealth;
         player.Dead = false;
-        player.Airborne = false;
+        player.Fall = new PlayerFall();
         player.Moved = true;
         Send(player.Session, new { type = "respawn", you = player.Pose });
     }
@@ -289,8 +278,7 @@ public sealed partial class CubeWorldServer
     {
         public bool Moved { get; set; }
         public bool Dead { get; set; }
-        public bool Airborne { get; set; }
-        public double Peak { get; set; }
+        public PlayerFall Fall { get; set; } = new();
         public long LastAttackTick { get; set; } = long.MinValue / 2;
         public long LastHurtTick { get; set; } = long.MinValue / 2;
         public DigState? Dig { get; set; }

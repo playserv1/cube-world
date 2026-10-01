@@ -6,8 +6,10 @@ import * as S from "./spec.js";
 
 const EPS = 1e-7;
 
+// peak: the highest the feet were since the body last stood on the ground, what a fall counts from. Moves say it, so a
+// fall that began on one server hurts on the next (FCubeBody::Peak on the Unreal side).
 export function createBody(x, y, z) {
-  return { x, y, z, px: x, py: y, pz: z, vx: 0, vy: 0, vz: 0,
+  return { x, y, z, px: x, py: y, pz: z, vx: 0, vy: 0, vz: 0, peak: y,
     onGround: false, sneaking: false, sprinting: false, jumpDelay: 0, horizontalCollision: false };
 }
 
@@ -63,6 +65,7 @@ export function tick(body, input, isSolid) {
   body.x += moved.x; body.y += moved.y; body.z += moved.z;
   const collidedY = Math.abs(moved.y - dy) > EPS;
   body.onGround = collidedY && wasGoingDown;
+  body.peak = body.onGround ? body.y : Math.max(body.peak ?? body.y, body.y);
   body.horizontalCollision = Math.abs(moved.x - dx) > EPS || Math.abs(moved.z - dz) > EPS;
   if (Math.abs(moved.x - dx) > EPS) body.vx = 0;
   if (Math.abs(moved.z - dz) > EPS) body.vz = 0;

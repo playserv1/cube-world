@@ -118,6 +118,7 @@ void CubePhysics::Tick(FCubeBody& Body, const FCubeInput& Input, const FCubeSoli
 	Body.X += MX; Body.Y += MY; Body.Z += MZ;
 	const bool bCollidedZ = FMath::Abs(MZ - DZ) > Eps;
 	Body.bOnGround = bCollidedZ && bWasGoingDown;
+	Body.Peak = Body.bOnGround ? Body.Z : FMath::Max(Body.Peak, Body.Z);
 	Body.bHorizontalCollision = FMath::Abs(MX - DX) > Eps || FMath::Abs(MY - DY) > Eps;
 	if (FMath::Abs(MX - DX) > Eps) Body.VX = 0;
 	if (FMath::Abs(MY - DY) > Eps) Body.VY = 0;

@@ -63,8 +63,8 @@ struct FCubeServerPlayer
 	FString Id, Name;
 	double X = 0, Y = 0, Z = 0, Yaw = 0, Pitch = 0, Health = 20;
 	bool bSneaking = false, bSprinting = false;
-	bool bMoved = false, bDead = false, bAirborne = false, bWelcomed = false;
-	double Peak = 0;
+	bool bMoved = false, bDead = false, bWelcomed = false;
+	FCubePlayerFall Fall;
 	int64 LastAttackTick = -1000000, LastHurtTick = -1000000;
 	TOptional<FCubeDig> Dig;
 	/** The bomb in the player's hand. A player holds one at a time and can only throw it. */
@@ -113,7 +113,8 @@ public:
 
 	// ---- what the players ask (from the pawn's server RPCs) ---------------------------------
 	void OnHello(ACubePlayerPawn* Pawn, const FString& Name, bool bCross, double X, double Y, double Z);
-	void OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	/** SaidPeak: the client's highest point since it last stood on the ground (FCubePlayerFall::Step); unset when it said none. */
+	void OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, TOptional<double> SaidPeak = TOptional<double>());
 	void OnDig(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, bool bStart);
 	void OnPlace(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind);
 	void OnAttack(FCubeServerPlayer* P, const FString& Target);
@@ -205,6 +206,8 @@ private:
 	void BroadcastDeath(const FString& PlayerId, const FString& By);
 	void BroadcastBomb(const FCubeBombRep& Frame);
 	void Spawn(FCubeServerPlayer& Player);
+	/** Where a player who joins stands and with what: see the definition. HelloPos is where an Unreal client's hello says it crossed. */
+	void Arrive(FCubeServerPlayer& P, const FVector* HelloPos);
 	TArray<FCubeHitbox> Hitboxes() const;
 	TArray<TPair<FString, FCubeHitbox>> Targets() const;
 	static FCubeHitbox HitboxOf(const FCubePresenceRep& Pose);

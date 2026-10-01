@@ -139,7 +139,10 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     {
         var name = session.DisplayName ?? session.Id;
         var inventory = await LoadInventory(session.Id);
-        var player = new Player(session, inventory, WorldPresence.Arriving(Spawn(session.Id, name), _elsewhere.GetValueOrDefault(session.Id), Now));
+        var spawn = Spawn(session.Id, name);
+        var player = new Player(session, inventory, WorldPresence.Arriving(spawn, _elsewhere.GetValueOrDefault(session.Id), Now));
+        // A crossing takes the hand's charge with it, so a player cannot cross for a full-strength hit.
+        if (!ReferenceEquals(player.Pose, spawn)) player.LastAttackTick = _tick;
 
         _players[session.Id] = player;
         InRoom(room => room.AddPlayer(new WorldPlayer { Id = session.Id, DisplayName = name }));
@@ -228,8 +231,9 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private static string ServerName(string? machineId) =>
         string.IsNullOrEmpty(machineId) ? "local" : machineId[^5..].ToLowerInvariant();
 
+    /// <param name="peak">In the air, the client's highest point since it last stood on the ground (PlayerFall.Step).</param>
     private sealed record Command(string op, double x, double y, double z, double yaw, double pitch, int nx, int ny, int nz,
-        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting)
+        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting, double? peak = null)
     {
         /// <summary>The block the command points at.</summary>
         public (int x, int y, int z) Block => ((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z));

@@ -163,6 +163,24 @@ private:
 	void Settle(int32 X, int32 Y, int32 Z, FCubeWorldUpdate& Out);
 };
 
+/** The fall a player is in, as their moves report it. */
+struct FCubePlayerFall
+{
+	bool bAirborne = false;
+	double Peak = 0;
+
+	/**
+	 * One move. In the air, the peak rises with it; on landing, the damage: ceil(peak - z - 3), never below 0, and the
+	 * fall is over. SaidPeak is the client's own highest point since the ground (FCubeBody::Peak), which carries a fall
+	 * over a border: the part of it that happened on the old server counts too. It never makes a fall shorter than the
+	 * moves themselves reached.
+	 */
+	double Step(double Z, bool bOnGround, TOptional<double> SaidPeak = TOptional<double>());
+};
+
+/** A player another server saw is the one walking in over the border when it saw them in the last 5 s, alive (World.Arriving on the C# side). */
+inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now - SeenAt < 5000 && Health > 0; }
+
 /** What a player carries, per block kind. */
 struct FCubeInventory
 {

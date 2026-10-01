@@ -324,6 +324,8 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 	// last presence), and moving there was the teleport at the border. The next server hears where the player is with
 	// the very next tick's move. Only a fresh join takes the server's pose.
 	LastPose.Empty();
+	// The old server's dig ended with the player; one still held starts again on this server with the next tick.
+	bDigging = false;
 	const bool bKeep = Game->bPlaced && !bTeleport;
 	if (bKeep) Unstick();
 	else
@@ -547,7 +549,7 @@ void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
 	const FString Pose = FString::Printf(TEXT("%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d"), Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
 	if (Pose == LastPose) return;
 	LastPose = Pose;
-	CmdMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting);
+	CmdMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting, Body.Peak);
 }
 
 void ACubePlayerPawn::GameTick()
@@ -662,9 +664,9 @@ void ACubePlayerPawn::ServerHello_Implementation(const FString& Name, bool bCros
 	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnHello(this, Name, bCross, X, Y, Z);
 }
 
-void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(S->PlayerOf(this), X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting);
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(S->PlayerOf(this), X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, bOnGround ? TOptional<double>() : TOptional<double>(Peak));
 }
 
 void ACubePlayerPawn::ServerDig_Implementation(int32 X, int32 Y, int32 Z, bool bStart)
@@ -868,13 +870,14 @@ namespace
 	}
 }
 
-void ACubePlayerPawn::CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting)
+void ACubePlayerPawn::CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, double Peak)
 {
-	if (!Game->IsViaSocket()) { ServerMove(X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting); return; }
+	if (!Game->IsViaSocket()) { ServerMove(X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, Peak); return; }
 	const TSharedRef<FJsonObject> F = Op(TEXT("move"));
 	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
 	F->SetNumberField(TEXT("yaw"), Yaw); F->SetNumberField(TEXT("pitch"), Pitch);
 	F->SetBoolField(TEXT("onGround"), bOnGround); F->SetBoolField(TEXT("sneaking"), bSneaking); F->SetBoolField(TEXT("sprinting"), bSprinting);
+	if (!bOnGround) F->SetNumberField(TEXT("peak"), Peak);
 	Game->Send(F);
 }
 

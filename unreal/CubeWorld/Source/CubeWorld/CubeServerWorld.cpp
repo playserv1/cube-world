@@ -216,6 +216,20 @@ void FCubeServerWorld::Settle(int32 X, int32 Y, int32 Z, FCubeWorldUpdate& Out)
 
 // ── the inventory ────────────────────────────────────────────────────────────────────────────────
 
+double FCubePlayerFall::Step(double Z, bool bOnGround, TOptional<double> SaidPeak)
+{
+	if (bOnGround)
+	{
+		const double Damage = bAirborne ? FMath::Max(0.0, FMath::CeilToDouble(Peak - Z - CubeSpec::SafeFallDistance)) : 0.0;
+		bAirborne = false;
+		return Damage;
+	}
+	Peak = bAirborne ? FMath::Max(Peak, Z) : Z;
+	if (SaidPeak.IsSet()) Peak = FMath::Max(Peak, FMath::Min(SaidPeak.GetValue(), CubeSpec::MaxZ + 8.0));
+	bAirborne = true;
+	return 0;
+}
+
 FCubeInventory FCubeInventory::Starting()
 {
 	FCubeInventory I;

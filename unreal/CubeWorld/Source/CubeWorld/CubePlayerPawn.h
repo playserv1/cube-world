@@ -75,7 +75,7 @@ public:
 	// ---- to the server ----------------------------------------------------------------------
 	/** Who this is, and where they were when they crossed a border (bCross), else the server's spawn. */
 	UFUNCTION(Server, Reliable) void ServerHello(const FString& Name, bool bCross, float X, float Y, float Z);
-	UFUNCTION(Server, Unreliable) void ServerMove(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	UFUNCTION(Server, Unreliable) void ServerMove(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak);
 	UFUNCTION(Server, Reliable) void ServerDig(int32 X, int32 Y, int32 Z, bool bStart);
 	UFUNCTION(Server, Reliable) void ServerPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, uint8 Kind);
 	UFUNCTION(Server, Reliable) void ServerAttack(const FString& Target);
@@ -83,7 +83,8 @@ public:
 	UFUNCTION(Server, Reliable) void ServerThrow(float DX, float DY, float DZ);
 
 	// ---- the same requests, by whichever door the server is behind: an RPC on an Unreal server, a JSON frame on a C# one
-	void CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting);
+	/** Peak: the body's highest point since it last stood on the ground, sent while in the air (FCubeBody::Peak). */
+	void CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, double Peak);
 	void CmdDig(int32 X, int32 Y, int32 Z, bool bStart);
 	void CmdPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind);
 	void CmdAttack(const FString& Target);

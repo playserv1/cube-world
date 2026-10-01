@@ -194,7 +194,8 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 		Player->Name = Name.IsEmpty() ? Id : Name.Left(32);
 		// A browser client says "bombs" once it can show them; until then it is handed none.
 		Player->bThrows = false;
-		Spawn(*Player);
+		// A browser's hello names no position: a player walking in over a border stands where their server last saw them.
+		Arrive(*Player, nullptr);
 		Players.Add(Id, Player);
 		// The door is not an Unreal login, so the engine's PostLogin never tells the SDK: the player is admitted here,
 		// and so is in the room's roster, the admin's player list and within an operator's reach.
@@ -205,7 +206,12 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 	}
 
 	const FString Op = Str(Json, TEXT("op"));
-	if (Op == TEXT("move")) OnMove(P, Num(Json, TEXT("x")), Num(Json, TEXT("y")), Num(Json, TEXT("z")), Num(Json, TEXT("yaw")), Num(Json, TEXT("pitch")), Flag(Json, TEXT("onGround")), Flag(Json, TEXT("sneaking")), Flag(Json, TEXT("sprinting")));
+	if (Op == TEXT("move"))
+	{
+		double Peak;
+		const TOptional<double> SaidPeak = Json->TryGetNumberField(TEXT("peak"), Peak) ? TOptional<double>(Peak) : TOptional<double>();
+		OnMove(P, Num(Json, TEXT("x")), Num(Json, TEXT("y")), Num(Json, TEXT("z")), Num(Json, TEXT("yaw")), Num(Json, TEXT("pitch")), Flag(Json, TEXT("onGround")), Flag(Json, TEXT("sneaking")), Flag(Json, TEXT("sprinting")), SaidPeak);
+	}
 	else if (Op == TEXT("dig")) OnDig(P, FMath::FloorToInt32(Num(Json, TEXT("x"))), FMath::FloorToInt32(Num(Json, TEXT("y"))), FMath::FloorToInt32(Num(Json, TEXT("z"))), Str(Json, TEXT("state")) == TEXT("start"));
 	else if (Op == TEXT("place")) OnPlace(P, FMath::FloorToInt32(Num(Json, TEXT("x"))), FMath::FloorToInt32(Num(Json, TEXT("y"))), FMath::FloorToInt32(Num(Json, TEXT("z"))), (int32)Num(Json, TEXT("nx")), (int32)Num(Json, TEXT("ny")), (int32)Num(Json, TEXT("nz")), FName(*Str(Json, TEXT("kind"))));
 	else if (Op == TEXT("attack")) OnAttack(P, Str(Json, TEXT("target")));
