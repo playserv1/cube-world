@@ -131,6 +131,18 @@ PlayServ::Rooms::RemovePlayer(RoomName, PlayerId);
 const FString PlayerId = PlayServ::Rooms::GetPlayerId(PlayerController);
 ```
 
+**A player who comes in some other way.** The engine's login events cover Unreal network logins only. A player your server lets in through its own transport (a WebSocket door for browsers, a beacon, your own protocol) presents the same ticket, which you check with the same `VerifyTicket`; then admit them yourself, and report their leave yourself:
+
+```cpp
+const FPlayServTicketVerdict Verdict = PlayServ::Rooms::VerifyTicket(Ticket);
+if (!Verdict.bAccepted) { /* close the connection with Verdict.Reason */ return; }
+PlayServ::Rooms::AdmitVerified(Verdict);   // the platform hears the join; the player is in the roster
+// ... and when that connection closes:
+PlayServ::Rooms::RemovePlayer(Verdict.RoomName, Verdict.PlayerId);
+```
+
+Without `AdmitVerified` such a player plays, but the platform never hears of them: they are missing from the room's roster, the admin's player list and the operator's **Remove player**.
+
 `OnTicketOffer` on the module class lets you refuse a player before the platform issues the ticket: return `false` with a detail string, and the platform answers the player `403 room_refused`. That, not a refusal in `PreLogin`, is the place for "this player is banned from my server": it frees the seat before anyone travels.
 
 **When PlayServ sends your server no tickets** (`GetAdmissionMode()` is `None`), `VerifyTicket` refuses every player with `admission_unavailable`. `bAdmissionFailOpenInDevelopment` in `Config/DedicatedServerGame.ini` admits them anyway, so you can play locally against a platform that sends none; it is ignored in Shipping builds.

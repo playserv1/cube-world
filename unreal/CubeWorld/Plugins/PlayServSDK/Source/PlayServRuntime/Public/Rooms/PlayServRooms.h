@@ -195,6 +195,15 @@ public:
 	 */
 	FString GetPlayerId(const APlayerController* Player) const;
 
+	/**
+	 * Admit a player whose ticket VerifyTicket accepted, on a connection the engine does not log in: a WebSocket door,
+	 * a beacon, the game's own transport. It does for that player what the engine's PostLogin does for a network login:
+	 * the ticket leaves the verified list and the platform hears the join with its reservation token, so the player is
+	 * in the room's roster. RemovePlayer is their leave. False when the verdict was a refusal or a development fail-open
+	 * admission, when its ticket was never verified here or was admitted already, or when its room is gone.
+	 */
+	bool AdmitVerified(const FPlayServTicketVerdict& Verdict);
+
 	/** Remove a player by the game's own decision, such as a kick: reported at once, with no reconnect grace. False when the player is not in that room. */
 	bool RemovePlayer(const FString& RoomName, const FString& PlayerId);
 

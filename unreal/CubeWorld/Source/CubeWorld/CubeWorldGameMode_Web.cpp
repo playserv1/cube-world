@@ -193,6 +193,9 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 		Player->bThrows = false;
 		Spawn(*Player);
 		Players.Add(Id, Player);
+		// The door is not an Unreal login, so the engine's PostLogin never tells the SDK: the player is admitted here,
+		// and so is in the room's roster, the admin's player list and within an operator's reach.
+		PlayServ::Rooms::AdmitVerified(Verdict);
 		ServerLog(FString::Printf(TEXT("%s joined through the browser door"), *Player->Name));
 		LoadInventoryAndWelcome(Id);
 		return;
@@ -221,6 +224,8 @@ void ACubeWorldGameMode::RemovePlayer(const FString& Id)
 	TSharedPtr<FCubeServerPlayer> Player = *Found;
 	StopDig(*Player);
 	ServerLog(FString::Printf(TEXT("%s left"), *Player->Name));
+	// A browser's leave is the game's to report, as its join was (an Unreal client's goes through the engine's logout).
+	if (Player->WebClient) PlayServ::Rooms::RemovePlayer(RoomName(), Id);
 	UWorldPresence* Row = Player->PresenceRow.Get();
 	TStrongObjectPtr<UWorldPresence> Keep(Row);
 	Players.Remove(Id);

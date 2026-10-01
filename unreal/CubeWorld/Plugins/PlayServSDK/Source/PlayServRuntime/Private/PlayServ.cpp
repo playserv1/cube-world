@@ -362,6 +362,12 @@ FString PlayServ::Rooms::GetPlayerId(const APlayerController* Player)
 	return Rooms != nullptr ? Rooms->GetPlayerId(Player) : FString();
 }
 
+bool PlayServ::Rooms::AdmitVerified(const FPlayServTicketVerdict& Verdict)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	return PS != nullptr && PS->GetRooms()->AdmitVerified(Verdict);
+}
+
 bool PlayServ::Rooms::RemovePlayer(const FString& RoomName, const FString& PlayerId)
 {
 	UPlayServSubsystem* PS = UPlayServSubsystem::Get();

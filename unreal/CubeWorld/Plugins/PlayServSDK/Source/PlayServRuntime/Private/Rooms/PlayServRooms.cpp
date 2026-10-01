@@ -1160,6 +1160,46 @@ bool UPlayServRooms::ReportPlayerLeft(const FString& RoomName, const FString& Pl
 	return bWasMember;
 }
 
+bool UPlayServRooms::AdmitVerified(const FPlayServTicketVerdict& Verdict)
+{
+	if (!bHosting || !Verdict.bAccepted || Verdict.ReservationToken.IsEmpty() || Verdict.PlayerId.IsEmpty())
+	{
+		// A development fail-open admission carries no ticket: like its engine login, it is not reported.
+		return false;
+	}
+	const FVerifiedTicket* Ticket = FindVerified(Verdict.ReservationToken);
+	if (Ticket == nullptr)
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: AdmitVerified for a ticket this server never verified, or admitted already — %s is NOT reported to the platform again"), *Verdict.PlayerId);
+		return false;
+	}
+	const FString PlayerId = Ticket->PlayerId;
+	const FString RoomName = Ticket->RoomName;
+	const bool bResume = Ticket->bResume;
+	Verified.Remove(Verdict.ReservationToken);
+	TSharedPtr<FPlayServRoomRuntime>* Room = Rooms.Find(RoomName);
+	if (Room == nullptr || (*Room)->bClosing)
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: %s was admitted to %s, which is gone or closing — not reported to the platform"), *PlayerId, *RoomName);
+		return false;
+	}
+	if (bResume)
+	{
+		if (!(*Room)->Roster.Contains(PlayerId))
+		{
+			UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: %s came back to %s after their seat was released — this player is NOT in the platform's roster"), *PlayerId, *RoomName);
+			return false;
+		}
+		(*Room)->Parked.Remove(PlayerId);
+		(*Room)->IdleSince = 0.0;
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: %s resumed their seat in %s (admitted by the game)"), *PlayerId, *RoomName);
+		return true;
+	}
+	AdmitToRoom(RoomName, PlayerId, Verdict.ReservationToken);
+	UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: %s joined %s (admitted by the game)"), *PlayerId, *RoomName);
+	return true;
+}
+
 bool UPlayServRooms::RemovePlayer(const FString& RoomName, const FString& PlayerId)
 {
 	const bool bWasMember = ReportPlayerLeft(RoomName, PlayerId);

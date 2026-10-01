@@ -385,6 +385,9 @@ namespace PlayServ::Rooms
 	/** The PlayServ player id of a connection this server admitted by ticket, also after a seamless travel; empty for any other connection. */
 	PLAYSERVRUNTIME_API FString GetPlayerId(const APlayerController* Player);
 
+	/** Admit a player VerifyTicket accepted on a connection the engine does not log in (a WebSocket door, a beacon): the platform hears the join. RemovePlayer is their leave. */
+	PLAYSERVRUNTIME_API bool AdmitVerified(const FPlayServTicketVerdict& Verdict);
+
 	/** The game's own removal decision (kick, ban, quit): reported at once, with no reconnect grace. */
 	PLAYSERVRUNTIME_API bool RemovePlayer(const FString& RoomName, const FString& PlayerId);
 

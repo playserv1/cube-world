@@ -2163,4 +2163,63 @@ bool FPlayServAuthDeploymentTokenTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Admission.AdmitVerifiedReportsTheJoinAndTheLeave
+//
+// A player who comes in through the game's own transport (Cube World's WebSocket door for browsers)
+// never reaches the engine's PostLogin. AdmitVerified is their PostLogin: the platform hears the join
+// with the reservation token, once; RemovePlayer is their leave. A refused verdict, a ticket never
+// verified here and one admitted already are not reported.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsAdmitVerifiedTest,
+	"PlayServ.Rooms.Admission.AdmitVerifiedReportsTheJoinAndTheLeave",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsAdmitVerifiedTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	TSharedPtr<FPlayServFakeUplinkTransport> Socket = BeginHostingOneRoom(Server, Factory, Clock, TEXT("blob-7a3f"));
+
+	const int32 FramesBefore = Socket->CountSentOfType(TEXT("room_presence"));
+	Socket->SimulateMessage(TEXT("{\"type\":\"ticket_offer\",\"reservation_token\":\"rsv_web\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_web\",\"expires_in\":10}"));
+	const FPlayServTicketVerdict Verdict = Server->VerifyTicket(TEXT("rsv_web"));
+	TestTrue(TEXT("the door's ticket is accepted"), Verdict.bAccepted && Verdict.PlayerId == TEXT("plr_web"));
+	TestEqual(TEXT("verifying alone reports nothing (the bug: the door stopped here)"), Socket->CountSentOfType(TEXT("room_presence")), FramesBefore);
+
+	TestTrue(TEXT("AdmitVerified admits the player"), Server->AdmitVerified(Verdict));
+	TSharedPtr<FJsonObject> Join = Socket->LastSentOfType(TEXT("room_presence"));
+	TestTrue(TEXT("one join frame, with the reservation token"), Socket->CountSentOfType(TEXT("room_presence")) == FramesBefore + 1 && Join.IsValid()
+		&& Join->GetStringField(TEXT("event")) == TEXT("join") && Join->GetStringField(TEXT("player_id")) == TEXT("plr_web")
+		&& Join->GetStringField(TEXT("reservation_token")) == TEXT("rsv_web"));
+	TestTrue(TEXT("the player is in the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_web")));
+	TestEqual(TEXT("player count"), Server->GetRoomPlayerCount(TEXT("blob-7a3f")), 1);
+
+	TestFalse(TEXT("the same ticket is not admitted twice"), Server->AdmitVerified(Verdict));
+	FPlayServTicketVerdict Refused;
+	Refused.ReservationToken = TEXT("rsv_web");
+	Refused.PlayerId = TEXT("plr_web");
+	TestFalse(TEXT("a refused verdict is not admitted"), Server->AdmitVerified(Refused));
+	FPlayServTicketVerdict Never = Verdict;
+	Never.ReservationToken = TEXT("rsv_never_verified");
+	TestFalse(TEXT("a ticket never verified here is not admitted"), Server->AdmitVerified(Never));
+	TestEqual(TEXT("and none of them sends a frame"), Socket->CountSentOfType(TEXT("room_presence")), FramesBefore + 1);
+
+	TestTrue(TEXT("RemovePlayer is the leave"), Server->RemovePlayer(TEXT("blob-7a3f"), TEXT("plr_web")));
+	TSharedPtr<FJsonObject> Leave = Socket->LastSentOfType(TEXT("room_presence"));
+	TestTrue(TEXT("a leave frame at once"), Leave.IsValid() && Leave->GetStringField(TEXT("event")) == TEXT("leave") && Leave->GetStringField(TEXT("player_id")) == TEXT("plr_web"));
+	TestFalse(TEXT("off the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_web")));
+
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
 #endif // !UE_BUILD_SHIPPING
