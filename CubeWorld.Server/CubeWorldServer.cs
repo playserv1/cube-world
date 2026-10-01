@@ -74,7 +74,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
                     break;
                 }
             }
-            catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5 s: {e.Message}"); }
+            catch (Exception e) { _ = Platform.Log($"world not ready, retrying in 5s: {e.Message}"); }
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
         await Platform.Log($"{RoomName}: {_world.Overrides.Count()} changed blocks loaded, {Spec.Trees.Length} oaks, {_bombs.Count} bombs, world ready");
