@@ -121,6 +121,7 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		return;
 	}
 	Log(FString::Printf(TEXT("connecting to %s://%s:%d"), bSecure ? TEXT("wss") : TEXT("ws"), *Host, Port));
+	if (!bTeleport && bPlaced) LogFramesFor(3);
 	TSharedPtr<FCubeSocket> NewSocket = MakeShared<FCubeSocket>(Host, Port, bSecure, TEXT("/"));
 	PendingSocket = NewSocket;
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);

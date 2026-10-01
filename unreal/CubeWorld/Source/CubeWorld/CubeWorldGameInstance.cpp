@@ -150,11 +150,7 @@ void UCubeWorldGameInstance::BeginCrossingGap(UWorld* InWorld)
 	// view target the engine switches to on its own (the next server's controller, its pawn still where that server
 	// spawned it) is never drawn.
 	CrossingViewUntil = FPlatformTime::Seconds() + 5;
-	if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport && !DrawLogHandle.IsValid())
-	{
-		DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + 3);
-		DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
-	}
+	LogFramesFor(3);
 	CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
 	// The world does not tick until the server's game state says play has begun, but frames are drawn all along: the
 	// view is aimed right before each draw as well.
@@ -321,6 +317,14 @@ void UCubeWorldGameInstance::HoldCrossingView(UWorld* InWorld, ELevelTick, float
 	}
 	// The HUD stays on screen: the next server's controller gets it at once, not when the server's call arrives.
 	if (!PC->GetHUD() || !PC->GetHUD()->IsA(ACubeHUD::StaticClass())) PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
+}
+
+void UCubeWorldGameInstance::LogFramesFor(double Seconds)
+{
+	if (!FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) || !GEngine || !GEngine->GameViewport) return;
+	DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + Seconds);
+	if (!DrawLogHandle.IsValid()) DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
+	if (!EndFrameLogHandle.IsValid()) EndFrameLogHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UCubeWorldGameInstance::LogEndOfFrame);
 }
 
 void UCubeWorldGameInstance::LogDrawnFrame()
@@ -639,6 +643,7 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 		bSeamlessCrossing = true;
 		Travelling = RoomName;
 		Log(FString::Printf(TEXT("crossing to %s (Unreal) at %s; this server plays on until it lets us in"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
+		LogFramesFor(3);
 		Engine->RequestSeamlessTravel();
 		PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
 		return;
@@ -653,12 +658,7 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 	Travelling = RoomName;
 	// A crossing keeps the players it knows: the next world shows them at once, where they were.
 	if (!Crossing.bSet) Players.Empty();
-	if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport)
-	{
-		DrawLogUntil = FPlatformTime::Seconds() + 5;
-		if (!DrawLogHandle.IsValid()) DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
-		if (!EndFrameLogHandle.IsValid()) EndFrameLogHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UCubeWorldGameInstance::LogEndOfFrame);
-	}
+	LogFramesFor(5);
 	Log(FString::Printf(TEXT("travelling to %s (Unreal) at %s"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
 	PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
 }

@@ -126,6 +126,8 @@ public:
 	bool bPlaced = false;
 	/** Set once a border has been crossed in this run (the -holdkeys test walks by itself only up to the first one). */
 	bool bCrossedOnce = false;
+	/** The -walkto spot the test walks to now, kept through crossings (each server's pawn is a new one). */
+	int32 WalkSpot = 0;
 	/** The bomb in the player's hand, if any: right click throws it instead of placing a block. */
 	FString Holding;
 	FString Status = TEXT("Press Enter to play");
@@ -235,6 +237,7 @@ private:
 	FVector CrossingEye = FVector::ZeroVector;
 	FRotator CrossingLook = FRotator::ZeroRotator;
 	/** -logcrossing: what every frame around a crossing is drawn from, for finding a wrong frame. */
+	void LogFramesFor(double Seconds);
 	void LogDrawnFrame();
 	void LogEndOfFrame();
 	FDelegateHandle EndFrameLogHandle;

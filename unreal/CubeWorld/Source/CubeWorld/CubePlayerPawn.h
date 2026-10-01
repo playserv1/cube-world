@@ -162,6 +162,8 @@ private:
 	FString LastPose;
 	FIntVector TestPlaced, TestDug;
 	TOptional<float> TestWalkTo, TestWalkToY;
+	/** The -walkto spots, in order; the one walked to now is the game instance's WalkSpot. */
+	TArray<TPair<float, TOptional<float>>> TestWalkSpots;
 	float Fov = 70.f;
 	bool bBound = false;
 };

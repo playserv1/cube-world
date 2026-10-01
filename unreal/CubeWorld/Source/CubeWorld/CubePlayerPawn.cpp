@@ -317,15 +317,18 @@ void ACubePlayerPawn::Unstick()
 	while (CubePhysics::Overlaps(Body, Solid) && Guard++ < 80) { Body.Z = FMath::Floor(Body.Z) + 1; Body.PZ = Body.Z; }
 }
 
-void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
+void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 {
-	// A crossing keeps the body where the client has walked it meanwhile; the server's pose is where the crossing began.
-	const bool bKeep = Game->bPlaced && FMath::Abs(You.X - Body.X) + FMath::Abs(You.Y - Body.Y) + FMath::Abs(You.Z - Body.Z) < 12;
+	// A crossing keeps the body where the client has walked it, as the browser client does: the next server's pose is
+	// where it last heard of the player, or its spawn when it heard nothing (a C# server that missed the old server's
+	// last presence), and moving there was the teleport at the border. The next server hears where the player is with
+	// the very next tick's move. Only a fresh join takes the server's pose.
+	LastPose.Empty();
+	const bool bKeep = Game->bPlaced && !bTeleport;
 	if (bKeep) Unstick();
 	else
 	{
 		Spawn(You.X, You.Y, You.Z);
-		LastPose.Empty();
 		for (auto& Pair : Avatars) if (Pair.Value) Pair.Value->Destroy();
 		Avatars.Empty();
 		TArray<FString> Ids;
@@ -404,19 +407,28 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool)
 			}
 		}), 0.5f, true, 6.f);
 	}
-	// -walkto=<x> or -walkto=<x>,<y>: keep walking towards that spot, one axis at a time (a border crossing test).
+	// -walkto=<x>, -walkto=<x>,<y>, or spots one after another, -walkto=<x>,<y>;<x>,<y>: keep walking towards each spot in
+	// turn, one axis at a time (a border crossing test). The spot reached so far is the game instance's, so the walk goes
+	// on from it after a crossing.
 	FString TargetText;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), TargetText, false) && !TargetText.IsEmpty())
 	{
-		FString TargetX, TargetY;
-		if (!TargetText.Split(TEXT(","), &TargetX, &TargetY)) TargetX = TargetText;
-		const float Target = FCString::Atof(*TargetX);
-		const TOptional<float> TargetYValue = TargetY.IsEmpty() ? TOptional<float>() : TOptional<float>(FCString::Atof(*TargetY));
-		FTimerHandle H;
-		GetWorldTimerManager().SetTimer(H, FTimerDelegate::CreateWeakLambda(this, [this, Target, TargetYValue]()
+		TArray<FString> Spots;
+		TargetText.ParseIntoArray(Spots, TEXT(";"));
+		TestWalkSpots.Reset();
+		for (const FString& Spot : Spots)
 		{
-			TestWalkTo = Target;
-			TestWalkToY = TargetYValue;
+			FString TargetX, TargetY;
+			if (!Spot.Split(TEXT(","), &TargetX, &TargetY)) TargetX = Spot;
+			TestWalkSpots.Add({ FCString::Atof(*TargetX), TargetY.IsEmpty() ? TOptional<float>() : TOptional<float>(FCString::Atof(*TargetY)) });
+		}
+		FTimerHandle H;
+		GetWorldTimerManager().SetTimer(H, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			if (TestWalkSpots.Num() == 0) return;
+			const TPair<float, TOptional<float>>& Spot = TestWalkSpots[FMath::Clamp(Game->WalkSpot, 0, TestWalkSpots.Num() - 1)];
+			TestWalkTo = Spot.Key;
+			TestWalkToY = Spot.Value;
 			// With -holdkeys the walk is the test's own only up to the first border: past it the keys held on the real keyboard
 			// must carry the player on (the test of keys surviving a crossing).
 			bMouseCaptured = true;
@@ -549,8 +561,16 @@ void ACubePlayerPawn::GameTick()
 	const bool bSteer = TestWalkTo.IsSet() && !(FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) && Game->bCrossedOnce);
 	if (bSteer) if (APlayerController* PC = Cast<APlayerController>(GetController()))
 	{
-		// Along x until there, then along y (Unreal's yaw 90 is the world's +y).
-		const bool bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
+		// Along x until there, then along y (Unreal's yaw 90 is the world's +y), then on to the next spot.
+		bool bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
+		if (bThereX && (!TestWalkToY.IsSet() || FMath::Abs(TestWalkToY.GetValue() - Body.Y) < 0.5) && Game->WalkSpot + 1 < TestWalkSpots.Num())
+		{
+			const TPair<float, TOptional<float>>& Next = TestWalkSpots[++Game->WalkSpot];
+			TestWalkTo = Next.Key;
+			TestWalkToY = Next.Value;
+			bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
+			Game->Log(FString::Printf(TEXT("walkto: on to %.1f%s"), Next.Key, Next.Value.IsSet() ? *FString::Printf(TEXT(", %.1f"), Next.Value.GetValue()) : TEXT("")));
+		}
 		if (bThereX && TestWalkToY.IsSet()) PC->SetControlRotation(FRotator(0, TestWalkToY.GetValue() > Body.Y ? 90.f : -90.f, 0));
 		else PC->SetControlRotation(FRotator(0, TestWalkTo.GetValue() > Body.X ? 0.f : 180.f, 0));
 	}
