@@ -61,8 +61,13 @@ function refreshSession() {
         body: JSON.stringify({ refresh_token: state.player.refresh_token }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`session refresh → ${res.status} ${json.code || json.title || ""}`);
+      if (!res.ok) {
+        // A refused token is spent for good: the guest it kept is gone, the next sign-in makes a new one.
+        if (res.status === 401 || res.status === 403) forgetGuest(state.player.name);
+        throw new Error(`session refresh → ${res.status} ${json.code || json.title || ""}`);
+      }
       Object.assign(state.player, { access_token: json.access_token, refresh_token: json.refresh_token });
+      keepGuest(state.player);
       scheduleRefresh((new Date(json.expires_at) - Date.now()) / 1000);
     } finally { refreshing = null; }
   })();
@@ -74,11 +79,44 @@ function scheduleRefresh(seconds) {
   scheduleRefresh.timer = setTimeout(() => refreshSession().catch(() => {}), Math.max(10, (seconds || 900) - 60) * 1000);
 }
 
+// A guest is kept per name in this browser: signing in again under the same name resumes the same player, instead of
+// adding one more to the project's players every time. The refresh token is the guest's only credential, and it is
+// single-use: every rotation is written back at once. The Unreal client keeps its guests the same way, in a file.
+const guestKey = name => `cubeworld.guest.${name.toLowerCase()}`;
+
+function keepGuest(player) {
+  try { localStorage.setItem(guestKey(player.name), JSON.stringify({ player_id: player.player_id, refresh_token: player.refresh_token })); } catch {}
+}
+
+function forgetGuest(name) {
+  try { localStorage.removeItem(guestKey(name)); } catch {}
+}
+
+/** The guest kept under this name, signed in again; null when there is none or the platform refused its token. */
+async function resumeGuest(name) {
+  let kept = null;
+  try { kept = JSON.parse(localStorage.getItem(guestKey(name)) || "null"); } catch {}
+  if (!kept?.refresh_token || !kept.player_id) return null;
+  const res = await fetch(`${cfg.api}/auth/players/refresh`, {
+    method: "POST", headers: { "X-PlayServ-Client": cfg.clientKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: kept.refresh_token }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) forgetGuest(name);
+    else throw new Error(`session refresh → ${res.status} ${json.code || json.title || ""}`);
+    return null;
+  }
+  const expiresIn = json.expires_at ? (new Date(json.expires_at) - Date.now()) / 1000 : json.expires_in;
+  return { player_id: json.player_id ?? kept.player_id, access_token: json.access_token, refresh_token: json.refresh_token, expires_in: expiresIn };
+}
+
 async function signIn(name) {
   sessionStorage.setItem("cubeworld.name", name);
-  state.player = OFFLINE ? { player_id: "offline-you", access_token: "", name } : await api("POST", "/auth/players/anon", { display_name: name });
+  state.player = OFFLINE ? { player_id: "offline-you", access_token: "", name }
+    : await resumeGuest(name) ?? await api("POST", "/auth/players/anon", { display_name: name });
   state.player.name = name;
-  if (!OFFLINE) scheduleRefresh(state.player.expires_in);
+  if (!OFFLINE) { keepGuest(state.player); scheduleRefresh(state.player.expires_in); }
   $("join").hidden = true;
   $("name").blur();
   $("me").textContent = name;

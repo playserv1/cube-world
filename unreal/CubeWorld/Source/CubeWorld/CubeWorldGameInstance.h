@@ -164,6 +164,11 @@ public:
 	FCubeOnBomb OnBomb;
 
 private:
+	/** A guest is kept per name on this machine (Saved/Guests), as the browser keeps one per name: signing in again under
+	 * the same name resumes the same player instead of making a new one every launch. */
+	void SignInAsNewGuest();
+	void KeepGuest(const FString& RefreshToken);
+	UFUNCTION() void HandleSessionLost();
 	void Browse();
 	/** Every room type answered: pick a room and enter it. */
 	void Browsed();

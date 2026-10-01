@@ -21,14 +21,47 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Containers/Ticker.h"
 #include "CubeSpec.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+
+namespace
+{
+	/** Where the guest playing under this name keeps their refresh token: their only credential, single-use, rotated about every 12 minutes. */
+	FString GuestFile(const FString& Name)
+	{
+		FString Safe = Name.ToLower();
+		for (TCHAR& C : Safe) if (!FChar::IsAlnum(C) && C != TEXT('-') && C != TEXT('_')) C = TEXT('_');
+		return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Guests"), Safe + TEXT(".token"));
+	}
+}
 
 void UCubeWorldGameInstance::Init()
 {
 	Super::Init();
-	if (!CubeIsServerProcess()) Textures.Build();
+	if (!CubeIsServerProcess())
+	{
+		Textures.Build();
+		// The SDK hands the refresh token over at login and on every rotation; it is written at once, since a spent one
+		// can never be used again.
+		PlayServ::Auth::SetRefreshTokenChangedHandler(FPlayServRefreshTokenChanged::CreateUObject(this, &UCubeWorldGameInstance::KeepGuest));
+		PlayServ::Auth::OnSessionLost().AddDynamic(this, &UCubeWorldGameInstance::HandleSessionLost);
+	}
 	Hotbar = CubeSpec::Hotbar();
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCubeWorldGameInstance::HandlePostLoadMap);
 	if (GEngine) GEngine->OnNetworkFailure().AddUObject(this, &UCubeWorldGameInstance::HandleNetworkFailure);
+}
+
+void UCubeWorldGameInstance::KeepGuest(const FString& RefreshToken)
+{
+	if (PlayerName.IsEmpty() || RefreshToken.IsEmpty()) return;
+	if (!FFileHelper::SaveStringToFile(RefreshToken, *GuestFile(PlayerName))) Log(TEXT("the guest's sign-in could not be kept: the next launch makes a new one"));
+}
+
+// The platform refused the token: the guest it kept is gone, and the next sign-in under this name makes a new one.
+void UCubeWorldGameInstance::HandleSessionLost()
+{
+	if (!PlayerName.IsEmpty()) IFileManager::Get().Delete(*GuestFile(PlayerName), false, true, true);
 }
 
 void UCubeWorldGameInstance::Shutdown()
@@ -257,8 +290,38 @@ void UCubeWorldGameInstance::StartPlay(const FString& Name)
 	bSigningIn = true;
 	Status = TEXT("Signing in...");
 	if (PlayServ::Auth::IsLoggedIn() && !PlayerId.IsEmpty()) { Browse(); return; }
+	FString Kept;
+	if (!FFileHelper::LoadFileToString(Kept, *GuestFile(Name)) || Kept.TrimStartAndEnd().IsEmpty()) { SignInAsNewGuest(); return; }
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
-	PlayServ::Auth::LoginAnonymous(Name, FPlayServAuthCallback::CreateLambda([Weak](bool bOk, const FString& InPlayerId, const FPlayServError& Error)
+	PlayServ::Auth::LoginWithRefreshToken(Kept.TrimStartAndEnd(), FPlayServAuthCallback::CreateLambda([Weak](bool bOk, const FString& InPlayerId, const FPlayServError& Error)
+	{
+		if (!Weak.IsValid()) return;
+		UCubeWorldGameInstance* Self = Weak.Get();
+		if (bOk)
+		{
+			Self->PlayerId = InPlayerId;
+			Self->Log(FString::Printf(TEXT("signed in again as %s"), *Self->PlayerName));
+			Self->Browse();
+			return;
+		}
+		// Offline, the platform never saw the token: it is kept for the next try.
+		if (Error.Code == EPlayServErrorCode::NetworkUnreachable || Error.Code == EPlayServErrorCode::Timeout)
+		{
+			Self->bSigningIn = false;
+			Self->Status = FString::Printf(TEXT("Sign-in failed: %s"), *Error.Message);
+			Self->Log(Self->Status);
+			return;
+		}
+		// Refused, the token is spent: a new guest under the same name.
+		IFileManager::Get().Delete(*GuestFile(Self->PlayerName), false, true, true);
+		Self->SignInAsNewGuest();
+	}));
+}
+
+void UCubeWorldGameInstance::SignInAsNewGuest()
+{
+	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
+	PlayServ::Auth::LoginAnonymous(PlayerName, FPlayServAuthCallback::CreateLambda([Weak](bool bOk, const FString& InPlayerId, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
 		UCubeWorldGameInstance* Self = Weak.Get();
