@@ -86,7 +86,9 @@ room under the type its region claim names.
 | The client's session and the crossing | `CubeWorldGameInstance.cpp`: sign-in, `Browse`, `JoinRoom` with the ticket; an Unreal room (attribute `engine=unreal`) is entered with `ClientTravel` over Iris, a C# room over the JSON socket (`CubeSocket.cpp`, `CubeWorldGameInstance_Socket.cpp`), so one client walks between both kinds of server; a border crossing hands the next server the position |
 | A second door on the Unreal server, for browsers | `CubeWebSocketServer.cpp` listens ten ports above the game port (`-wsport=`, or `CUBEWORLD_WS_PORT`) and `CubeWorldGameMode_Web.cpp` speaks the C# server's JSON frames on it, admitting a player by the same platform ticket; the room's attribute `ws` names the door (`-wsaddress=` or `CUBEWORLD_WS_ADDRESS` when the machine's public address differs), and the browser client (`web/app.js`) takes it from the join ticket. Every change the server replicates over Iris is also sent as a JSON frame from the same place |
 
-Needs Unreal Engine 5.8 (`D:\EpicGames\UE_5.8`) and Visual Studio 2022 or later with the C++ workload.
+Needs Unreal Engine 5.8 from the Epic Games Launcher (`<engine>` below is its install folder, the one that holds
+`Engine\`, for example `D:\EpicGames\UE_5.8`; the scripts find it through the Launcher's own record, or take
+`-Engine <folder>`) and Visual Studio 2022 or later with the C++ workload.
 The platform settings are in `Config/DefaultGame.ini` (`BaseURL`, the public `pk_` client key of environment
 `dev`, the room type `cubeworld-ue`); the server's `sk_` key goes in `Config/DedicatedServerGame.ini`, which
 git ignores (copy `DedicatedServerGame.example.ini`).
@@ -96,8 +98,8 @@ developer machine the server is the editor run headless with `-server`. Build th
 material assets once, then start the servers and a client:
 
 ```bash
-D:\EpicGames\UE_5.8\UE_5.8\Engine\Build\BatchFiles\Build.bat CubeWorldEditor Win64 Development -Project="<repo>\unreal\CubeWorld\CubeWorld.uproject" -WaitMutex -NoHotReload
-D:\EpicGames\UE_5.8\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "<repo>\unreal\CubeWorld\CubeWorld.uproject" -run=pythonscript -script="<repo>\unreal\CubeWorld\Scripts\MakeAssets.py" -unattended -nopause -nosplash
+<engine>\Engine\Build\BatchFiles\Build.bat CubeWorldEditor Win64 Development -Project="<repo>\unreal\CubeWorld\CubeWorld.uproject" -WaitMutex -NoHotReload
+<engine>\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "<repo>\unreal\CubeWorld\CubeWorld.uproject" -run=pythonscript -script="<repo>\unreal\CubeWorld\Scripts\MakeAssets.py" -unattended -nopause -nosplash
 powershell -File <repo>\unreal\CubeWorld\Scripts\RunServers.ps1          # alpha:7777, beta:7778, gamma:7779
 powershell -File <repo>\unreal\CubeWorld\Scripts\RunClient.ps1 -Name Ann
 ```
