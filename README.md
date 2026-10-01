@@ -111,6 +111,13 @@ into a bomb to pick it up), 1-9 or the wheel pick a block, Enter plays, Esc free
 for unattended runs: `-name=`, `-autoplay`, `-screenshot=<seconds>`, `-quitafter=<seconds>`, `-selftest`,
 `-walkto=<x>` or `-walkto=<x>,<y>`, `-debughud`.
 
+`Scripts/RunOffline.ps1` plays the game on this machine alone, with no platform at all (`-cubeoffline`): two or
+three Unreal servers in regions 3, 4 and 5 (UDP 7777-7779) and, with `-Client -WalkTo 30`, a client that walks over
+their borders (`-NullRhi -QuitAfter 40` for an unattended run, `-Stop` ends them all). Nothing signs in to `dev`,
+which is shared and live: each server keeps its own world, checks no ticket and hands everyone the starting
+inventory. The logs are `Saved/Logs/offline-<name>.log`; `-logcrossing` on the client (`-ClientExtra`) logs every
+frame drawn around a crossing.
+
 Putting the server on the platform's machine pool takes a Linux build. The Launcher's engine has no Server
 target, so the image runs the Game target headless as a listen server (`-cubeserver`, `Docker/entrypoint.sh`):
 no picture, no sound, its own local player a spectator that is not a player of the world. `RUNBOOK.md`, "Part E".
