@@ -7,12 +7,25 @@ public sealed partial class CubeWorldServer
 {
     // ── joining ─────────────────────────────────────────────────────────────────────────────────────
 
-    private async Task<Inventory> LoadInventory(string playerId)
+    /// <summary>
+    /// The inventory is theirs from wherever they last played; a first-timer gets a full stack of everything. The row is
+    /// only read: writing it straight back raced the old server's last write after a crossing and could undo it.
+    /// </summary>
+    private async Task<(Inventory Inventory, bool New)> LoadInventory(string playerId)
     {
-        var saved = await Platform.Table<CubeInventory>().FindByAsync(i => i.player_id, playerId);
-        var inventory = saved?.Fields is { } record ? Inventory.Parse(record.stacks) : Inventory.Starting();
-        Platform.RuntimeData.Write(Uplink, "CubeInventory", playerId, inventory.ToRecord(playerId));
-        return inventory;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                var saved = await Platform.Table<CubeInventory>().FindByAsync(i => i.player_id, playerId);
+                return saved?.Fields is { } record ? (Inventory.Parse(record.stacks), false) : (Inventory.Starting(), true);
+            }
+            catch (Exception e) when (attempt < 2)
+            {
+                _ = Platform.Log($"inventory of {playerId} not read, again in 2 s: {e.Message}");
+                await Task.Delay(TimeSpan.FromSeconds(2));
+            }
+        }
     }
 
     private WorldPresence Spawn(string id, string name) => new()
@@ -141,19 +154,37 @@ public sealed partial class CubeWorldServer
 
     private void ShareInventory(Player player)
     {
-        Platform.RuntimeData.Write(Uplink, "CubeInventory", player.Pose.player_id, player.Inventory.ToRecord(player.Pose.player_id));
+        WriteInventory(player);
         Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
     }
 
-    /// <summary>The refill function topped the inventory up: the player gets the new blocks, never loses any.</summary>
-    private void HearRefill(CubeInventory refill)
+    private void WriteInventory(Player player)
     {
-        if (!_players.TryGetValue(refill.player_id, out var player)) return;
-        var stacks = Inventory.Parse(refill.stacks).Stacks;
+        player.Sync.Wrote(player.Inventory.Stacks);
+        Platform.RuntimeData.Write(Uplink, "CubeInventory", player.Pose.player_id, player.Inventory.ToRecord(player.Pose.player_id));
+    }
+
+    /// <summary>
+    /// A player's row came over the uplink: this server's own write coming back, or another writer's (the old server's
+    /// last write after a crossing, the refill function's top-up), whose change is merged into what the player holds
+    /// here. A row for a player whose own is still being read waits for that read (it is the newer).
+    /// </summary>
+    private void HearInventory(CubeInventory row)
+    {
+        // Only a whole row is a row to merge: one without its stacks would read as the starting stacks.
+        if (string.IsNullOrEmpty(row.stacks)) return;
+        if (_loading.TryGetValue(row.player_id, out var waiting) && _loading.TryUpdate(row.player_id, row, waiting)) return;
+        if (!_players.TryGetValue(row.player_id, out var player)) return;
+        var theirs = Inventory.Parse(row.stacks).Stacks;
         lock (_world)
-            foreach (var kind in Spec.Placeable)
-                while (player.Inventory.Count(kind) < Math.Min(Spec.StackSize, stacks.GetValueOrDefault(kind)) && player.Inventory.Give(kind)) { }
-        Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
+        {
+            if (player.Sync.Heard(player.Inventory.Stacks, theirs) is not { } merged) return;
+            var changedHere = !InventorySync.Same(merged, player.Inventory.Stacks);
+            player.Inventory.Set(merged);
+            // The row lacks what the player did here (another writer's row came after this server's): it is written again.
+            if (!InventorySync.Same(merged, theirs)) WriteInventory(player);
+            if (changedHere) Send(player.Session, new { type = "inventory", inventory = player.Inventory.Stacks });
+        }
     }
 
     // ── fighting ────────────────────────────────────────────────────────────────────────────────────
@@ -276,6 +307,7 @@ public sealed partial class CubeWorldServer
 
     private sealed record Player(PlayerSession Session, Inventory Inventory, WorldPresence Pose)
     {
+        public InventorySync Sync { get; init; } = new(Inventory.Stacks);
         public bool Moved { get; set; }
         public bool Dead { get; set; }
         public PlayerFall Fall { get; set; } = new();

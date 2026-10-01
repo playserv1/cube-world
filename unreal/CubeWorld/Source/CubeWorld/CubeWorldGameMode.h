@@ -71,6 +71,12 @@ struct FCubeServerPlayer
 	FString Bomb;
 	FCubeInventory Inventory;
 	TStrongObjectPtr<UCubeInventory> InventoryRow;
+	FCubeInventorySync InventorySync;
+	/** The row has been read (or found missing) and the inventory is the player's own; until then a row heard waits. */
+	bool bInventoryRead = false;
+	TOptional<FCubeInventory> InventoryHeardWhileReading;
+	/** Saves refused in a row because the row changed meanwhile; each one reads the row again and merges. */
+	int32 InventoryConflicts = 0;
 	TStrongObjectPtr<UWorldPresence> PresenceRow;
 	int64 PresenceWrittenAt = 0;
 	bool bPresenceBusy = false;
@@ -192,7 +198,11 @@ private:
 
 	// ---- the rules --------------------------------------------------------------------------
 	void Welcome(FCubeServerPlayer& Player);
-	void LoadInventoryAndWelcome(const FString& Id);
+	void LoadInventoryAndWelcome(const FString& Id, int32 Attempt = 0);
+	/** The row could not be read when the player came: it is read again, and what they did meanwhile is added to it. */
+	void ReadInventoryAgain(const FString& Id);
+	/** A CubeInventory row came over the uplink: this server's own write, or another writer's to merge in. */
+	void HearInventory(const FString& PlayerId, const FCubeInventory& Theirs);
 	void Hurt(FCubeServerPlayer& Victim, double Damage, bool bDirected, double DX, double DY, double Strength, const FString& By);
 	void Publish(const FCubeWorldUpdate& Update);
 	void BroadcastCubes(const TArray<FCubeChange>& Changes, const TArray<FCubeFall>& Falls, bool bRemote);

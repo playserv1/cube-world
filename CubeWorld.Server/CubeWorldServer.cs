@@ -23,6 +23,8 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private readonly World _world = new();
     private readonly ConcurrentDictionary<string, Player> _players = new();
     private readonly ConcurrentDictionary<string, WorldPresence> _elsewhere = new();
+    /// <summary>Players whose inventory row is being read as they join, with the newest row heard for them meanwhile.</summary>
+    private readonly ConcurrentDictionary<string, CubeInventory?> _loading = new();
     private readonly Dictionary<string, LiveBomb> _bombs = new();
     private readonly List<Change> _heard = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
@@ -138,13 +140,20 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     protected override async Task OnPlayerConnected(PlayerSession session)
     {
         var name = session.DisplayName ?? session.Id;
-        var inventory = await LoadInventory(session.Id);
+        _loading[session.Id] = null;
+        (Inventory inventory, bool isNew) loaded;
+        try { loaded = await LoadInventory(session.Id); }
+        catch { _loading.TryRemove(session.Id, out _); throw; }
+        var (inventory, isNew) = loaded;
         var spawn = Spawn(session.Id, name);
         var player = new Player(session, inventory, WorldPresence.Arriving(spawn, _elsewhere.GetValueOrDefault(session.Id), Now));
         // A crossing takes the hand's charge with it, so a player cannot cross for a full-strength hit.
         if (!ReferenceEquals(player.Pose, spawn)) player.LastAttackTick = _tick;
 
         _players[session.Id] = player;
+        // A row heard while the read was out is newer than what the read returned; one heard from now on finds the player.
+        if (_loading.TryRemove(session.Id, out var newer) && newer is not null) HearInventory(newer);
+        else if (isNew) lock (_world) WriteInventory(player);
         InRoom(room => room.AddPlayer(new WorldPlayer { Id = session.Id, DisplayName = name }));
         SendWelcome(player);
     }
@@ -186,8 +195,8 @@ public sealed partial class CubeWorldServer : PlatformGameServer
             case "WorldCube" when update.Data.Deserialize<WorldCube>() is { } cube:
                 HearCube(update.Op, cube);
                 break;
-            case "CubeInventory" when update.Data.Deserialize<CubeInventory>() is { } refill:
-                HearRefill(refill);
+            case "CubeInventory" when !update.IsDelete && update.Data.Deserialize<CubeInventory>() is { } row:
+                HearInventory(row);
                 break;
             case "WorldPresence" when update.Data.Deserialize<WorldPresence>() is { } pose:
                 HearPresence(pose, update.IsDelete);

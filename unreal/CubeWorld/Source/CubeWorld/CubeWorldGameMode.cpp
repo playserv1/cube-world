@@ -470,32 +470,107 @@ void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, boo
 	LoadInventoryAndWelcome(Player->Id);
 }
 
-// The inventory is theirs from wherever they last played; a first-timer gets a full stack of everything.
-void ACubeWorldGameMode::LoadInventoryAndWelcome(const FString& Id)
+// The inventory is theirs from wherever they last played; a first-timer gets a full stack of everything. The row is
+// only read: writing it straight back raced the old server's last write after a crossing and could undo it. A row
+// heard while the read is out is newer than what the read returns, and is taken instead.
+void ACubeWorldGameMode::LoadInventoryAndWelcome(const FString& Id, int32 Attempt)
 {
 	if (bOffline)
 	{
-		if (FCubeServerPlayer* P = PlayerById(Id)) { P->Inventory = FCubeInventory::Starting(); Welcome(*P); }
+		if (FCubeServerPlayer* P = PlayerById(Id)) { P->Inventory = FCubeInventory::Starting(); P->bInventoryRead = true; Welcome(*P); }
 		return;
 	}
+	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
+	PlayServ::Data::LoadAll<UCubeInventory>(FPlayServFilter::Where(TEXT("player_id")).EqualTo(Id), [Weak, Id, Attempt](bool bOk, TArray<UCubeInventory*> Rows, const FPlayServError& Error)
+	{
+		if (!Weak.IsValid()) return;
+		ACubeWorldGameMode* Self = Weak.Get();
+		FCubeServerPlayer* P = Self->PlayerById(Id);
+		if (!P) return;
+		if (!bOk && Attempt < 2)
+		{
+			Self->ServerLog(FString::Printf(TEXT("inventory of %s not read, again in 2 s: %s"), *P->Name, *Error.Message));
+			FTimerHandle Again;
+			Self->GetWorldTimerManager().SetTimer(Again, FTimerDelegate::CreateWeakLambda(Self, [Self, Id, Attempt]() { Self->LoadInventoryAndWelcome(Id, Attempt + 1); }), 2.f, false);
+			return;
+		}
+		if (!bOk)
+		{
+			// The player plays with the starting stacks meanwhile, which are not written over the row they may have.
+			Self->ServerLog(FString::Printf(TEXT("inventory of %s not read: %s; the starting stacks until it is"), *P->Name, *Error.Message));
+			P->Inventory = FCubeInventory::Starting();
+			P->InventorySync.Base = P->Inventory;
+			P->bInventoryRead = true;
+			Self->Welcome(*P);
+			FTimerHandle Later;
+			Self->GetWorldTimerManager().SetTimer(Later, FTimerDelegate::CreateWeakLambda(Self, [Self, Id]() { Self->ReadInventoryAgain(Id); }), 10.f, false);
+			return;
+		}
+		const bool bNew = Rows.Num() == 0;
+		if (bNew)
+		{
+			UCubeInventory* Row = PlayServ::Data::Create<UCubeInventory>();
+			Row->player_id = Id;
+			P->InventoryRow.Reset(Row);
+			P->Inventory = FCubeInventory::Starting();
+		}
+		else
+		{
+			P->InventoryRow.Reset(Rows[0]);
+			P->Inventory = FCubeInventory::Parse(Rows[0]->stacks);
+		}
+		P->InventorySync.Base = P->Inventory;
+		P->bInventoryRead = true;
+		if (P->InventoryHeardWhileReading.IsSet())
+		{
+			const FCubeInventory Heard = P->InventoryHeardWhileReading.GetValue();
+			P->InventoryHeardWhileReading.Reset();
+			Self->HearInventory(Id, Heard);
+		}
+		if (bNew) Self->WriteInventory(*P);
+		Self->Welcome(*P);
+	});
+}
+
+void ACubeWorldGameMode::ReadInventoryAgain(const FString& Id)
+{
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	PlayServ::Data::LoadAll<UCubeInventory>(FPlayServFilter::Where(TEXT("player_id")).EqualTo(Id), [Weak, Id](bool bOk, TArray<UCubeInventory*> Rows, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
-		FCubeServerPlayer* P = Weak->PlayerById(Id);
-		if (!P) return;
-		if (bOk && Rows.Num() > 0) { P->InventoryRow.Reset(Rows[0]); P->Inventory = FCubeInventory::Parse(Rows[0]->stacks); }
-		else
+		ACubeWorldGameMode* Self = Weak.Get();
+		FCubeServerPlayer* P = Self->PlayerById(Id);
+		if (!P || P->InventoryRow.IsValid()) return;
+		if (!bOk)
 		{
-			if (!bOk) Weak->ServerLog(FString::Printf(TEXT("inventory of %s not read: %s"), *P->Name, *Error.Message));
-			P->Inventory = FCubeInventory::Starting();
-			UCubeInventory* Row = PlayServ::Data::Create<UCubeInventory>();
-			Row->player_id = Id;
-			P->InventoryRow.Reset(Row);
+			FTimerHandle Later;
+			Self->GetWorldTimerManager().SetTimer(Later, FTimerDelegate::CreateWeakLambda(Self, [Self, Id]() { Self->ReadInventoryAgain(Id); }), 10.f, false);
+			return;
 		}
-		Weak->WriteInventory(*P);
-		Weak->Welcome(*P);
+		// What the player did since they came, on top of the row as it is: the base they played from was the starting stacks.
+		UCubeInventory* Row = Rows.Num() > 0 ? Rows[0] : PlayServ::Data::Create<UCubeInventory>();
+		Row->player_id = Id;
+		P->InventoryRow.Reset(Row);
+		const FCubeInventory Theirs = Rows.Num() > 0 ? FCubeInventory::Parse(Row->stacks) : P->InventorySync.Base;
+		FCubeInventory Merged;
+		if (P->InventorySync.Heard(P->Inventory, Theirs, Merged)) P->Inventory = Merged;
+		Self->ServerLog(FString::Printf(TEXT("inventory of %s read at last"), *P->Name));
+		Self->ShareInventory(*P);
 	});
+}
+
+void ACubeWorldGameMode::HearInventory(const FString& PlayerId, const FCubeInventory& Theirs)
+{
+	FCubeServerPlayer* P = PlayerById(PlayerId);
+	if (!P) return;
+	if (!P->bInventoryRead) { P->InventoryHeardWhileReading = Theirs; return; }
+	FCubeInventory Merged;
+	if (!P->InventorySync.Heard(P->Inventory, Theirs, Merged)) return;
+	const bool bChangedHere = !Merged.Same(P->Inventory);
+	P->Inventory = Merged;
+	// The row lacks what the player did here (another writer's row came after this server's): it is written again.
+	if (!Merged.Same(Theirs)) WriteInventory(*P);
+	if (bChangedHere) SendInventory(*P);
 }
 
 void ACubeWorldGameMode::Welcome(FCubeServerPlayer& P)
@@ -1136,11 +1211,46 @@ void ACubeWorldGameMode::WriteInventory(FCubeServerPlayer& P)
 	Row->player_id = P.Id;
 	Row->cubes = P.Inventory.Total();
 	Row->stacks = P.Inventory.ToJson();
+	P.InventorySync.Wrote(P.Inventory);
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	TStrongObjectPtr<UCubeInventory> Keep(Row);
-	PlayServ::Data::Save(Row, FPlayServSimpleCallback::CreateLambda([Weak, Keep](bool bOk, const FPlayServError& Error)
+	const FString Id = P.Id;
+	const FCubeInventory Sent = P.Inventory;
+	PlayServ::Data::Save(Row, FPlayServSimpleCallback::CreateLambda([Weak, Keep, Id, Sent](bool bOk, const FPlayServError& Error)
 	{
-		if (Weak.IsValid() && !bOk) Weak->ServerLog(FString::Printf(TEXT("inventory of %s not written: %s"), *Keep->player_id, *Error.Message));
+		if (!Weak.IsValid()) return;
+		ACubeWorldGameMode* Self = Weak.Get();
+		FCubeServerPlayer* P = Self->PlayerById(Id);
+		if (bOk) { if (P) P->InventoryConflicts = 0; return; }
+		// A write that never landed never comes back.
+		if (P)
+		{
+			const int32 Unsent = P->InventorySync.Written.IndexOfByPredicate([&Sent](const FCubeInventory& W) { return W.Same(Sent); });
+			if (Unsent != INDEX_NONE) P->InventorySync.Written.RemoveAt(Unsent);
+		}
+		// Another writer changed the row since this server read it (the old server's last write, a refill): the save is
+		// refused, and was never retried, so every later save of this player failed too. The row is read again, the
+		// other writer's change merged in, and the result saved.
+		if (Error.Code == EPlayServErrorCode::PreconditionFailed && P && P->InventoryRow.Get() == Keep.Get() && ++P->InventoryConflicts <= 5)
+		{
+			PlayServ::Data::Reload(Keep.Get(), FPlayServSimpleCallback::CreateLambda([Weak, Keep, Id](bool bReloaded, const FPlayServError& ReloadError)
+			{
+				if (!Weak.IsValid()) return;
+				ACubeWorldGameMode* Inner = Weak.Get();
+				FCubeServerPlayer* Q = Inner->PlayerById(Id);
+				if (!Q || Q->InventoryRow.Get() != Keep.Get()) return;
+				if (!bReloaded) { Inner->ServerLog(FString::Printf(TEXT("inventory of %s not read again: %s"), *Id, *ReloadError.Message)); return; }
+				FCubeInventory Merged;
+				const FCubeInventory Theirs = FCubeInventory::Parse(Keep->stacks);
+				const bool bForeign = Q->InventorySync.Heard(Q->Inventory, Theirs, Merged);
+				const bool bChangedHere = bForeign && !Merged.Same(Q->Inventory);
+				if (bForeign) Q->Inventory = Merged;
+				Inner->WriteInventory(*Q);
+				if (bChangedHere) Inner->SendInventory(*Q);
+			}));
+			return;
+		}
+		Self->ServerLog(FString::Printf(TEXT("inventory of %s not written: %s"), *Keep->player_id, *Error.Message));
 	}));
 }
 

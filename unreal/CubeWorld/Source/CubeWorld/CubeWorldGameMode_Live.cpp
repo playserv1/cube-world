@@ -180,6 +180,9 @@ void ACubeWorldGameMode::SubscribeUplinkCubes()
 	Rooms->OnDataUpdate.AddUObject(this, &ACubeWorldGameMode::HandleDataUpdate);
 	Rooms->OnDataSubscribed.AddUObject(this, &ACubeWorldGameMode::HandleDataSubscribed);
 	Rooms->SubscribeData(CubeEntity, TEXT("field:key"));
+	// The inventories too, as the C# servers hear them: the old server's last write after a crossing and the refill
+	// function's top-ups reach a player who is here.
+	Rooms->SubscribeData(TEXT("CubeInventory"), TEXT("field:player_id"));
 }
 
 // The subscription went out, first after the world was loaded, then on every new uplink socket: what changed before
@@ -193,6 +196,14 @@ void ACubeWorldGameMode::HandleDataSubscribed(const FString& Entity)
 
 void ACubeWorldGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
 {
+	if (Update.Entity == TEXT("CubeInventory"))
+	{
+		// Only a whole row is a row to merge: one without its stacks would read as the starting stacks.
+		if (!bServing || Update.IsDelete() || !Update.Data.IsValid() || Str(Update.Data, TEXT("stacks")).IsEmpty()) return;
+		const FString Id = Str(Update.Data, TEXT("player_id"));
+		HearInventory(Id.IsEmpty() ? Update.Id : Id, FCubeInventory::Parse(Str(Update.Data, TEXT("stacks"))));
+		return;
+	}
 	if (Update.Entity != CubeEntity || !bServing) return;
 	bCubeUpdatesHeard = true;
 	const TSharedPtr<FJsonObject>& Row = Update.Data;

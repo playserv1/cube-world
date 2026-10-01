@@ -149,4 +149,52 @@ bool FCubeWorldCrossingFallTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldInventorySyncTest,
+	"CubeWorld.Crossing.InventoryWritersMerge",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// Two writers of one player's inventory row across a crossing, and the refill function: nothing undone, nothing lost.
+// The same cases as InventorySyncTests.cs on the C# side.
+bool FCubeWorldInventorySyncTest::RunTest(const FString& Parameters)
+{
+	auto Stacks = [](int32 Dirt, int32 Stone = 10) { FCubeInventory I; I.Stacks.Add(TEXT("dirt"), Dirt); I.Stacks.Add(TEXT("stone"), Stone); return I; };
+	FCubeInventory Merged;
+
+	FCubeInventorySync Late;
+	Late.Base = Stacks(10);
+	TestTrue(TEXT("the old server's late write is another writer's"), Late.Heard(Stacks(10), Stacks(9), Merged));
+	TestEqual(TEXT("a block spent there just before the crossing stays spent"), Merged.Count(TEXT("dirt")), 9);
+
+	FCubeInventorySync Both;
+	Both.Base = Stacks(10);
+	Both.Heard(Stacks(8), Stacks(9), Merged);
+	TestEqual(TEXT("and what the player did here meanwhile is kept too"), Merged.Count(TEXT("dirt")), 7);
+
+	FCubeInventorySync Own;
+	Own.Base = Stacks(10);
+	Own.Wrote(Stacks(9));
+	Own.Wrote(Stacks(8));
+	TestFalse(TEXT("this server's own latest write coming back changes nothing"), Own.Heard(Stacks(8), Stacks(8), Merged));
+	TestTrue(TEXT("its base is that write"), Own.Base.Same(Stacks(8)) && Own.Written.Num() == 0);
+	TestTrue(TEXT("an earlier one heard after it is someone else's"), Own.Heard(Stacks(8), Stacks(9), Merged));
+
+	FCubeInventorySync Refill;
+	Refill.Base = Stacks(10);
+	Refill.Wrote(Stacks(9));
+	Refill.Heard(Stacks(9), Stacks(9), Merged);
+	Refill.Wrote(Stacks(8));
+	Refill.Heard(Stacks(8), Stacks(10, 11), Merged);
+	TestTrue(TEXT("a refill tops up what the player holds now"), Merged.Count(TEXT("dirt")) == 9 && Merged.Count(TEXT("stone")) == 11);
+
+	const FCubeInventory Clamped = FCubeInventorySync::Merge(Stacks(64, 0), Stacks(10, 5), Stacks(20, 1));
+	TestTrue(TEXT("a merge keeps every kind within 0 and a stack"), Clamped.Count(TEXT("dirt")) == CubeSpec::StackSize && Clamped.Count(TEXT("stone")) == 0);
+	FCubeInventory OnlyDirt, OnlyGold;
+	OnlyDirt.Stacks.Add(TEXT("dirt"), 3);
+	OnlyGold.Stacks.Add(TEXT("gold"), 2);
+	const FCubeInventory Kinds = FCubeInventorySync::Merge(OnlyDirt, FCubeInventory(), OnlyGold);
+	TestTrue(TEXT("a kind only one side lists counts as none on the other"), Kinds.Count(TEXT("dirt")) == 3 && Kinds.Count(TEXT("gold")) == 2);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

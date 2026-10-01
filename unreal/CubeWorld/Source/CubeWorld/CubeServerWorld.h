@@ -194,4 +194,26 @@ struct FCubeInventory
 	bool Take(FName Kind);
 	/** Adds one item; a full stack (64) takes no more, as in Minecraft. */
 	bool Give(FName Kind);
+	/** The same count of every kind (a kind not listed counts 0). */
+	bool Same(const FCubeInventory& Other) const;
+};
+
+/**
+ * One player's inventory row as this server knows it, for merging the other writers' rows into the inventory it holds:
+ * the old server's last write after a crossing, the refill function's top-up. A row heard is either this server's own
+ * write coming back (one of the rows it wrote and has not heard yet) or someone else's: then what that writer changed
+ * since the row this server last knew is added to what the player did here, kind by kind. InventorySync on the C# side.
+ */
+struct FCubeInventorySync
+{
+	/** The row as this server last knew it: read at the join, or heard since. */
+	FCubeInventory Base;
+	/** This server's writes not heard back yet, oldest first. */
+	TArray<FCubeInventory> Written;
+
+	void Wrote(const FCubeInventory& Stacks);
+	/** A row was heard. False when it is this server's own write (nothing changes); else Merged is the inventory to hold now. */
+	bool Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, FCubeInventory& Merged);
+	/** Ours plus what Theirs changed since Base, each kind kept within 0 and a stack. */
+	static FCubeInventory Merge(const FCubeInventory& Ours, const FCubeInventory& InBase, const FCubeInventory& Theirs);
 };

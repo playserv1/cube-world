@@ -392,4 +392,57 @@ public sealed class Inventory
     {
         player_id = playerId, cubes = _stacks.Values.Sum(), stacks = JsonSerializer.Serialize(_stacks),
     };
+
+    /// <summary>Holds these stacks from now on (a merge of another writer's row).</summary>
+    public void Set(IReadOnlyDictionary<string, int> stacks)
+    {
+        _stacks.Clear();
+        foreach (var (kind, count) in stacks) _stacks[kind] = count;
+    }
+}
+
+/// <summary>
+/// One player's inventory row as this server knows it, for merging the other writers' rows into the inventory it holds:
+/// the old server's last write after a crossing, the refill function's top-up. A row heard is either this server's own
+/// write coming back (one of the rows it wrote and has not heard yet) or someone else's: then what that writer changed
+/// since the row this server last knew is added to what the player did here, kind by kind. FCubeInventorySync on the
+/// Unreal side.
+/// </summary>
+public sealed class InventorySync(IReadOnlyDictionary<string, int> read)
+{
+    private readonly List<Dictionary<string, int>> _written = [];
+
+    /// <summary>The row as this server last knew it: read at the join, or heard since.</summary>
+    public IReadOnlyDictionary<string, int> Base { get; private set; } = new Dictionary<string, int>(read);
+
+    public void Wrote(IReadOnlyDictionary<string, int> stacks)
+    {
+        _written.Add(new Dictionary<string, int>(stacks));
+        if (_written.Count > 32) _written.RemoveAt(0);
+    }
+
+    /// <summary>A row was heard. Null when it is this server's own write (nothing changes); else the inventory to hold now.</summary>
+    public Dictionary<string, int>? Heard(IReadOnlyDictionary<string, int> ours, IReadOnlyDictionary<string, int> theirs)
+    {
+        // The platform keeps one write of a row at a time and sends the latest: a later write of ours heard means the
+        // earlier ones are behind us too.
+        var own = _written.FindIndex(w => Same(w, theirs));
+        if (own >= 0)
+        {
+            _written.RemoveRange(0, own + 1);
+            Base = new Dictionary<string, int>(theirs);
+            return null;
+        }
+        var merged = Merge(ours, Base, theirs);
+        Base = new Dictionary<string, int>(theirs);
+        return merged;
+    }
+
+    /// <summary>Ours plus what theirs changed since the base, each kind kept within 0 and a stack.</summary>
+    public static Dictionary<string, int> Merge(IReadOnlyDictionary<string, int> ours, IReadOnlyDictionary<string, int> @base, IReadOnlyDictionary<string, int> theirs) =>
+        ours.Keys.Union(@base.Keys).Union(theirs.Keys).ToDictionary(kind => kind,
+            kind => Math.Clamp(ours.GetValueOrDefault(kind) + theirs.GetValueOrDefault(kind) - @base.GetValueOrDefault(kind), 0, Spec.StackSize));
+
+    public static bool Same(IReadOnlyDictionary<string, int> a, IReadOnlyDictionary<string, int> b) =>
+        a.Keys.Union(b.Keys).All(kind => a.GetValueOrDefault(kind) == b.GetValueOrDefault(kind));
 }

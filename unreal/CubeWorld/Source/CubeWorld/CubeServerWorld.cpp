@@ -276,3 +276,43 @@ bool FCubeInventory::Give(FName Kind)
 	Stacks.FindOrAdd(Kind) = Count(Kind) + 1;
 	return true;
 }
+
+bool FCubeInventory::Same(const FCubeInventory& Other) const
+{
+	for (const auto& Pair : Stacks) if (Other.Count(Pair.Key) != Pair.Value) return false;
+	for (const auto& Pair : Other.Stacks) if (Count(Pair.Key) != Pair.Value) return false;
+	return true;
+}
+
+void FCubeInventorySync::Wrote(const FCubeInventory& Stacks)
+{
+	Written.Add(Stacks);
+	if (Written.Num() > 32) Written.RemoveAt(0);
+}
+
+bool FCubeInventorySync::Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, FCubeInventory& Merged)
+{
+	// The platform keeps one write of a row at a time and sends the latest: a later write of ours heard means the
+	// earlier ones are behind us too.
+	const int32 Own = Written.IndexOfByPredicate([&Theirs](const FCubeInventory& W) { return W.Same(Theirs); });
+	if (Own != INDEX_NONE)
+	{
+		Written.RemoveAt(0, Own + 1);
+		Base = Theirs;
+		return false;
+	}
+	Merged = Merge(Ours, Base, Theirs);
+	Base = Theirs;
+	return true;
+}
+
+FCubeInventory FCubeInventorySync::Merge(const FCubeInventory& Ours, const FCubeInventory& InBase, const FCubeInventory& Theirs)
+{
+	TSet<FName> Kinds;
+	for (const auto& Pair : Ours.Stacks) Kinds.Add(Pair.Key);
+	for (const auto& Pair : InBase.Stacks) Kinds.Add(Pair.Key);
+	for (const auto& Pair : Theirs.Stacks) Kinds.Add(Pair.Key);
+	FCubeInventory Out;
+	for (const FName& Kind : Kinds) Out.Stacks.Add(Kind, FMath::Clamp(Ours.Count(Kind) + Theirs.Count(Kind) - InBase.Count(Kind), 0, CubeSpec::StackSize));
+	return Out;
+}
