@@ -17,6 +17,9 @@
 
 class FCubeSocket;
 class FJsonObject;
+class ACubeAvatar;
+class ACubeBomb;
+class ACubeTombstone;
 
 struct FCubePresence
 {
@@ -147,6 +150,12 @@ public:
 	/** Steps the carried body up to now and aims the view at its eyes. */
 	void StepGap();
 
+	// ---- the client's own actors, from one pawn to the next across a crossing that keeps the world (UCubeGameEngine) ----
+	void CarryOver(TMap<FString, ACubeAvatar*>& InAvatars, TMap<FString, ACubeBomb*>& InBombs, ACubeTombstone*& InTomb);
+	void TakeCarried(TMap<FString, ACubeAvatar*>& OutAvatars, TMap<FString, ACubeBomb*>& OutBombs, ACubeTombstone*& OutTomb);
+	/** What no pawn took: destroyed (a fresh join starts from the next server's lists). */
+	void DropCarried();
+
 	FCubeVoxelWorld World;
 	FCubeTextures Textures;
 
@@ -181,6 +190,19 @@ private:
 	bool IsInNetworkedWorld() const;
 	void HandleNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
 	void HandlePostLoadMap(UWorld* LoadedWorld);
+	/** From the moment the old server's pawn is gone until the next one's is placed: the view held at the player's eyes,
+	 * the body carried by the client (both crossings, the one that reloads the map and the one that keeps it). */
+	void BeginCrossingGap(UWorld* InWorld);
+	/** UCubeGameEngine: the next Unreal server's connection took over this world (bConnected), or it has no server now. */
+	void HandleServerSwitched(UWorld* InWorld, bool bConnected);
+	void HandleSeamlessTravelFailed(const FString& Why);
+	/** Leaves the Unreal server for the C# one whose welcome just came over the socket, keeping the world. */
+	void LeaveUnrealServerKeepWorld();
+	/** True between a seamless ClientTravel and the world changing hands (or the handshake failing). */
+	bool bSeamlessCrossing = false;
+	TMap<FString, TWeakObjectPtr<ACubeAvatar>> CarriedAvatars;
+	TMap<FString, TWeakObjectPtr<ACubeBomb>> CarriedBombs;
+	TWeakObjectPtr<ACubeTombstone> CarriedTomb;
 	FString RoomOfRegion(int32 InRegion) const;
 	/** Notes an operator's close or removal of RoomName; returns the message for the player, empty for anything else. */
 	FString TurnedAway(const FString& RoomName, const FString& ReasonOrCode);

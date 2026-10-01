@@ -98,6 +98,9 @@ void ACubeWorldGameMode::StartOffline()
 	if (!Regions.ContainsByPredicate([this](const FCubeRegionRep& R) { return R.Region == Region; })) Add(Region);
 	State->Regions = Regions;
 	ServerLog(FString::Printf(TEXT("offline: region %d, %d region(s) known, no platform"), Region, Regions.Num()));
+	// The JSON door too, as on the platform: a client given this server as ws://host:port reaches it the way it reaches a
+	// C# server, so crossings between the two kinds of connection can be tried here as well.
+	OpenWebSocket();
 	Serve();
 }
 

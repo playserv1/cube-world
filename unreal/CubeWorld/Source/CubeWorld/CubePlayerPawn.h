@@ -54,7 +54,10 @@ class CUBEWORLD_API ACubePlayerPawn : public APawn
 public:
 	ACubePlayerPawn();
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void Tick(float DeltaSeconds) override;
+	/** Binds to the game at once, for a pawn the client spawns itself and that must hear the very next frame. */
+	void BindNow() { Bind(); }
 	virtual void SetupPlayerInputComponent(UInputComponent* Input) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 

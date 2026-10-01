@@ -76,6 +76,15 @@ void ACubePlayerPawn::BeginPlay()
 	}
 }
 
+// A crossing that keeps the world (UCubeGameEngine) destroys this pawn with the old server's actors, and the next pawn
+// takes over the client's own actors this one made: the other players' models, the bombs, the tombstone. They stay on
+// screen through the crossing instead of being made again from the next server's lists.
+void ACubePlayerPawn::EndPlay(const EEndPlayReason::Type Reason)
+{
+	if (Game && bBound && Reason == EEndPlayReason::Destroyed) Game->CarryOver(Avatars, Bombs, MyTomb);
+	Super::EndPlay(Reason);
+}
+
 // The local player's pawn binds once it is possessed: on a network client the controller arrives after BeginPlay.
 void ACubePlayerPawn::Bind()
 {
@@ -96,6 +105,8 @@ void ACubePlayerPawn::Bind()
 	// After a border crossing the player stands where they were, in the world the client already holds, and keeps
 	// walking while the new server's welcome is on its way: no start screen, no jump to the region's middle.
 	const bool bCrossingIn = Game->Crossing.bSet;
+	if (bCrossingIn) Game->TakeCarried(Avatars, Bombs, MyTomb);
+	else Game->DropCarried();
 	if (bCrossingIn)
 	{
 		// The body the client carried since the old world went, up to this very moment: position, speed, the tick's
@@ -113,7 +124,7 @@ void ACubePlayerPawn::Bind()
 		// A -walkto test keeps walking through the border, as a player holding the key does.
 		AxisForward = C.Forward; AxisRight = C.Strafe; bMouseCaptured = true;
 		FString WalkTo;
-		if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"))) TestForward = 1.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"))) { TestForward = 1.f; bTestSprint = true; }
 	}
 	else Body.Teleport(36, 12, 0);
 	Game->bPlaced = bCrossingIn;

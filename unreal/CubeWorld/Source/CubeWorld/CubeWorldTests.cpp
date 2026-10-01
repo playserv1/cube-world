@@ -4,6 +4,7 @@
 #include "CubeServerWorld.h"
 #include "CubeSpec.h"
 #include "CubeVoxelWorld.h"
+#include "CubeWorldGameInstance.h"
 #include "Misc/AutomationTest.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -70,6 +71,38 @@ bool FCubeWorldForgetTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a record id is not a block"), FCubeServerWorld::ParseKey(TEXT("rec_01J8ZKQ4X0"), At));
 	TestFalse(TEXT("nor are two numbers"), FCubeServerWorld::ParseKey(TEXT("5:6"), At));
 	TestFalse(TEXT("nor an empty part"), FCubeServerWorld::ParseKey(TEXT("5::6"), At));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldCrossingWelcomeTest,
+	"CubeWorld.Crossing.WelcomeOfACrossingKeepsTheWorld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A fresh join draws the world again from the welcome; a crossing keeps the world on screen and applies only what the
+// next server's snapshot changed (rebuilding every chunk at every border cost a frame of 15 ms).
+bool FCubeWorldCrossingWelcomeTest::RunTest(const FString& Parameters)
+{
+	UCubeWorldGameInstance* Game = NewObject<UCubeWorldGameInstance>();
+	TOptional<bool> Teleport;
+	int32 Changed = 0;
+	Game->OnWelcome.AddLambda([&Teleport](const FCubePose&, bool bTeleport) { Teleport = bTeleport; });
+	Game->OnCubes.AddLambda([&Changed](const TArray<FIntVector>& Cells) { Changed += Cells.Num(); });
+	const uint8 Stone = CubeSpec::KindIndex(TEXT("stone")), Dirt = CubeSpec::KindIndex(TEXT("dirt"));
+
+	Game->OnWelcomed(TEXT("alpha"), TEXT("yellow"), TEXT("yellow-alpha"), 3, FCubePose{ 12, 36, 0, 20 }, {}, 1);
+	Game->OnWorldChunk({ { 1, 2, 3, Stone } }, true);
+	TestTrue(TEXT("a fresh join draws the world again"), Teleport.IsSet() && Teleport.GetValue());
+	TestTrue(TEXT("with the welcome's blocks"), Game->World.KindAt(1, 2, 3) == TEXT("stone"));
+
+	Teleport.Reset();
+	Changed = 0;
+	Game->Crossing.bSet = true;
+	Game->OnWelcomed(TEXT("beta"), TEXT("purple"), TEXT("purple-beta"), 4, FCubePose{ 24.5, 36, 0, 20 }, {}, 1);
+	Game->OnWorldChunk({ { 1, 2, 3, Stone }, { 4, 5, 6, Dirt } }, true);
+	TestTrue(TEXT("a crossing keeps the world"), Teleport.IsSet() && !Teleport.GetValue());
+	TestEqual(TEXT("and changes only the block the next server holds otherwise"), Changed, 1);
+	TestTrue(TEXT("which is there"), Game->World.KindAt(4, 5, 6) == TEXT("dirt") && Game->World.KindAt(1, 2, 3) == TEXT("stone"));
 	return true;
 }
 

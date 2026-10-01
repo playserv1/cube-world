@@ -171,13 +171,16 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 	if (!P)
 	{
 		if (!bServing || bClosing) { Web->Close(Client, 1008, TEXT("server_not_ready")); return; }
-		const FString Ticket = Str(Json, TEXT("reservationToken"));
-		const FPlayServTicketVerdict Verdict = PlayServ::Rooms::VerifyTicket(Ticket);
-		if (!Verdict.bAccepted)
+		FPlayServTicketVerdict Verdict;
+		if (!bOffline)   // nobody hands out tickets offline
 		{
-			ServerLog(FString::Printf(TEXT("a browser client's ticket was refused: %s"), *Verdict.Reason));
-			Web->Close(Client, 1008, Verdict.Reason.IsEmpty() ? TEXT("reservation_invalid") : Verdict.Reason);
-			return;
+			Verdict = PlayServ::Rooms::VerifyTicket(Str(Json, TEXT("reservationToken")));
+			if (!Verdict.bAccepted)
+			{
+				ServerLog(FString::Printf(TEXT("a browser client's ticket was refused: %s"), *Verdict.Reason));
+				Web->Close(Client, 1008, Verdict.Reason.IsEmpty() ? TEXT("reservation_invalid") : Verdict.Reason);
+				return;
+			}
 		}
 		FString Id = Verdict.PlayerId;
 		if (Id.IsEmpty()) Id = Str(Json, TEXT("playerId"));
@@ -195,7 +198,7 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 		Players.Add(Id, Player);
 		// The door is not an Unreal login, so the engine's PostLogin never tells the SDK: the player is admitted here,
 		// and so is in the room's roster, the admin's player list and within an operator's reach.
-		PlayServ::Rooms::AdmitVerified(Verdict);
+		if (!bOffline) PlayServ::Rooms::AdmitVerified(Verdict);
 		ServerLog(FString::Printf(TEXT("%s joined through the browser door"), *Player->Name));
 		LoadInventoryAndWelcome(Id);
 		return;
@@ -225,7 +228,7 @@ void ACubeWorldGameMode::RemovePlayer(const FString& Id)
 	StopDig(*Player);
 	ServerLog(FString::Printf(TEXT("%s left"), *Player->Name));
 	// A browser's leave is the game's to report, as its join was (an Unreal client's goes through the engine's logout).
-	if (Player->WebClient) PlayServ::Rooms::RemovePlayer(RoomName(), Id);
+	if (Player->WebClient && !bOffline) PlayServ::Rooms::RemovePlayer(RoomName(), Id);
 	UWorldPresence* Row = Player->PresenceRow.Get();
 	TStrongObjectPtr<UWorldPresence> Keep(Row);
 	Players.Remove(Id);

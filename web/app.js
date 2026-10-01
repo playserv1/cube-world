@@ -171,6 +171,9 @@ async function enter(roomName, teleport = true) {
     const door = ticket.attributes && ticket.attributes.ws;
     const url = door ? door : c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${cfg.api.replace(/^http/, "ws")}/games/${slug}`;
     const socket = new WebSocket(url);
+    // A server that has not welcomed the player in 10 s is given up, as the Unreal client gives up a handshake
+    // (CubeGameEngine.h): the player plays on where they are, and the crossing is tried again.
+    const giveUp = setTimeout(() => { if (state.socket !== socket) socket.close(); }, 10000);
     socket.onopen = () => socket.send(JSON.stringify({
       playerId: state.player.player_id, displayName: state.player.name,
       token: state.player.access_token, reservationToken: ticket.reservation_token,
@@ -178,6 +181,7 @@ async function enter(roomName, teleport = true) {
     socket.onmessage = e => {
       const frame = JSON.parse(e.data);
       if (frame.type === "welcome" && state.socket !== socket) {
+        clearTimeout(giveUp);
         const previous = state.socket;
         state.socket = socket;
         state.room = roomName;
@@ -192,6 +196,7 @@ async function enter(roomName, teleport = true) {
       if (state.socket === socket) onFrame(frame);
     };
     socket.onclose = e => {
+      clearTimeout(giveUp);
       if (state.socket === socket) {
         const turned = refusal({ reason: e.reason });
         if (turned.message) state.notBefore[roomName] = performance.now() + turned.waitMs;

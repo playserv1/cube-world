@@ -1,7 +1,7 @@
 // The JSON socket to a C# server: the browser client's protocol (web/app.js), spoken over CubeSocket. The frames
 // land in the same handlers the Unreal server's replication feeds, so the world, the pawn and the HUD see one game
-// whichever server the player stands on. Leaving an Unreal server for a C# one first travels back to the local map,
-// since the socket's world is the client's own.
+// whichever server the player stands on. Leaving an Unreal server for a C# one keeps the world: the socket connects
+// while the player still plays on the Unreal server, which is left when the C# one welcomes them (UCubeGameEngine).
 #include "CubeWorldGameInstance.h"
 #include "CubeWorld.h"
 #include "CubeSocket.h"
@@ -15,6 +15,7 @@
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "CubeGameEngine.h"
 
 namespace
 {
@@ -97,11 +98,16 @@ void UCubeWorldGameInstance::Send(const TSharedRef<FJsonObject>& Frame)
 	if (bViaSocket && Socket.IsValid() && Socket->IsConnected()) Socket->Send(ToText(Frame));
 }
 
-// A C# server is reached from the client's own world: from an Unreal server's world, the client goes back to the
-// local map first and connects once it is there (HandlePostLoadMap).
+// A C# server is played from the client's own world. From an Unreal server's world the socket connects at once and the
+// world becomes the client's own when the welcome comes (LeaveUnrealServerKeepWorld); on a fresh join, or without the
+// client's engine (-noseamless), the client goes back to the local map first and connects once it is there.
 void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FString& Host, int32 Port, bool bSecure, const FString& ReservationToken, bool bTeleport)
 {
-	if (IsInNetworkedWorld())
+	// Make before break, from an Unreal server: the socket connects while the player still plays there, and the world is
+	// kept when the C# server's welcome comes (LeaveUnrealServerKeepWorld). Without the client's engine, the old way: back
+	// to the local map first, then connect.
+	const bool bLeaveOnWelcome = IsInNetworkedWorld() && UCubeGameEngine::Get() && !bTeleport && bPlaced && !FParse::Param(FCommandLine::Get(), TEXT("noseamless"));
+	if (IsInNetworkedWorld() && !bLeaveOnWelcome)
 	{
 		SocketPlan = { true, RoomName, Host, ReservationToken, Port, bSecure, bTeleport };
 		Crossing = bTeleport ? FCubeCrossing() : LastBody;
@@ -160,6 +166,8 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
 		if (Str(Frame, TEXT("type")) == TEXT("welcome") && Weak->Socket != This)
 		{
+			// Still on an Unreal server: it is left now, and the world with everything on screen stays.
+			if (Weak->IsInNetworkedWorld()) Weak->LeaveUnrealServerKeepWorld();
 			const TSharedPtr<FCubeSocket> Previous = Weak->Socket;
 			Weak->Socket = This;
 			Weak->PendingSocket.Reset();

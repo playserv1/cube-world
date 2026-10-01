@@ -24,6 +24,11 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "CubeGameEngine.h"
+#include "CubePlayerPawn.h"
+#include "CubeAvatar.h"
+#include "CubeBombs.h"
+#include "CubeTombstone.h"
 
 namespace
 {
@@ -50,6 +55,11 @@ void UCubeWorldGameInstance::Init()
 	Hotbar = CubeSpec::Hotbar();
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCubeWorldGameInstance::HandlePostLoadMap);
 	if (GEngine) GEngine->OnNetworkFailure().AddUObject(this, &UCubeWorldGameInstance::HandleNetworkFailure);
+	if (UCubeGameEngine* Engine = UCubeGameEngine::Get())
+	{
+		Engine->OnServerSwitched.AddUObject(this, &UCubeWorldGameInstance::HandleServerSwitched);
+		Engine->OnSeamlessTravelFailed.AddUObject(this, &UCubeWorldGameInstance::HandleSeamlessTravelFailed);
+	}
 }
 
 void UCubeWorldGameInstance::KeepGuest(const FString& RefreshToken)
@@ -69,6 +79,7 @@ void UCubeWorldGameInstance::Shutdown()
 	CloseSockets();
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 	if (GEngine) GEngine->OnNetworkFailure().RemoveAll(this);
+	if (UCubeGameEngine* Engine = UCubeGameEngine::Get()) { Engine->OnServerSwitched.RemoveAll(this); Engine->OnSeamlessTravelFailed.RemoveAll(this); }
 	Super::Shutdown();
 }
 
@@ -82,69 +93,144 @@ void UCubeWorldGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	// The crossing pose is the latest one the old world had, not the one from when the travel began: the player walked on.
 	if (Crossing.bSet && LastBody.bSet) { Crossing = LastBody; Crossing.bSet = true; }
 	// Until the next server hands over the pawn the view stays at the player's eyes, not at the map's origin.
-	if (Crossing.bSet && LoadedWorld->GetNetMode() == NM_Client)
-	{
-		EndCrossingView();
-		const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
-		const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
-		CrossingEye = Eye; CrossingLook = Look;
-		// The body goes on from the old pawn's very state, and the time the map took to load is walked too.
-		GapBody = LastFullBody;
-		GapAccumulator = LastAccumulator;
-		GapLastTime = LastBodyTime > 0 ? LastBodyTime : FPlatformTime::Seconds();
-		GapYawDeg = Look.Yaw; GapPitchDeg = Look.Pitch;
-		GapFov = LastFov > 0 ? LastFov : CubeSpec::Fov;
-		FString WalkTo;
-		bGapTestWalk = FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"));
-		bGapActive = true;
-		CubeKeys::StartMouse();
-		StepGap();
-		CrossingCamera = LoadedWorld->SpawnActor<ACameraActor>(Eye, Look);
-		// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
-		if (CrossingCamera.IsValid())
-		{
-			CrossingCamera->GetCameraComponent()->SetConstraintAspectRatio(false);
-			if (LastHorizontalFov > 0) CrossingCamera->GetCameraComponent()->SetFieldOfView(LastHorizontalFov);
-		}
-		// The engine draws nothing while the local player has no player controller, and the next server's arrives a round
-		// trip after the map: a local placeholder (which the engine destroys when the real one comes, NetConnection.cpp)
-		// shows the world from the crossing camera meanwhile.
-		// The engine spawns a placeholder of its own in LoadMap; only when it has not is one made here.
-		if (ULocalPlayer* LocalPlayer = GetFirstGamePlayer())
-			if (!LocalPlayer->PlayerController)
-			{
-				FActorSpawnParameters Params;
-				Params.ObjectFlags |= RF_Transient;
-				if (APlayerController* Placeholder = LoadedWorld->SpawnActor<APlayerController>(APlayerController::StaticClass(), Eye, Look, Params))
-				{
-					Placeholder->SetPlayer(LocalPlayer);
-					Placeholder->SetControlRotation(Look);
-					AimPlaceholder(Placeholder);
-					Placeholder->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
-				}
-			}
-		if (APlayerController* Existing = GetFirstLocalPlayerController()) if (Existing->GetLocalRole() == ROLE_Authority) { AimPlaceholder(Existing); Existing->ClientSetHUD_Implementation(ACubeHUD::StaticClass()); }
-		CrossingBlankFrames = 0; CrossingWrongFrames = 0;
-		// Held on every frame after the engine's own camera update (LevelTick: cameras, then the post-actor-tick hook), so a
-		// view target the engine switches to on its own (the next server's controller, its pawn still where that server
-		// spawned it) is never drawn.
-		CrossingViewUntil = FPlatformTime::Seconds() + 5;
-		if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport && !DrawLogHandle.IsValid())
-		{
-			DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + 3);
-			DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
-		}
-		CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
-		// The world does not tick until the server's game state says play has begun, but frames are drawn all along: the
-		// view is aimed right before each draw as well.
-		if (GEngine && GEngine->GameViewport) CrossingDrawHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::AimCrossingViewBeforeDraw);
-	}
+	if (Crossing.bSet && LoadedWorld->GetNetMode() == NM_Client) BeginCrossingGap(LoadedWorld);
 	// Back in the local map after an Unreal server: the C# server waiting for us is reached now.
 	if (SocketPlan.bSet && LoadedWorld->GetNetMode() == NM_Standalone)
 	{
 		const FSocketPlan Plan = SocketPlan;
 		SocketPlan = FSocketPlan();
 		ConnectSocket(Plan.RoomName, Plan.Host, Plan.Port, Plan.bSecure, Plan.ReservationToken, Plan.bTeleport);
+	}
+}
+
+void UCubeWorldGameInstance::BeginCrossingGap(UWorld* InWorld)
+{
+	EndCrossingView();
+	const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
+	const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
+	CrossingEye = Eye; CrossingLook = Look;
+	// The body goes on from the old pawn's very state, and the time the map took to load is walked too.
+	GapBody = LastFullBody;
+	GapAccumulator = LastAccumulator;
+	GapLastTime = LastBodyTime > 0 ? LastBodyTime : FPlatformTime::Seconds();
+	GapYawDeg = Look.Yaw; GapPitchDeg = Look.Pitch;
+	GapFov = LastFov > 0 ? LastFov : CubeSpec::Fov;
+	FString WalkTo;
+	bGapTestWalk = FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"));
+	bGapActive = true;
+	CubeKeys::StartMouse();
+	StepGap();
+	CrossingCamera = InWorld->SpawnActor<ACameraActor>(Eye, Look);
+	// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
+	if (CrossingCamera.IsValid())
+	{
+		CrossingCamera->GetCameraComponent()->SetConstraintAspectRatio(false);
+		if (LastHorizontalFov > 0) CrossingCamera->GetCameraComponent()->SetFieldOfView(LastHorizontalFov);
+	}
+	// The engine draws nothing while the local player has no player controller, and the next server's arrives a round
+	// trip after the map: a local placeholder (which the engine destroys when the real one comes, NetConnection.cpp)
+	// shows the world from the crossing camera meanwhile.
+	// The engine spawns a placeholder of its own in LoadMap; only when it has not is one made here.
+	if (ULocalPlayer* LocalPlayer = GetFirstGamePlayer())
+		if (!LocalPlayer->PlayerController)
+		{
+			FActorSpawnParameters Params;
+			Params.ObjectFlags |= RF_Transient;
+			if (APlayerController* Placeholder = InWorld->SpawnActor<APlayerController>(APlayerController::StaticClass(), Eye, Look, Params))
+			{
+				Placeholder->SetPlayer(LocalPlayer);
+				Placeholder->SetControlRotation(Look);
+				AimPlaceholder(Placeholder);
+				Placeholder->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
+			}
+		}
+	if (APlayerController* Existing = GetFirstLocalPlayerController()) if (Existing->GetLocalRole() == ROLE_Authority) { AimPlaceholder(Existing); Existing->ClientSetHUD_Implementation(ACubeHUD::StaticClass()); }
+	CrossingBlankFrames = 0; CrossingWrongFrames = 0;
+	// Held on every frame after the engine's own camera update (LevelTick: cameras, then the post-actor-tick hook), so a
+	// view target the engine switches to on its own (the next server's controller, its pawn still where that server
+	// spawned it) is never drawn.
+	CrossingViewUntil = FPlatformTime::Seconds() + 5;
+	if (FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) && GEngine && GEngine->GameViewport && !DrawLogHandle.IsValid())
+	{
+		DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + 3);
+		DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
+	}
+	CrossingViewTicker = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UCubeWorldGameInstance::HoldCrossingView);
+	// The world does not tick until the server's game state says play has begun, but frames are drawn all along: the
+	// view is aimed right before each draw as well.
+	if (GEngine && GEngine->GameViewport) CrossingDrawHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::AimCrossingViewBeforeDraw);
+}
+
+void UCubeWorldGameInstance::CarryOver(TMap<FString, ACubeAvatar*>& InAvatars, TMap<FString, ACubeBomb*>& InBombs, ACubeTombstone*& InTomb)
+{
+	for (const auto& Pair : InAvatars) if (Pair.Value) CarriedAvatars.Add(Pair.Key, Pair.Value);
+	for (const auto& Pair : InBombs) if (Pair.Value) CarriedBombs.Add(Pair.Key, Pair.Value);
+	if (InTomb) CarriedTomb = InTomb;
+	InAvatars.Empty(); InBombs.Empty(); InTomb = nullptr;
+}
+
+void UCubeWorldGameInstance::TakeCarried(TMap<FString, ACubeAvatar*>& OutAvatars, TMap<FString, ACubeBomb*>& OutBombs, ACubeTombstone*& OutTomb)
+{
+	for (const auto& Pair : CarriedAvatars) if (Pair.Value.IsValid() && !OutAvatars.Contains(Pair.Key)) OutAvatars.Add(Pair.Key, Pair.Value.Get());
+	for (const auto& Pair : CarriedBombs) if (Pair.Value.IsValid() && !OutBombs.Contains(Pair.Key)) OutBombs.Add(Pair.Key, Pair.Value.Get());
+	if (CarriedTomb.IsValid() && !OutTomb) OutTomb = CarriedTomb.Get();
+	CarriedAvatars.Empty(); CarriedBombs.Empty(); CarriedTomb.Reset();
+}
+
+void UCubeWorldGameInstance::DropCarried()
+{
+	for (const auto& Pair : CarriedAvatars) if (Pair.Value.IsValid()) Pair.Value->Destroy();
+	for (const auto& Pair : CarriedBombs) if (Pair.Value.IsValid()) Pair.Value->Destroy();
+	if (CarriedTomb.IsValid()) CarriedTomb->Destroy();
+	CarriedAvatars.Empty(); CarriedBombs.Empty(); CarriedTomb.Reset();
+}
+
+// The next Unreal server's connection took over this very world (a seamless crossing), or the world was left without a
+// server (for a C# one, LeaveUnrealServerKeepWorld). Nothing was unloaded: the drawn world, the other players, the bombs
+// are all still here; only the old server's pawn and controller are gone, so the client carries the body meanwhile.
+void UCubeWorldGameInstance::HandleServerSwitched(UWorld* InWorld, bool bConnected)
+{
+	if (CubeIsServerProcess() || !InWorld || !bConnected) return;
+	bSeamlessCrossing = false;
+	if (bViaSocket)
+	{
+		// Leaving a C# server: its socket ends now that the Unreal one has let us in, and the client's own pawn that played
+		// on it goes; the gap carries the body to the next server's pawn.
+		bViaSocket = false;
+		TSharedPtr<FCubeSocket> Old = MoveTemp(Socket);
+		PendingSocket.Reset();
+		if (Old.IsValid()) Old->Close();
+		if (APlayerController* PC = GetFirstLocalPlayerController()) if (APawn* Own = PC->GetPawn()) { PC->UnPossess(); Own->Destroy(); }
+	}
+	Crossing = LastBody;
+	Crossing.bSet = true;
+	bWelcomed = false;
+	bWorldLoaded = false;
+	BeginCrossingGap(InWorld);
+	Log(FString::Printf(TEXT("crossing into %s: the world stayed, the connection changed hands"), *Travelling));
+}
+
+void UCubeWorldGameInstance::LeaveUnrealServerKeepWorld()
+{
+	UCubeGameEngine* Engine = UCubeGameEngine::Get();
+	UWorld* InWorld = GetWorld();
+	if (!Engine || !InWorld || InWorld->GetNetMode() != NM_Client) return;
+	Crossing = LastBody;
+	Crossing.bSet = true;
+	// The server's pawn, controller and state go; a local controller takes the player, and the client's own pawn takes
+	// the body over at once, where the player is: the socket plays from it. The body goes on from the old pawn's very
+	// state (the gap, closed again as soon as the pawn binds), so nothing jumps or stops in between.
+	Engine->DisconnectKeepWorld(InWorld);
+	BeginCrossingGap(InWorld);
+	APlayerController* PC = GetFirstLocalPlayerController();
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ACubePlayerPawn* Pawn = InWorld->SpawnActor<ACubePlayerPawn>(ACubePlayerPawn::StaticClass(), FVector(Crossing.X, Crossing.Y, Crossing.Z) * CubeSpec::BlockCm, FRotator::ZeroRotator, Params);
+	if (PC && Pawn)
+	{
+		PC->Possess(Pawn);
+		PC->ClientSetHUD_Implementation(ACubeHUD::StaticClass());
+		Pawn->BindNow();
 	}
 }
 
@@ -451,6 +537,13 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 		for (const FCubeOfflinePeer& Peer : CubeOfflinePeers())
 			if (CubeOfflineRoomName(Peer.Region) == RoomName)
 			{
+				// ws://host:port is the server's JSON door: the region is played as a C# server's is, over the socket.
+				FString Scheme, Rest, Host, PortText;
+				if (Peer.Address.Split(TEXT("://"), &Scheme, &Rest) && Rest.Split(TEXT(":"), &Host, &PortText))
+				{
+					ConnectSocket(RoomName, Host, FCString::Atoi(*PortText), Scheme == TEXT("wss"), FString(), bTeleport);
+					return;
+				}
 				TravelToUnrealServer(RoomName, FString::Printf(TEXT("%s?cubeplayer=%s"), *Peer.Address, *PlayerId), bTeleport);
 				return;
 			}
@@ -538,6 +631,18 @@ void UCubeWorldGameInstance::TravelToUnrealServer(const FString& RoomName, const
 {
 	APlayerController* PC = GetFirstLocalPlayerController();
 	if (!PC) { bSwitching = false; return; }
+	UCubeGameEngine* Engine = UCubeGameEngine::Get();
+	if (Engine && !bTeleport && bPlaced && bWelcomed && !FParse::Param(FCommandLine::Get(), TEXT("noseamless")))
+	{
+		// Make before break: the server (or the socket) the player is on plays on until the next one has let us in, and then
+		// that one's connection takes over this world, which stays loaded (UCubeGameEngine, HandleServerSwitched).
+		bSeamlessCrossing = true;
+		Travelling = RoomName;
+		Log(FString::Printf(TEXT("crossing to %s (Unreal) at %s; this server plays on until it lets us in"), *RoomName, *Url.Left(Url.Find(TEXT("?")) > 0 ? Url.Find(TEXT("?")) : Url.Len())));
+		Engine->RequestSeamlessTravel();
+		PC->ClientTravel(Url, ETravelType::TRAVEL_Absolute);
+		return;
+	}
 	CloseSockets();
 	bViaSocket = false;
 	// A crossing keeps the body where it is; a fresh join takes the server's spawn.
@@ -562,7 +667,22 @@ void UCubeWorldGameInstance::HandleNetworkFailure(UWorld* InWorld, UNetDriver* N
 {
 	if (CubeIsServerProcess()) return;
 	if (SocketPlan.bSet) return;   // leaving an Unreal server on purpose, for a C# one
+	// The next server's handshake failed while the player played on: the engine gives that travel up and says so
+	// (HandleSeamlessTravelFailed); the connection (or socket) the player is on was never closed.
+	if (bSeamlessCrossing && NetDriver && NetDriver->NetDriverName == NAME_PendingNetDriver) return;
+	// The connection the world had before a seamless crossing reports its own end: the next one already took over.
+	if (NetDriver && InWorld && InWorld->GetNetDriver() != NetDriver && NetDriver->NetDriverName != NAME_PendingNetDriver) return;
 	Disconnected(ErrorString.IsEmpty() ? FString(ENetworkFailure::ToString(FailureType)) : ErrorString);
+}
+
+void UCubeWorldGameInstance::HandleSeamlessTravelFailed(const FString& Why)
+{
+	if (!bSeamlessCrossing) return;
+	bSeamlessCrossing = false;
+	bSwitching = false;
+	CrossAfter = FPlatformTime::Seconds() + 3;
+	Log(FString::Printf(TEXT("%s did not let us in (%s); playing on here"), *Travelling, *Why));
+	Travelling.Empty();
 }
 
 // A kick (an operator's close or removal) brings the client back to the menu map; look for a server again after it.
@@ -669,8 +789,11 @@ void UCubeWorldGameInstance::OnWorldChunk(const TArray<FCubeCellRep>& Cells, boo
 	ChunksReceived++;
 	if (!bLast) return;
 	bWorldLoaded = true;
-	if (bSnapshotDiff) ApplySnapshot();
-	OnWelcome.Broadcast(WelcomePose, !bSnapshotDiff);
+	// A crossing's snapshot is applied as ordinary changes, and the welcome says so: read before ApplySnapshot clears it,
+	// or every crossing would rebuild every chunk.
+	const bool bDiff = bSnapshotDiff;
+	if (bDiff) ApplySnapshot();
+	OnWelcome.Broadcast(WelcomePose, !bDiff);
 	bPlaced = true;
 	for (const FPendingCubes& P : PendingCubes) ApplyCubes(P.Changes, P.Falls, P.bRemote);
 	PendingCubes.Empty();
