@@ -290,6 +290,14 @@ void UCubeWorldGameInstance::StartPlay(const FString& Name)
 	bSigningIn = true;
 	Status = TEXT("Signing in...");
 	if (PlayServ::Auth::IsLoggedIn() && !PlayerId.IsEmpty()) { Browse(); return; }
+	if (CubeIsOffline())
+	{
+		// Nobody to sign in to: the player names themselves, the same on every server of the run.
+		PlayerId = FString::Printf(TEXT("offline-%s"), *Name.ToLower());
+		Log(FString::Printf(TEXT("offline as %s"), *Name));
+		Browse();
+		return;
+	}
 	FString Kept;
 	if (!FFileHelper::LoadFileToString(Kept, *GuestFile(Name)) || Kept.TrimStartAndEnd().IsEmpty()) { SignInAsNewGuest(); return; }
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
@@ -367,6 +375,16 @@ void UCubeWorldGameInstance::TurnedAwayBy(const FString& Reason)
 void UCubeWorldGameInstance::Browse()
 {
 	if (BrowsesPending > 0) return;
+	if (CubeIsOffline())
+	{
+		// The rooms are the run's servers, from -peers: the lowest region first.
+		BrowseFound.Empty();
+		TArray<FCubeOfflinePeer> Peers = CubeOfflinePeers();
+		Peers.Sort([](const FCubeOfflinePeer& A, const FCubeOfflinePeer& B) { return A.Region < B.Region; });
+		for (const FCubeOfflinePeer& Peer : Peers) { BrowseFound.Add(CubeOfflineRoomName(Peer.Region)); RoomSlugs.Add(CubeOfflineRoomName(Peer.Region), TEXT("cubeworld-ue")); }
+		Browsed();
+		return;
+	}
 	Status = TEXT("Looking for servers...");
 	// The C# servers and the Unreal servers register under their own room types; both are listed, and a room is
 	// joined under the type it was found in. A type the project has not got simply lists nothing.
@@ -410,8 +428,9 @@ void UCubeWorldGameInstance::Browsed()
 		return;
 	}
 	Candidates = BrowseFound;
-	// The Unreal servers first, the C# ones after: the Unreal client is at home on Iris.
-	Candidates.Sort([this](const FString& A, const FString& B)
+	// The Unreal servers first, the C# ones after: the Unreal client is at home on Iris. Offline, the -peers order holds
+	// (the lowest region first), so a run starts where its test walk begins.
+	if (!CubeIsOffline()) Candidates.Sort([this](const FString& A, const FString& B)
 	{
 		const bool bUnrealA = RoomSlugs.FindRef(A) == TEXT("cubeworld-ue"), bUnrealB = RoomSlugs.FindRef(B) == TEXT("cubeworld-ue");
 		return bUnrealA != bUnrealB ? bUnrealA : A < B;
@@ -426,6 +445,20 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 	if (RoomName == Room || bSwitching) return;
 	bSwitching = true;
 	Status = FString::Printf(TEXT("Joining %s..."), *RoomName);
+	if (CubeIsOffline())
+	{
+		// No join, no ticket: straight to the address of the server that holds the room's region.
+		for (const FCubeOfflinePeer& Peer : CubeOfflinePeers())
+			if (CubeOfflineRoomName(Peer.Region) == RoomName)
+			{
+				TravelToUnrealServer(RoomName, FString::Printf(TEXT("%s?cubeplayer=%s"), *Peer.Address, *PlayerId), bTeleport);
+				return;
+			}
+		bSwitching = false;
+		CrossAfter = FPlatformTime::Seconds() + 3;
+		Log(FString::Printf(TEXT("%s is not in -peers"), *RoomName));
+		return;
+	}
 	TWeakObjectPtr<UCubeWorldGameInstance> Weak(this);
 	// The SDK is not handed the controller: the travel is ours, so the position survives a border crossing.
 	const FPlayServJoinCallback Joined = FPlayServJoinCallback::CreateLambda([Weak, RoomName, bTeleport](bool bOk, const FPlayServJoinResult& Result, const FPlayServError& Error)

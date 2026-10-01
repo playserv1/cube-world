@@ -9,6 +9,7 @@
 #include "PlayServ.h"
 #include "Core/PlayServSettings.h"
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
 #include "GameFramework/GameSession.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
@@ -72,9 +73,32 @@ void ACubeWorldGameMode::BeginPlay()
 	// cannot help having is a spectator with no pawn and no HUD, and is not a player of the world.
 	bDedicated = GetNetMode() == NM_DedicatedServer || (CubeIsServerProcess() && GetNetMode() == NM_ListenServer);
 	if (!bDedicated) return;   // the menu map of a client: nothing to serve
-	ServerName = ServerNameOf();
+	bOffline = CubeIsOffline();
+	ServerName = bOffline ? FString(TEXT("offline")) : ServerNameOf();
 	State = GetWorld()->SpawnActor<ACubeWorldState>();
+	if (bOffline) { StartOffline(); return; }
 	StartServer();
+}
+
+// -cubeoffline: no sign-in, no tables, no room. The region comes from the command line and the neighbours from -peers,
+// so servers and crossings can be tried on one machine without touching the shared, live dev environment.
+void ACubeWorldGameMode::StartOffline()
+{
+	int32 Wanted = -1;
+	FParse::Value(FCommandLine::Get(), TEXT("-region="), Wanted);
+	Region = FMath::Clamp(Wanted < 0 ? CubeSpec::RegionColumns : Wanted, 0, CubeSpec::RegionCount - 1);
+	Regions.Empty();
+	auto Add = [this](int32 R)
+	{
+		FCubeRegionRep Rep;
+		Rep.Region = R; Rep.Room = CubeOfflineRoomName(R); Rep.Color = CubeSpec::RegionColorName(R); Rep.Server = ServerName; Rep.Slug = TEXT("cubeworld-ue");
+		Regions.Add(Rep);
+	};
+	for (const FCubeOfflinePeer& Peer : CubeOfflinePeers()) Add(Peer.Region);
+	if (!Regions.ContainsByPredicate([this](const FCubeRegionRep& R) { return R.Region == Region; })) Add(Region);
+	State->Regions = Regions;
+	ServerLog(FString::Printf(TEXT("offline: region %d, %d region(s) known, no platform"), Region, Regions.Num()));
+	Serve();
 }
 
 void ACubeWorldGameMode::StartServer()
@@ -299,6 +323,7 @@ void ACubeWorldGameMode::Serve()
 	State->Color = Color();
 	State->Region = Region;
 	ServerLog(TEXT("world ready"));
+	if (bOffline) { GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, 0.1f, true); return; }
 	// Every write and delete of a block comes over the uplink; the other servers' writes also arrive over the live
 	// tables, and the polls behind them are the fallback while that socket is down.
 	SubscribeUplinkCubes();
@@ -331,6 +356,7 @@ void ACubeWorldGameMode::PreLogin(const FString& Options, const FString& Address
 	Super::PreLogin(Options, Address, UniqueId, ErrorMessage);
 	if (!ErrorMessage.IsEmpty() || !bDedicated) return;
 	if (!bServing || bClosing) { ErrorMessage = TEXT("server_not_ready"); return; }
+	if (bOffline) return;   // nobody hands out tickets offline
 	const FPlayServTicketVerdict Verdict = PlayServ::Rooms::VerifyTicket(PlayServ::Rooms::TicketFromOptions(Options));
 	if (!Verdict.bAccepted) ErrorMessage = Verdict.ErrorMessage;
 }
@@ -342,9 +368,17 @@ void ACubeWorldGameMode::PostLogin(APlayerController* NewPlayer)
 	if (ACubePlayerPawn* Pawn = Cast<ACubePlayerPawn>(NewPlayer->GetPawn()))
 	{
 		Pawn->PlayerId = PlayServ::Rooms::GetPlayerId(NewPlayer);
+		// Offline the client names itself, the same on every server of the run, so a crossing keeps who they are.
+		if (bOffline) Pawn->PlayerId = OfflineIds.FindRef(NewPlayer);
 		// A development build admits a player without a ticket; they get a local identity, unknown to the other servers.
 		if (Pawn->PlayerId.IsEmpty()) Pawn->PlayerId = FString::Printf(TEXT("local-%s-%d"), *ServerName, ++LocalIds);
 	}
+}
+
+FString ACubeWorldGameMode::InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal)
+{
+	if (bOffline && NewPlayerController) OfflineIds.Add(NewPlayerController, UGameplayStatics::ParseOption(Options, TEXT("cubeplayer")));
+	return Super::InitNewPlayer(NewPlayerController, UniqueId, Options, Portal);
 }
 
 APawn* ACubeWorldGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
@@ -417,6 +451,11 @@ void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, boo
 // The inventory is theirs from wherever they last played; a first-timer gets a full stack of everything.
 void ACubeWorldGameMode::LoadInventoryAndWelcome(const FString& Id)
 {
+	if (bOffline)
+	{
+		if (FCubeServerPlayer* P = PlayerById(Id)) { P->Inventory = FCubeInventory::Starting(); Welcome(*P); }
+		return;
+	}
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	PlayServ::Data::LoadAll<UCubeInventory>(FPlayServFilter::Where(TEXT("player_id")).EqualTo(Id), [Weak, Id](bool bOk, TArray<UCubeInventory*> Rows, const FPlayServError& Error)
 	{
@@ -912,6 +951,7 @@ void ACubeWorldGameMode::Crater(const FCubeBombRecord& Bomb)
 
 void ACubeWorldGameMode::ShareBomb(const FCubeBombRecord& Bomb, bool bOwned)
 {
+	if (bOffline) { OnBomb(Bomb, bOwned); return; }
 	UWorldBomb* Row = PlayServ::Data::Create<UWorldBomb>();
 	Row->bomb_id = Bomb.Id; Row->state = Bomb.State; Row->holder = Bomb.Holder;
 	Row->x = Bomb.X; Row->y = Bomb.Y; Row->z = Bomb.Z; Row->vx = Bomb.VX; Row->vy = Bomb.VY; Row->vz = Bomb.VZ;
@@ -978,6 +1018,7 @@ void ACubeWorldGameMode::OnBomb(const FCubeBombRecord& Bomb, bool bOwned)
  */
 void ACubeWorldGameMode::WriteCube(const FIntVector& At, int32 Attempt)
 {
+	if (bOffline) return;
 	FCubeOverride* O = World.Overrides.Find(At);
 	if (!O) { if (Attempt > 0) WriteDone(At, false); return; }
 	// The write is on its way until it lands or is given up, through every attempt.
@@ -1023,6 +1064,7 @@ void ACubeWorldGameMode::WriteDone(const FIntVector& At, bool bLanded)
 
 void ACubeWorldGameMode::WritePresence(FCubeServerPlayer& P)
 {
+	if (bOffline) { P.bMoved = false; P.PresenceWrittenAt = Now(); return; }
 	if (P.bPresenceBusy) return;
 	P.bPresenceBusy = true;
 	P.bMoved = false;
@@ -1066,7 +1108,7 @@ void ACubeWorldGameMode::WritePresence(FCubeServerPlayer& P)
 // A player who left: their row goes, unless another server already took them over (a border crossing).
 void ACubeWorldGameMode::DeletePresence(const FString& PlayerId, UWorldPresence* Row)
 {
-	if (Row->server != ServerName) return;
+	if (bOffline || Row->server != ServerName) return;
 	TStrongObjectPtr<UWorldPresence> Keep(Row);
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	PlayServ::Data::Reload(Row, FPlayServSimpleCallback::CreateLambda([Weak, Keep, PlayerId](bool bOk, const FPlayServError&)
@@ -1079,7 +1121,7 @@ void ACubeWorldGameMode::DeletePresence(const FString& PlayerId, UWorldPresence*
 void ACubeWorldGameMode::WriteInventory(FCubeServerPlayer& P)
 {
 	UCubeInventory* Row = P.InventoryRow.Get();
-	if (!Row) return;
+	if (bOffline || !Row) return;
 	Row->player_id = P.Id;
 	Row->cubes = P.Inventory.Total();
 	Row->stacks = P.Inventory.ToJson();
@@ -1093,6 +1135,7 @@ void ACubeWorldGameMode::WriteInventory(FCubeServerPlayer& P)
 
 void ACubeWorldGameMode::WriteHit(const FString& HitId, const FString& Victim, const FString& Attacker, double Damage, double KX, double KY, double Strength)
 {
+	if (bOffline) return;
 	UWorldHit* Row = PlayServ::Data::Create<UWorldHit>();
 	Row->hit_id = HitId; Row->victim = Victim; Row->attacker = Attacker;
 	Row->damage = Damage; Row->kx = KX; Row->ky = KY; Row->strength = Strength; Row->at = Now();

@@ -102,6 +102,8 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage) override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
+	/** Offline, the id the client names itself with (?cubeplayer=) is read from its login options here. */
+	virtual FString InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal = TEXT("")) override;
 	virtual void Logout(AController* Exiting) override;
 	/** The local player of a headless listen server (-cubeserver) gets no pawn: it is not a player of the world. */
 	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
@@ -135,6 +137,7 @@ public:
 private:
 	// ---- startup ----------------------------------------------------------------------------
 	void StartServer();
+	void StartOffline();
 	void LoadWorld();
 	void LoadBombs();
 	void ClaimRegion(int32 Region);
@@ -255,6 +258,9 @@ private:
 	int64 LastCubeAt = 0, LastBombAt = 0;
 	int32 LocalIds = 0;
 	bool bDedicated = false, bServing = false, bClosing = false;
+	/** -cubeoffline: no platform at all (CubeIsOffline). */
+	bool bOffline = false;
+	TMap<TWeakObjectPtr<AController>, FString> OfflineIds;
 	bool bCubesBusy = false, bPresenceBusy = false, bHitsBusy = false, bBombsBusy = false, bRegionsBusy = false;
 	TSharedPtr<FCubeLiveTables> LiveTables;
 	TSharedPtr<class FCubeWebSocketServer> Web;
