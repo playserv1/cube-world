@@ -9,7 +9,7 @@ A room's server runs one of two ways, and admission, presence and joining are th
 - **You run it**, on your own machines or a host you choose, and it registers its rooms with `StartHosting` and `StartRoom` (below).
 - **PlayServ hosting runs it**: a player asks for a room with `RequestNewRoom`, the platform starts one server process for that room on your room type's machine pool, and the process registers it with the single call `StartRoomPlayServHosted` ("Rooms PlayServ hosting starts").
 
-> **Not in this version:** matchmaking (there is no `JoinGame`: the platform has no matchmaking in service, so build your room browser on `Browse`) and game data over the uplink.
+> **Not in this version:** matchmaking (there is no `JoinGame`: the platform has no matchmaking in service, so build your room browser on `Browse`), and writing or reading game data over the uplink: a hosting server writes and reads through `PlayServ::Data`, and hears other writers' changes with `SubscribeData` ("Hearing data changes" below).
 
 ## Prerequisites (hosting)
 
@@ -300,9 +300,28 @@ if (PlayServ::Rooms::GetRoom(RoomName, Room))
 }
 ```
 
+## Hearing data changes
+
+A hosting server can hear every change to an entity's records as it happens, whoever makes it: another server, a cloud function, an operator in the admin. The platform sends each upsert and each delete over the uplink, as it does to the C# SDK's `Platform.RuntimeData.Subscribe`:
+
+```cpp
+UPlayServRooms* Rooms = UPlayServSubsystem::Get()->GetRooms();
+Rooms->OnDataUpdate.AddUObject(this, &AMyGameMode::HandleDataUpdate);   // bind first
+Rooms->OnDataSubscribed.AddUObject(this, &AMyGameMode::HandleDataSubscribed);
+PlayServ::Rooms::SubscribeData(TEXT("WorldCube"), TEXT("field:key"));   // the entity, and the field that keys a record
+
+void AMyGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
+{
+    // Update.Entity, Update.Id, Update.Op ("upsert" or "delete"), Update.Data (the record's fields, or null)
+    if (Update.IsDelete()) { /* the record is gone */ }
+}
+```
+
+The subscription goes out as soon as the uplink is ready and again on every new uplink socket, and `OnDataSubscribed(Entity)` fires each time it goes out. The platform does not send again what changed while no subscription was in place (before the first one, or while the uplink reconnected), so a server that must not miss a change reads the records again from `OnDataSubscribed`. `UnsubscribeData(Entity)` stops it. `Display` logs each subscription and the first change of each entity with the fields it carried.
+
 ## Events
 
-`OnUplinkStateChanged`, `OnRoomConfigChanged`, `OnRoomPlacementChanged`, `OnRoomEnded(RoomName, Reason)` and `OnPlayerRemoved(RoomName, PlayerId, Reason)` are Blueprint-assignable on `UPlayServRooms`, alongside the state queries (`IsHosting`, `GetRoomNames`, `GetRoom`, `GetRoomPlayerCount`, …). Operations are C++ only. `Reason` values are the platform's vocabulary: `lifetime`, `idle`, `room_owned_by_other_instance`, `room_type_not_found`, `reconnect_grace_lapsed`, `removed_by_game`, `room_closed`, `reservation_expired`, and so on.
+`OnUplinkStateChanged`, `OnRoomConfigChanged`, `OnRoomPlacementChanged`, `OnRoomEnded(RoomName, Reason)` and `OnPlayerRemoved(RoomName, PlayerId, Reason)` are Blueprint-assignable on `UPlayServRooms`, alongside the state queries (`IsHosting`, `GetRoomNames`, `GetRoom`, `GetRoomPlayerCount`, …); `OnDataUpdate` and `OnDataSubscribed` ("Hearing data changes") are C++ delegates. Operations are C++ only. `Reason` values are the platform's vocabulary: `lifetime`, `idle`, `room_owned_by_other_instance`, `room_type_not_found`, `reconnect_grace_lapsed`, `removed_by_game`, `room_closed`, `reservation_expired`, and so on.
 
 ## Logging
 

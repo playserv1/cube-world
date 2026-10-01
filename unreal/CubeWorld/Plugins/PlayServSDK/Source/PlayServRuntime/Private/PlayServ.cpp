@@ -368,6 +368,22 @@ bool PlayServ::Rooms::RemovePlayer(const FString& RoomName, const FString& Playe
 	return PS != nullptr && PS->GetRooms()->RemovePlayer(RoomName, PlayerId);
 }
 
+void PlayServ::Rooms::SubscribeData(const FString& Entity, const FString& KeyPath)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->SubscribeData(Entity, KeyPath);
+	}
+}
+
+void PlayServ::Rooms::UnsubscribeData(const FString& Entity)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->UnsubscribeData(Entity);
+	}
+}
+
 void PlayServ::Rooms::Browse(const FString& Slug, const FPlayServRoomFilters& Filters, FPlayServBrowseCallback Callback)
 {
 	UPlayServSubsystem* PS = UPlayServSubsystem::Get();

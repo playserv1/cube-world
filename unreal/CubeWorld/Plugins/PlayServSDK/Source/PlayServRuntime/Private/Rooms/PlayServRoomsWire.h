@@ -9,6 +9,8 @@ namespace PlayServRoomsWire
 	static const TCHAR* TypeRoomPresence = TEXT("room_presence");
 	static const TCHAR* TypeTicketResult = TEXT("ticket_result");
 	static const TCHAR* TypeTicketRelease = TEXT("ticket_release");
+	static const TCHAR* TypeSubscribeData = TEXT("subscribe_data");
+	static const TCHAR* TypeUnsubscribeData = TEXT("unsubscribe_data");
 
 	static const TCHAR* TypeHelloAck = TEXT("uplink_hello_ack");
 	static const TCHAR* TypePing = TEXT("ping");
@@ -16,6 +18,7 @@ namespace PlayServRoomsWire
 	static const TCHAR* TypeTicketOffer = TEXT("ticket_offer");
 	static const TCHAR* TypeJoinAck = TEXT("join_ack");
 	static const TCHAR* TypeFrameTooLarge = TEXT("frame_too_large");
+	static const TCHAR* TypeDataUpdate = TEXT("data_update");
 
 	static const TCHAR* FieldType = TEXT("type");
 	static const TCHAR* FieldExecutorSlug = TEXT("executor_slug");
@@ -38,6 +41,16 @@ namespace PlayServRoomsWire
 	static const TCHAR* FieldReason = TEXT("reason");
 	static const TCHAR* FieldDetail = TEXT("detail");
 	static const TCHAR* FieldParams = TEXT("params");
+
+	// Data subscriptions, as the C# SDK's RuntimeData speaks them. project_id and client_key are empty: the platform
+	// scopes the subscription to the project and environment the uplink signed in to.
+	static const TCHAR* FieldProjectId = TEXT("project_id");
+	static const TCHAR* FieldClientKey = TEXT("client_key");
+	static const TCHAR* FieldEntity = TEXT("entity");
+	static const TCHAR* FieldKeyPath = TEXT("key_path");
+	static const TCHAR* FieldId = TEXT("id");
+	static const TCHAR* FieldOp = TEXT("op");
+	static const TCHAR* FieldData = TEXT("data");
 
 	static const TCHAR* FieldCapacity = TEXT("capacity");
 	static const TCHAR* FieldReservationTtlSeconds = TEXT("reservation_ttl_seconds");

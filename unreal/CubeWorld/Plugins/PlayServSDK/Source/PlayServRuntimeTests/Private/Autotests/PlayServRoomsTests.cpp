@@ -2018,6 +2018,107 @@ bool FPlayServRoomsHostWireTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
+// PlayServ.Rooms.Data.SubscribeResendsAndRoutesUpdates
+//
+// SubscribeData speaks the C# SDK's RuntimeData wire: `subscribe_data` names the entity and its key path, and the
+// platform answers with a `data_update` per changed record, upserts and deletes alike. A subscription lives on the
+// socket it went out on, so every new socket carries it again, and the game hears each time that it went out: what
+// changed in between is not sent again.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsDataSubscriptionTest,
+	"PlayServ.Rooms.Data.SubscribeResendsAndRoutesUpdates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsDataSubscriptionTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+	TArray<FString> Subscribed;
+	TArray<FPlayServDataUpdate> Updates;
+	const FDelegateHandle SubscribedHandle = Server->OnDataSubscribed.AddLambda([&Subscribed](const FString& Entity) { Subscribed.Add(Entity); });
+	const FDelegateHandle UpdateHandle = Server->OnDataUpdate.AddLambda([&Updates](const FPlayServDataUpdate& Update) { Updates.Add(Update); });
+
+	TSharedPtr<FPlayServFakeUplinkTransport> First = Factory.Current();
+	First->SimulateConnected();
+	Server->SubscribeData(TEXT("WorldCube"), TEXT("field:key"));
+	TestEqual(TEXT("nothing goes out before the hello ack"), First->CountSentOfType(TEXT("subscribe_data")), 0);
+	TestEqual(TEXT("and nothing is reported"), Subscribed.Num(), 0);
+
+	First->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	const TSharedPtr<FJsonObject> Frame = First->LastSentOfType(TEXT("subscribe_data"));
+	if (TestNotNull(TEXT("the subscription goes out once the uplink is ready"), Frame.Get()))
+	{
+		TestEqual(TEXT("entity"), Frame->GetStringField(TEXT("entity")), FString(TEXT("WorldCube")));
+		TestEqual(TEXT("key path"), Frame->GetStringField(TEXT("key_path")), FString(TEXT("field:key")));
+		TestTrue(TEXT("project_id and client_key are empty, as the C# SDK sends them"),
+			Frame->HasField(TEXT("project_id")) && Frame->GetStringField(TEXT("project_id")).IsEmpty()
+			&& Frame->HasField(TEXT("client_key")) && Frame->GetStringField(TEXT("client_key")).IsEmpty());
+	}
+	TestEqual(TEXT("sent once"), First->CountSentOfType(TEXT("subscribe_data")), 1);
+	TestTrue(TEXT("and reported"), Subscribed.Num() == 1 && Subscribed[0] == TEXT("WorldCube"));
+
+	// A delete a cloud function made over HTTP, an upsert another server wrote, and a delete with no record.
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"entity\":\"WorldCube\",\"id\":\"rec_1\",\"op\":\"delete\",\"data\":{\"key\":\"5:6:-1\",\"x\":5,\"y\":6,\"z\":-1,\"kind\":\"air\"}}"));
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"entity\":\"WorldCube\",\"id\":\"rec_2\",\"op\":\"upsert\",\"data\":{\"key\":\"1:2:0\",\"x\":1,\"y\":2,\"z\":0,\"kind\":\"brick\"}}"));
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"entity\":\"WorldCube\",\"id\":\"rec_3\",\"op\":\"delete\"}"));
+	if (TestEqual(TEXT("every update reaches the game"), Updates.Num(), 3))
+	{
+		TestTrue(TEXT("a delete is a delete"), Updates[0].IsDelete() && Updates[0].Entity == TEXT("WorldCube") && Updates[0].Id == TEXT("rec_1"));
+		TestTrue(TEXT("with the record it removed"), Updates[0].Data.IsValid() && Updates[0].Data->GetNumberField(TEXT("z")) == -1.0);
+		TestTrue(TEXT("an upsert is not"), !Updates[1].IsDelete() && Updates[1].Data.IsValid() && Updates[1].Data->GetStringField(TEXT("kind")) == TEXT("brick"));
+		TestTrue(TEXT("an update without data still arrives, with none"), Updates[2].IsDelete() && !Updates[2].Data.IsValid());
+	}
+	First->SimulateMessage(TEXT("{\"type\":\"data_update\",\"id\":\"rec_4\",\"op\":\"delete\"}"));
+	TestEqual(TEXT("an update that names no entity is dropped"), Updates.Num(), 3);
+
+	// A renewed session token on the same socket leaves the subscription where it is.
+	First->SimulateMessage(TEXT("{\"type\":\"session_token\",\"session_token\":\"eyJ.renewed.token\",\"expires_in\":3600}"));
+	TestEqual(TEXT("a renewed token sends nothing again"), First->CountSentOfType(TEXT("subscribe_data")), 1);
+
+	// A new socket carries every subscription again, and the game hears that it went out.
+	First->SimulateClosed(1012, TEXT("Service Restart"));
+	Clock.Now += 2.0;
+	FPlayServRoomsTestAccess::Tick(Server, Clock.Now);
+	TSharedPtr<FPlayServFakeUplinkTransport> Second = Factory.Current();
+	TestTrue(TEXT("the client reconnected on a second socket"), Second.IsValid() && Second != First);
+	Second->SimulateConnected();
+	Second->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	TestEqual(TEXT("the new socket subscribes again"), Second->CountSentOfType(TEXT("subscribe_data")), 1);
+	TestEqual(TEXT("and it is reported again"), Subscribed.Num(), 2);
+
+	// On a ready uplink a subscription goes out at once; an entity unsubscribed stays off the next socket.
+	Server->SubscribeData(TEXT("WorldBomb"), TEXT("field:bomb_id"));
+	TestEqual(TEXT("at once on a ready uplink"), Second->CountSentOfType(TEXT("subscribe_data")), 2);
+	Server->UnsubscribeData(TEXT("WorldCube"));
+	const TSharedPtr<FJsonObject> Off = Second->LastSentOfType(TEXT("unsubscribe_data"));
+	TestTrue(TEXT("unsubscribe names the entity"), Off.IsValid() && Off->GetStringField(TEXT("entity")) == TEXT("WorldCube"));
+	Second->SimulateClosed(1012, TEXT("Service Restart"));
+	Clock.Now += 2.0;
+	FPlayServRoomsTestAccess::Tick(Server, Clock.Now);
+	TSharedPtr<FPlayServFakeUplinkTransport> Third = Factory.Current();
+	Third->SimulateConnected();
+	Third->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	const TSharedPtr<FJsonObject> Again = Third->LastSentOfType(TEXT("subscribe_data"));
+	TestTrue(TEXT("only the entity still subscribed goes out"),
+		Third->CountSentOfType(TEXT("subscribe_data")) == 1 && Again.IsValid() && Again->GetStringField(TEXT("entity")) == TEXT("WorldBomb"));
+
+	Server->OnDataSubscribed.Remove(SubscribedHandle);
+	Server->OnDataUpdate.Remove(UpdateHandle);
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // PlayServ.Auth.LoginServerAcceptsDeploymentToken
 //
 // Decision 14: a platform-started server presents a deployment token (a JWT) instead of sk_*.

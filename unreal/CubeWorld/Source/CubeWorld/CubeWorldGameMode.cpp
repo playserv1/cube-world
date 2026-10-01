@@ -23,7 +23,7 @@
 namespace
 {
 	constexpr int32 ChunkSize = 400;
-	constexpr int64 PresenceTtlMs = 5000, RegionTtlMs = 30000;
+	constexpr int64 PresenceTtlMs = 5000, RegionTtlMs = 30000, TombstoneTtlMs = 60000;
 
 	FString ServerNameOf()
 	{
@@ -299,7 +299,9 @@ void ACubeWorldGameMode::Serve()
 	State->Color = Color();
 	State->Region = Region;
 	ServerLog(TEXT("world ready"));
-	// The other servers' writes arrive over the live tables; the polls behind them are the fallback while the socket is down.
+	// Every write and delete of a block comes over the uplink; the other servers' writes also arrive over the live
+	// tables, and the polls behind them are the fallback while that socket is down.
+	SubscribeUplinkCubes();
 	OpenLiveTables();
 	GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, 0.1f, true);
 	GetWorldTimerManager().SetTimer(CubeTimer, this, &ACubeWorldGameMode::PollCubes, 5.f, true, 1.2f);
@@ -311,6 +313,11 @@ void ACubeWorldGameMode::Serve()
 
 void ACubeWorldGameMode::EndPlay(const EEndPlayReason::Type Reason)
 {
+	if (UPlayServRooms* Rooms = UPlayServSubsystem::Get() ? UPlayServSubsystem::Get()->GetRooms() : nullptr)
+	{
+		Rooms->OnDataUpdate.RemoveAll(this);
+		Rooms->OnDataSubscribed.RemoveAll(this);
+	}
 	if (LiveTables.IsValid()) { LiveTables->Shutdown(); LiveTables.Reset(); }
 	if (Web.IsValid()) { Web->Shutdown(); Web.Reset(); }
 	if (bDedicated && Reason != EEndPlayReason::LevelTransition) PlayServ::Rooms::StopHosting();
@@ -490,8 +497,12 @@ void ACubeWorldGameMode::GameTick()
 		}
 	}
 	TickBombs();
-	// What the other servers changed this tick goes out together (a blast elsewhere is a hundred blocks).
-	if (Heard.Num() > 0) { BroadcastCubes(Heard, TArray<FCubeFall>(), true); Heard.Empty(); }
+	// What the other servers changed this tick goes out together (a blast elsewhere is a hundred blocks); a reset, or a
+	// read of the table that finds thousands, goes out in chunks the size of the welcome's.
+	if (Heard.Num() == 0) return;
+	for (int32 I = 0; I < Heard.Num(); I += ChunkSize)
+		BroadcastCubes(TArray<FCubeChange>(Heard.GetData() + I, FMath::Min(ChunkSize, Heard.Num() - I)), TArray<FCubeFall>(), true);
+	Heard.Empty();
 }
 
 void ACubeWorldGameMode::ShareMoves()
@@ -968,7 +979,9 @@ void ACubeWorldGameMode::OnBomb(const FCubeBombRecord& Bomb, bool bOwned)
 void ACubeWorldGameMode::WriteCube(const FIntVector& At, int32 Attempt)
 {
 	FCubeOverride* O = World.Overrides.Find(At);
-	if (!O) return;
+	if (!O) { if (Attempt > 0) WriteDone(At, false); return; }
+	// The write is on its way until it lands or is given up, through every attempt.
+	if (Attempt == 0) WritesInFlight.FindOrAdd(At)++;
 	UWorldCube* Row = O->Row.Get();
 	if (!Row)
 	{
@@ -984,9 +997,10 @@ void ACubeWorldGameMode::WriteCube(const FIntVector& At, int32 Attempt)
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	PlayServ::Data::Save(Row, FPlayServSimpleCallback::CreateLambda([Weak, At, Attempt](bool bOk, const FPlayServError& Error)
 	{
-		if (!Weak.IsValid() || bOk) return;
+		if (!Weak.IsValid()) return;
 		ACubeWorldGameMode* Self = Weak.Get();
-		if (Attempt >= 2) { Self->ServerLog(FString::Printf(TEXT("block %d %d %d not written: %s"), At.X, At.Y, At.Z, *Error.Message)); return; }
+		if (bOk) { Self->WriteDone(At, true); return; }
+		if (Attempt >= 2) { Self->ServerLog(FString::Printf(TEXT("block %d %d %d not written: %s"), At.X, At.Y, At.Z, *Error.Message)); Self->WriteDone(At, false); return; }
 		// Someone else wrote this block first: take their row and write ours over it.
 		PlayServ::Data::LoadAll<UWorldCube>(FPlayServFilter::Where(TEXT("key")).EqualTo(FCubeServerWorld::Key(At.X, At.Y, At.Z)), [Weak, At, Attempt](bool bFound, TArray<UWorldCube*> Rows, const FPlayServError&)
 		{
@@ -996,6 +1010,15 @@ void ACubeWorldGameMode::WriteCube(const FIntVector& At, int32 Attempt)
 			Weak->WriteCube(At, Attempt + 1);
 		});
 	}));
+}
+
+void ACubeWorldGameMode::WriteDone(const FIntVector& At, bool bLanded)
+{
+	if (int32* InFlight = WritesInFlight.Find(At)) { if (--*InFlight <= 0) WritesInFlight.Remove(At); }
+	if (!bLanded) return;
+	// In the table from now on: a read of it that began before this does not take the block for gone.
+	World.Touch(At);
+	if (CubesSubscribedAt > 0 && CubeWriteLandedAt == 0) CubeWriteLandedAt = Now();
 }
 
 void ACubeWorldGameMode::WritePresence(FCubeServerPlayer& P)
@@ -1085,6 +1108,17 @@ void ACubeWorldGameMode::WriteHit(const FString& HitId, const FString& Victim, c
 
 void ACubeWorldGameMode::PollCubes()
 {
+	const int64 T = Now();
+	// A late row is at most a few seconds behind its delete; a minute on, the delete has no older row left to stop.
+	for (auto It = Tombstones.CreateIterator(); It; ++It) if (T - It->Value.HeardAt > TombstoneTtlMs) It.RemoveCurrent();
+	// This server's own writes come back over the uplink like anyone's: one that landed a minute ago with nothing come
+	// back says the platform sends this uplink no changes, and then a delete (the world's reset) is heard only at the
+	// next restart.
+	if (!bCubeUpdatesHeard && !bCubeUpdatesWarned && CubeWriteLandedAt > 0 && T - CubeWriteLandedAt > 60000)
+	{
+		bCubeUpdatesWarned = true;
+		UE_LOG(LogCubeWorld, Warning, TEXT("%s: nothing has come over the uplink's WorldCube subscription in the minute since this server's own write landed; if the platform sends this uplink no data_update, deleted blocks (the world's reset) are heard only when the server restarts"), *RoomName());
+	}
 	if (bCubesBusy) return;
 	bCubesBusy = true;
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
@@ -1098,6 +1132,8 @@ void ACubeWorldGameMode::PollCubes()
 		{
 			Self->LastCubeAt = FMath::Max(Self->LastCubeAt, Row->at);
 			const FIntVector At(Row->x, Row->y, Row->z);
+			// A poll answered before a delete can come back after the uplink brought the delete.
+			if (Self->IsBuried(At, Row->at)) continue;
 			const bool bChanged = Self->World.Apply(At, FName(*Row->kind), Row->placed_by, Row->placed_on, Row->at, Row);
 			if (bChanged && Row->placed_on != Self->ServerName) Self->Heard.Add({ At, FName(*Row->kind), Row->placed_by, Row->placed_on });
 		}

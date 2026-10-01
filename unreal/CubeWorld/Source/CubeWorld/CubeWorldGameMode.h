@@ -19,6 +19,7 @@
 class ACubePlayerPawn;
 class FCubeLiveTables;
 struct FPlayServError;
+struct FPlayServDataUpdate;
 
 /** A WorldBomb row as the server follows it. */
 struct FCubeBombRecord
@@ -80,6 +81,13 @@ struct FCubeElsewhere
 {
 	FCubePresenceRep Pose;
 	int64 SeenAt = 0;
+};
+
+/** A block whose row was deleted: the `at` of the row that went, and when the delete was heard. */
+struct FCubeTombstone
+{
+	int64 At = 0;
+	int64 HeardAt = 0;
 };
 
 UCLASS()
@@ -165,6 +173,19 @@ private:
 	void OnLiveBombs(const TArray<TSharedPtr<FJsonObject>>& Rows);
 	void OnLiveRegions(const TArray<TSharedPtr<FJsonObject>>& Rows);
 
+	// ---- the uplink's data subscription: every write and delete of WorldCube, whoever made it ------------------
+	void SubscribeUplinkCubes();
+	void HandleDataSubscribed(const FString& Entity);
+	void HandleDataUpdate(const FPlayServDataUpdate& Update);
+	/** Reads the whole table and takes what it says for every block that has not changed here since the read began. */
+	void ReconcileCubes();
+	/** A block's row is gone: the block goes back to the terrain, here and on the clients, and a row as old heard late is not applied. */
+	void Bury(const FIntVector& At, int64 RowAt, const FString& By, const FString& On);
+	/** A row no newer than the delete of its block, heard late through a live table, a poll or a read. */
+	bool IsBuried(const FIntVector& At, int64 RowAt) const;
+	/** A write of WriteCube ended, landed or given up. */
+	void WriteDone(const FIntVector& At, bool bLanded);
+
 	// ---- the rules --------------------------------------------------------------------------
 	void Welcome(FCubeServerPlayer& Player);
 	void LoadInventoryAndWelcome(const FString& Id);
@@ -239,6 +260,13 @@ private:
 	TSharedPtr<class FCubeWebSocketServer> Web;
 	int32 LiveCubes = 0, LivePresence = 0, LiveHits = 0, LiveBombs = 0, LiveRegions = 0;
 	int64 LivePresenceSince = 0, LiveHitsSince = 0;
+	TMap<FIntVector, FCubeTombstone> Tombstones;
+	/** This server's writes of each block still on their way to the table. */
+	TMap<FIntVector, int32> WritesInFlight;
+	bool bReconciling = false, bReconcileAgain = false;
+	/** When the WorldCube subscription first went out, when a write of this server's first landed after it, and whether any change came over it. */
+	int64 CubesSubscribedAt = 0, CubeWriteLandedAt = 0;
+	bool bCubeUpdatesHeard = false, bCubeUpdatesWarned = false;
 	int32 RegionTry = 0;
 	float Accumulator = 0;
 	FTimerHandle MoveTimer, CubeTimer, PresenceTimer, HitTimer, BombTimer, RegionTimer;

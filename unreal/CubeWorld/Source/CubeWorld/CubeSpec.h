@@ -139,15 +139,19 @@ namespace CubeSpec
 		return Blocks()[0];
 	}
 
-	/** A block kind as one byte on the wire: its index in Blocks(). Unknown kinds are air. */
+	/** On the wire, the kind of a block that goes back to the generated terrain: no override at all (the kind None). */
+	constexpr uint8 GeneratedIndex = 255;
+
+	/** A block kind as one byte on the wire: its index in Blocks(), or GeneratedIndex for None. Unknown kinds are air. */
 	inline uint8 KindIndex(FName Kind)
 	{
+		if (Kind == NAME_None) return GeneratedIndex;
 		const TArray<FBlockDef>& All = Blocks();
 		for (int32 I = 0; I < All.Num(); I++) if (All[I].Kind == Kind) return (uint8)I;
 		return 0;
 	}
 
-	inline FName KindOf(uint8 Index) { return Blocks().IsValidIndex(Index) ? Blocks()[Index].Kind : Blocks()[0].Kind; }
+	inline FName KindOf(uint8 Index) { return Index == GeneratedIndex ? FName(NAME_None) : Blocks().IsValidIndex(Index) ? Blocks()[Index].Kind : Blocks()[0].Kind; }
 
 	/** Hotbar order: every placeable kind. */
 	inline const TArray<FName>& Hotbar()

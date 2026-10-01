@@ -35,10 +35,11 @@ bool FCubeServerWorld::Apply(const FIntVector& At, FName Kind, const FString& By
 		// The same block, seen again: only take the row so the next write of it is an update, not a duplicate.
 		if (Row && !Known->Row.IsValid()) Known->Row.Reset(Row);
 		if (When > Known->At) Known->At = When;
+		Known->Version = ++Version;
 		return false;
 	}
 	FCubeOverride& O = Overrides.FindOrAdd(At);
-	O.Kind = Kind; O.By = By; O.On = On; O.At = When;
+	O.Kind = Kind; O.By = By; O.On = On; O.At = When; O.Version = ++Version;
 	if (Row) O.Row.Reset(Row);
 	Voxels.Set(At.X, At.Y, At.Z, Kind);
 	return true;
@@ -49,10 +50,33 @@ void FCubeServerWorld::Remember(const FIntVector& At, UWorldCube* Row)
 	if (FCubeOverride* O = Overrides.Find(At)) O->Row.Reset(Row);
 }
 
-void FCubeServerWorld::Forget(const FIntVector& At)
+void FCubeServerWorld::Touch(const FIntVector& At)
 {
-	Overrides.Remove(At);
+	if (FCubeOverride* O = Overrides.Find(At)) O->Version = ++Version;
+}
+
+bool FCubeServerWorld::Forget(const FIntVector& At)
+{
+	if (Overrides.Remove(At) == 0) return false;
 	Voxels.Set(At.X, At.Y, At.Z, NAME_None);
+	++Version;
+	return true;
+}
+
+TArray<FIntVector> FCubeServerWorld::Missing(const TSet<FIntVector>& Found, uint64 AsOf) const
+{
+	TArray<FIntVector> Out;
+	for (const auto& Pair : Overrides) if (Pair.Value.Version <= AsOf && !Found.Contains(Pair.Key)) Out.Add(Pair.Key);
+	return Out;
+}
+
+bool FCubeServerWorld::ParseKey(const FString& Key, FIntVector& Out)
+{
+	TArray<FString> Parts;
+	if (Key.ParseIntoArray(Parts, TEXT(":"), false) != 3) return false;
+	for (const FString& Part : Parts) if (Part.IsEmpty() || !Part.IsNumeric()) return false;
+	Out = FIntVector(FCString::Atoi(*Parts[0]), FCString::Atoi(*Parts[1]), FCString::Atoi(*Parts[2]));
+	return true;
 }
 
 void FCubeServerWorld::Explode(double Cx, double Cy, double Cz, double Power, int32 Seed, const FString& By, const FString& On, int32 OnlyRegion, FCubeWorldUpdate& Out)
@@ -160,13 +184,14 @@ double FCubeServerWorld::DistanceToHitbox(double Px, double Py, double Pz, const
 	return FMath::Sqrt(Dx * Dx + Dy * Dy + Dz * Dz);
 }
 
-// Every change is an upsert, even "air" where the terrain is air: the other servers hear an upsert the moment it is
-// written, while a deleted record does not reach them. So a broken block is written as air.
+// Every change is an upsert, even "air" where the terrain is air, as the C# servers write it: the other Unreal
+// servers' windows on `at` see upserts alone, and a delete reaches a server only over its uplink subscription. So a
+// broken block is written as air.
 void FCubeServerWorld::Set(int32 X, int32 Y, int32 Z, FName Kind, const FString& By, const FString& On, FCubeWorldUpdate& Out)
 {
 	const FIntVector At(X, Y, Z);
 	FCubeOverride& O = Overrides.FindOrAdd(At);
-	O.Kind = Kind; O.By = By; O.On = On;
+	O.Kind = Kind; O.By = By; O.On = On; O.Version = ++Version;
 	Voxels.Set(X, Y, Z, Kind);
 	Out.Changes.Add({ At, Kind, By, On });
 }

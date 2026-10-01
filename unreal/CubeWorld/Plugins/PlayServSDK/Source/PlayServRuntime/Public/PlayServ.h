@@ -388,6 +388,12 @@ namespace PlayServ::Rooms
 	/** The game's own removal decision (kick, ban, quit): reported at once, with no reconnect grace. */
 	PLAYSERVRUNTIME_API bool RemovePlayer(const FString& RoomName, const FString& PlayerId);
 
+	/** Hear every upsert and delete of an entity's records over the uplink, in UPlayServRooms::OnDataUpdate; KeyPath is `field:<key field>`. Resent on every new uplink socket. */
+	PLAYSERVRUNTIME_API void SubscribeData(const FString& Entity, const FString& KeyPath);
+
+	/** Stop hearing an entity's changes. */
+	PLAYSERVRUNTIME_API void UnsubscribeData(const FString& Entity);
+
 	// ---- Joining ---------------------------------------------------------------------------
 
 	/** List this room type's joinable rooms for the signed-in player. */

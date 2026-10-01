@@ -3,16 +3,24 @@
 // small: the blocks changed since the window opened, the players seen in the last seconds, the hits and the bomb
 // moves since the server started. A window that fills up is moved forward. The polls in CubeWorldGameMode.cpp stay
 // as the fallback while the socket is down.
+//
+// A window on `at` never sees a deleted row, and the reset deletes every changed block. So WorldCube is also heard
+// over the uplink, as the C# servers hear it: a data subscription on which the platform sends every upsert and every
+// delete, whoever made it. What changed while that subscription was not in place (while the world loaded, or while
+// the uplink reconnected) is read from the table again.
 #include "CubeWorldGameMode.h"
 #include "CubeWorld.h"
 #include "CubeLiveTables.h"
 #include "CubeEntities.h"
 #include "PlayServ.h"
+#include "Core/PlayServSubsystem.h"
+#include "Rooms/PlayServRooms.h"
 
 namespace
 {
 	constexpr int32 WindowFull = 150;
 	constexpr int64 PresenceWindowMs = 5000, PresenceWindowRefreshMs = 30000;
+	constexpr TCHAR CubeEntity[] = TEXT("WorldCube");
 
 	double Num(const TSharedPtr<FJsonObject>& Row, const TCHAR* Field, double Default = 0)
 	{
@@ -83,6 +91,8 @@ void ACubeWorldGameMode::OnLiveCubes(const TArray<TSharedPtr<FJsonObject>>& Rows
 		const int64 At = (int64)Num(Row, TEXT("at"));
 		LastCubeAt = FMath::Max(LastCubeAt, At);
 		const FIntVector Where((int32)Num(Row, TEXT("x")), (int32)Num(Row, TEXT("y")), (int32)Num(Row, TEXT("z")));
+		// A push the platform made before a delete can arrive after the uplink brought the delete.
+		if (IsBuried(Where, At)) continue;
 		const FName Kind(*Str(Row, TEXT("kind")));
 		const FString On = Str(Row, TEXT("placed_on"));
 		if (World.Apply(Where, Kind, Str(Row, TEXT("placed_by")), On, At, nullptr) && On != ServerName) Heard.Add({ Where, Kind, Str(Row, TEXT("placed_by")), On });
@@ -157,4 +167,110 @@ void ACubeWorldGameMode::OnLiveRegions(const TArray<TSharedPtr<FJsonObject>>& Ro
 	LiveRows.Sort([](const FCubeRegionRep& A, const FCubeRegionRep& B) { return A.Region < B.Region; });
 	Regions = LiveRows;
 	if (State) State->Regions = LiveRows;
+}
+
+// ── the uplink's data subscription ───────────────────────────────────────────────────────────────
+
+void ACubeWorldGameMode::SubscribeUplinkCubes()
+{
+	UPlayServRooms* Rooms = UPlayServSubsystem::Get() ? UPlayServSubsystem::Get()->GetRooms() : nullptr;
+	if (!Rooms) return;
+	Rooms->OnDataUpdate.RemoveAll(this);
+	Rooms->OnDataSubscribed.RemoveAll(this);
+	Rooms->OnDataUpdate.AddUObject(this, &ACubeWorldGameMode::HandleDataUpdate);
+	Rooms->OnDataSubscribed.AddUObject(this, &ACubeWorldGameMode::HandleDataSubscribed);
+	Rooms->SubscribeData(CubeEntity, TEXT("field:key"));
+}
+
+// The subscription went out, first after the world was loaded, then on every new uplink socket: what changed before
+// it was in place was not heard, so the table is read again.
+void ACubeWorldGameMode::HandleDataSubscribed(const FString& Entity)
+{
+	if (Entity != CubeEntity || bClosing) return;
+	if (CubesSubscribedAt == 0) CubesSubscribedAt = Now();
+	ReconcileCubes();
+}
+
+void ACubeWorldGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
+{
+	if (Update.Entity != CubeEntity || !bServing) return;
+	bCubeUpdatesHeard = true;
+	const TSharedPtr<FJsonObject>& Row = Update.Data;
+	// The block is the row's x, y and z; one that came without them is found by its key, or by the record's id.
+	FIntVector Where;
+	double X = 0, Y = 0, Z = 0;
+	if (Row.IsValid() && Row->TryGetNumberField(TEXT("x"), X) && Row->TryGetNumberField(TEXT("y"), Y) && Row->TryGetNumberField(TEXT("z"), Z)) Where = FIntVector((int32)X, (int32)Y, (int32)Z);
+	else if (!FCubeServerWorld::ParseKey(Str(Row, TEXT("key")), Where) && !FCubeServerWorld::ParseKey(Update.Id, Where)) return;
+	const int64 At = (int64)Num(Row, TEXT("at"));
+	const FString By = Str(Row, TEXT("placed_by")), On = Str(Row, TEXT("placed_on"));
+	if (Update.IsDelete()) { Bury(Where, At, By, On); return; }
+	const FName Kind(*Str(Row, TEXT("kind")));
+	if (Kind == NAME_None) return;
+	if (World.Apply(Where, Kind, By, On, At, nullptr) && On != ServerName) Heard.Add({ Where, Kind, By, On });
+}
+
+/**
+ * The table as it is now, against the blocks this server holds: a block whose row is gone goes back to the terrain,
+ * a row this server did not know of, or knew otherwise, is taken. A block that changed here after the read began is
+ * newer than what the read found, and a write of this server's own still on its way is not in the table yet: both
+ * stay as they are.
+ */
+void ACubeWorldGameMode::ReconcileCubes()
+{
+	if (bReconciling) { bReconcileAgain = true; return; }
+	bReconciling = true;
+	const uint64 AsOf = World.Version;
+	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
+	PlayServ::Data::LoadAll<UWorldCube>(FPlayServFilter::None(), [Weak, AsOf](bool bOk, TArray<UWorldCube*> Rows, const FPlayServError& Error)
+	{
+		if (!Weak.IsValid()) return;
+		ACubeWorldGameMode* Self = Weak.Get();
+		Self->bReconciling = false;
+		if (!bOk)
+		{
+			Self->ServerLog(FString::Printf(TEXT("blocks not read again, trying in 10 s: %s"), *Error.Message));
+			FTimerHandle H;
+			Self->GetWorldTimerManager().SetTimer(H, Self, &ACubeWorldGameMode::ReconcileCubes, 10.f, false);
+		}
+		else if (!Self->bClosing)
+		{
+			TSet<FIntVector> Found;
+			int32 Taken = 0, Gone = 0;
+			for (UWorldCube* Row : Rows)
+			{
+				const FIntVector At(Row->x, Row->y, Row->z);
+				Found.Add(At);
+				const FCubeOverride* Known = Self->World.Overrides.Find(At);
+				if ((Known && Known->Version > AsOf) || Self->IsBuried(At, Row->at)) continue;
+				const FName Kind(*Row->kind);
+				if (Kind == NAME_None || !Self->World.Apply(At, Kind, Row->placed_by, Row->placed_on, Row->at, Row)) continue;
+				Taken++;
+				if (Row->placed_on != Self->ServerName) Self->Heard.Add({ At, Kind, Row->placed_by, Row->placed_on });
+			}
+			for (const FIntVector& At : Self->World.Missing(Found, AsOf))
+			{
+				if (Self->WritesInFlight.Contains(At)) continue;
+				const FCubeOverride Known = Self->World.Overrides.FindChecked(At);
+				Self->Bury(At, Known.At, Known.By, Known.On);
+				Gone++;
+			}
+			Self->ServerLog(FString::Printf(TEXT("blocks read again: %d rows, %d blocks back to the terrain, %d taken from the table"), Rows.Num(), Gone, Taken));
+		}
+		if (Self->bReconcileAgain) { Self->bReconcileAgain = false; Self->ReconcileCubes(); }
+	});
+}
+
+void ACubeWorldGameMode::Bury(const FIntVector& At, int64 RowAt, const FString& By, const FString& On)
+{
+	const FCubeOverride* Known = World.Overrides.Find(At);
+	FCubeTombstone& Tomb = Tombstones.FindOrAdd(At);
+	Tomb.At = FMath::Max3(Tomb.At, RowAt, Known ? Known->At : (int64)0);
+	Tomb.HeardAt = Now();
+	if (World.Forget(At)) Heard.Add({ At, NAME_None, By, On });
+}
+
+bool ACubeWorldGameMode::IsBuried(const FIntVector& At, int64 RowAt) const
+{
+	const FCubeTombstone* Tomb = Tombstones.Find(At);
+	return Tomb && RowAt <= Tomb->At;
 }

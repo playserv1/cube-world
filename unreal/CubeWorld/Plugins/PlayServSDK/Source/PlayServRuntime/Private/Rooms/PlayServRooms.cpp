@@ -324,6 +324,9 @@ void UPlayServRooms::StopHosting()
 		*Tickets = FPlayServAdmissionTable();
 	}
 	Verified.Reset();
+	DataSubscriptions.Reset();
+	DataHeard.Reset();
+	UnknownFrames.Reset();
 	AdmissionMode = EPlayServAdmissionMode::None;
 	bHasRoomConfig = false;
 	UplinkGeneration = 0;
@@ -428,6 +431,13 @@ void UPlayServRooms::HandleUplinkReady(const FPlayServUplinkAck& Ack, int32 Gene
 				SendRosterRepair(*Pair.Value);
 			}
 		}
+		// The platform keeps a data subscription for the socket it came on: a new socket needs every one again. A copy,
+		// since an OnDataSubscribed handler may subscribe or unsubscribe.
+		const TArray<TPair<FString, FString>> Subscriptions = DataSubscriptions.Array();
+		for (const TPair<FString, FString>& Subscription : Subscriptions)
+		{
+			SendDataSubscription(Subscription.Key, Subscription.Value);
+		}
 	}
 
 	if (bHasRoomConfig)
@@ -460,6 +470,24 @@ void UPlayServRooms::HandleUplinkFrame(const FString& Type, const TSharedPtr<FJs
 	if (Type == PlayServRoomsWire::TypeJoinAck)
 	{
 		HandleJoinAck(Frame);
+		return;
+	}
+	if (Type == PlayServRoomsWire::TypeDataUpdate)
+	{
+		HandleDataUpdate(Frame);
+		return;
+	}
+	// The first frame of a type this module does not serve is logged with the reason it gives: a platform that cannot
+	// serve what this server asked for (a data subscription, say) shows here.
+	if (!UnknownFrames.Contains(Type))
+	{
+		UnknownFrames.Add(Type);
+		FString Reason;
+		if (!Frame->TryGetStringField(PlayServRoomsWire::FieldReason, Reason))
+		{
+			Frame->TryGetStringField(TEXT("message"), Reason);
+		}
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: frame '%s' ignored%s%s"), *Type, Reason.IsEmpty() ? TEXT("") : TEXT(": "), *TruncateDetail(Reason));
 		return;
 	}
 	UE_LOG(LogPlayServ, Verbose, TEXT("PlayServ rooms: frame '%s' ignored"), *Type);
@@ -554,6 +582,91 @@ void UPlayServRooms::HandleJoinAck(const TSharedPtr<FJsonObject>& Frame)
 		}
 	}
 	OnPlayerRemoved.Broadcast(RoomName, PlayerId, Reason.IsEmpty() ? FString(PlayServRoomsWire::ReasonReservationInvalid) : Reason);
+}
+
+void UPlayServRooms::SubscribeData(const FString& Entity, const FString& KeyPath)
+{
+	if (Entity.IsEmpty())
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: SubscribeData needs an entity"));
+		return;
+	}
+	DataSubscriptions.Add(Entity, KeyPath);
+	if (!SendDataSubscription(Entity, KeyPath))
+	{
+		UE_LOG(LogPlayServ, Verbose, TEXT("PlayServ rooms: the subscription to %s goes out once the uplink is ready"), *Entity);
+	}
+}
+
+void UPlayServRooms::UnsubscribeData(const FString& Entity)
+{
+	if (DataSubscriptions.Remove(Entity) == 0 || !Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready)
+	{
+		return;
+	}
+	TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+	Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeUnsubscribeData);
+	Frame->SetStringField(PlayServRoomsWire::FieldProjectId, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldClientKey, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldEntity, Entity);
+	Uplink->SendFrame(Frame);
+}
+
+bool UPlayServRooms::SendDataSubscription(const FString& Entity, const FString& KeyPath)
+{
+	if (!Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready)
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+	Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeSubscribeData);
+	Frame->SetStringField(PlayServRoomsWire::FieldProjectId, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldClientKey, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldEntity, Entity);
+	Frame->SetStringField(PlayServRoomsWire::FieldKeyPath, KeyPath);
+	if (!Uplink->SendFrame(Frame))
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: the subscription to %s was not sent; it goes out again on the next uplink socket"), *Entity);
+		return false;
+	}
+	UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: subscribed to %s changes over the uplink (%s)"), *Entity, *KeyPath);
+	OnDataSubscribed.Broadcast(Entity);
+	return true;
+}
+
+void UPlayServRooms::HandleDataUpdate(const TSharedPtr<FJsonObject>& Frame)
+{
+	FPlayServDataUpdate Update;
+	Frame->TryGetStringField(PlayServRoomsWire::FieldEntity, Update.Entity);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldId, Update.Id);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldOp, Update.Op);
+	const TSharedPtr<FJsonObject>* Data = nullptr;
+	if (Frame->TryGetObjectField(PlayServRoomsWire::FieldData, Data))
+	{
+		Update.Data = *Data;
+	}
+	if (Update.Entity.IsEmpty())
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: data_update without an entity ignored"));
+		return;
+	}
+	// The first change of each entity is logged with what it carries: the platform's side of SubscribeData, seen once.
+	if (!DataHeard.Contains(Update.Entity))
+	{
+		DataHeard.Add(Update.Entity);
+		TArray<FString> Fields;
+		if (Update.Data.IsValid())
+		{
+			for (const auto& Field : Update.Data->Values)
+			{
+				Fields.Add(FString(*Field.Key));
+			}
+		}
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: the first %s change arrived over the uplink (op=%s, id=%s, fields: %s)"),
+			*Update.Entity, *Update.Op, *Update.Id, Fields.Num() > 0 ? *FString::Join(Fields, TEXT(", ")) : TEXT("none"));
+	}
+	UE_LOG(LogPlayServ, Verbose, TEXT("PlayServ rooms: data_update %s %s %s"), *Update.Entity, *Update.Op, *Update.Id);
+	OnDataUpdate.Broadcast(Update);
 }
 
 void UPlayServRooms::ApplyRoomConfig(const FPlayServRoomConfig& Config, const TCHAR* Source)

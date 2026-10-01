@@ -368,9 +368,11 @@ void ACubeWorldGameMode::WebBroadcastCubes(const TArray<FCubeChange>& Changes, c
 	TArray<TSharedPtr<FJsonValue>> ChangesJson;
 	for (const FCubeChange& C : Changes)
 	{
+		// A block back to the terrain (its row was deleted) is a delete, as the C# server passes one on.
+		const bool bGenerated = C.Kind == NAME_None;
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("op"), TEXT("upsert"));
-		J->SetObjectField(TEXT("cube"), CubeJson(C.At, C.Kind, C.By, C.On));
+		J->SetStringField(TEXT("op"), bGenerated ? TEXT("delete") : TEXT("upsert"));
+		J->SetObjectField(TEXT("cube"), CubeJson(C.At, bGenerated ? World.Voxels.Generated(C.At.X, C.At.Y, C.At.Z) : C.Kind, C.By, C.On));
 		ChangesJson.Add(MakeShared<FJsonValueObject>(J));
 	}
 	F->SetArrayField(TEXT("changes"), ChangesJson);

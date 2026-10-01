@@ -17,6 +17,8 @@ struct FCubeOverride
 	FName Kind;
 	FString By, On;
 	int64 At = 0;
+	/** The world's Version when this block was last set, heard or written. */
+	uint64 Version = 0;
 	TStrongObjectPtr<UWorldCube> Row;
 };
 
@@ -106,6 +108,8 @@ public:
 	/** The geometry: what is solid where. Kept in step with Overrides. */
 	FCubeVoxelWorld Voxels;
 	TMap<FIntVector, FCubeOverride> Overrides;
+	/** Counts every block set, heard or written: a read of the table knows what changed after it began. */
+	uint64 Version = 0;
 
 	/** The columns of a region: From is its first, To the next region's first. */
 	static bool Inside(int32 X, int32 Y, int32 Z) { return X >= 0 && X < CubeSpec::Width_ && Y >= 0 && Y < CubeSpec::Depth && Z >= CubeSpec::MinZ && Z < CubeSpec::MaxZ; }
@@ -122,8 +126,14 @@ public:
 	bool Apply(const FIntVector& At, FName Kind, const FString& By, const FString& On, int64 When, UWorldCube* Row);
 	/** A change of this server's own that the platform has answered: remember the row. */
 	void Remember(const FIntVector& At, UWorldCube* Row);
-	/** A row that is gone (the region was cleared). */
-	void Forget(const FIntVector& At);
+	/** A write of this block landed: it is in the table from now on. */
+	void Touch(const FIntVector& At);
+	/** A row that is gone (the world was reset, or a region cleared): the block is the generated one again. Returns whether there was one. */
+	bool Forget(const FIntVector& At);
+	/** The blocks held here that a read of the table did not find, leaving out any set, heard or written after Version AsOf. */
+	TArray<FIntVector> Missing(const TSet<FIntVector>& Found, uint64 AsOf) const;
+	/** A row's key, x:y:z, as a block; false when it is not one. */
+	static bool ParseKey(const FString& Key, FIntVector& Out);
 
 	/**
 	 * An explosion as Minecraft's: rays go out from the centre towards every point of a 16 × 16 × 16 cube's surface,

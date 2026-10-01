@@ -46,6 +46,27 @@ DECLARE_DELEGATE_ThreeParams(FPlayServJoinCallback, bool /*bSuccess*/, const FPl
 /** The end of RequestNewRoom: the room, registered and empty — or the platform's typed refusal. */
 DECLARE_DELEGATE_ThreeParams(FPlayServRequestNewRoomCallback, bool /*bSuccess*/, const FPlayServRoomListing& /*Room*/, const FPlayServError& /*Error*/);
 
+/** One change to a record of an entity this server subscribed to with SubscribeData, as the platform sends it. */
+struct FPlayServDataUpdate
+{
+	/** The entity (table) the record belongs to. */
+	FString Entity;
+	/** The record's id, as the platform names it. */
+	FString Id;
+	/** `upsert` or `delete`. */
+	FString Op;
+	/** The record's fields: as written for an upsert, as they were for a delete. Null when the platform sent none. */
+	TSharedPtr<FJsonObject> Data;
+
+	bool IsDelete() const { return Op == TEXT("delete"); }
+};
+
+/** A record of an entity this server subscribed to changed: another server, a function or an operator wrote or deleted it. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FPlayServOnDataUpdate, const FPlayServDataUpdate& /*Update*/);
+
+/** An entity's data subscription went out on the uplink. Changes made while it was not in place are not sent again. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FPlayServOnDataSubscribed, const FString& /*Entity*/);
+
 /**
  * The Rooms module.
  *
@@ -185,6 +206,27 @@ public:
 	/** Bind to veto a ticket the platform offers for one of this server's rooms. Unbound accepts every offer. */
 	FPlayServTicketOfferDecision OnTicketOffer;
 
+	// ---- Hosting: data ----------------------------------------------------------------------
+
+	/**
+	 * Hear every change to an entity's records over the uplink, whoever makes it: another server, a cloud function, an
+	 * operator. Each upsert and each delete arrives in OnDataUpdate. KeyPath is how the platform keys a record,
+	 * `field:<name>` for the field that holds its key. The subscription goes out at once when the uplink is ready,
+	 * else when it becomes ready, and again on every new uplink socket; OnDataSubscribed fires each time it goes out.
+	 * The platform does not send again what changed while no subscription was in place, so a game that must not miss
+	 * a change reads the records again from OnDataSubscribed. A second call for the same entity replaces its key path.
+	 */
+	void SubscribeData(const FString& Entity, const FString& KeyPath);
+
+	/** Stop hearing an entity's changes. */
+	void UnsubscribeData(const FString& Entity);
+
+	/** A record of a subscribed entity changed. Bind before SubscribeData. */
+	FPlayServOnDataUpdate OnDataUpdate;
+
+	/** A data subscription went out on the uplink: at SubscribeData on a ready uplink, and on every new uplink socket. */
+	FPlayServOnDataSubscribed OnDataSubscribed;
+
 	// ---- Joining: client --------------------------------------------------------------------
 
 	/** List a room type's joinable rooms. Needs a client session. Filters and the page cursor are in FPlayServRoomFilters. */
@@ -284,6 +326,9 @@ private:
 	void HandleUplinkRefused(const FString& Reason, bool bPermanent);
 	void HandleTicketOffer(const TSharedPtr<FJsonObject>& Frame);
 	void HandleJoinAck(const TSharedPtr<FJsonObject>& Frame);
+	void HandleDataUpdate(const TSharedPtr<FJsonObject>& Frame);
+	/** Sends one data subscription on the ready uplink and reports it through OnDataSubscribed. */
+	bool SendDataSubscription(const FString& Entity, const FString& KeyPath);
 	void ApplyRoomConfig(const FPlayServRoomConfig& Config, const TCHAR* Source);
 
 	bool TickMaintenance(float DeltaTime);
@@ -363,6 +408,13 @@ private:
 	TMap<FString, FVerifiedTicket> Verified;
 
 	TMap<TWeakObjectPtr<const APlayerController>, FString> AdmittedPlayers;
+
+	/** The entities SubscribeData asked for, and each one's key path; sent again on every new uplink socket. */
+	TMap<FString, FString> DataSubscriptions;
+	/** The entities a data_update has arrived for, so the first one of each is logged. */
+	TSet<FString> DataHeard;
+	/** The uplink frame types this module does not serve that have arrived, so the first of each is logged. */
+	TSet<FString> UnknownFrames;
 
 	TMap<int32, TSharedPtr<FPlayServJoinRound>> Joins;
 	int32 NextJoinId = 1;

@@ -69,9 +69,9 @@ namespace
 		if (!Cube.IsValid()) return;
 		FCubeChangeRep C;
 		C.X = (int16)Num(Cube, TEXT("x")); C.Y = (int16)Num(Cube, TEXT("y")); C.Z = (int16)Num(Cube, TEXT("z"));
-		// A deleted record restores the generated block, which is what "air" over generated air means too; the
-		// voxel world keeps generated blocks under an "air" override, so a delete here is an "air" upsert.
-		C.Kind = bDelete ? CubeSpec::KindIndex(TEXT("air")) : CubeSpec::KindIndex(FName(*Str(Cube, TEXT("kind"))));
+		// A deleted record restores the generated block: a dug-out grass block or a felled log comes back, which an
+		// "air" override would keep dug out.
+		C.Kind = bDelete ? CubeSpec::GeneratedIndex : CubeSpec::KindIndex(FName(*Str(Cube, TEXT("kind"))));
 		C.On = Str(Cube, TEXT("placed_on"));
 		Out.Add(C);
 	}
