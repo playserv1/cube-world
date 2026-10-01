@@ -46,6 +46,9 @@ function tops up each player's blocks once a minute; another drops a bomb on a p
 dotnet test --solution CubeWorld.slnx
 ```
 
+`global.json` runs `dotnet test` on Microsoft.Testing.Platform, which the xunit v3 tests need on the .NET 10 SDK
+(`dotnet run --project CubeWorld.Tests` runs them too).
+
 `PlayServ.Sdk` comes from the PlayServ NuGet feed (`nuget.config`), not from this repository.
 
 ## Run the client locally
