@@ -5,6 +5,8 @@ main { flex: 1; position: relative; overflow: hidden; }
 #view { position: absolute; inset: 0; }
 #view canvas { display: block; image-rendering: pixelated; }
 #banner { position: absolute; top: 12px; left: 12px; padding: 6px 12px; border-radius: 6px; background: rgba(0,0,0,.45); font-weight: 600; }
+/* Before the first server's welcome the banner has nothing to say: no empty box in the corner. */
+#banner:empty { display: none; }
 #crosshair { position: absolute; top: 50%; left: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); pointer-events: none; mix-blend-mode: difference; }
 #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; }
 #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
@@ -55,6 +57,11 @@ h2 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spac
 ul { list-style: none; margin: 0; padding: 0; }
 #servers li { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; margin-bottom: 4px; border-radius: 6px; background: #172433; border-left: 6px solid var(--c, #555); }
 #servers li.current { outline: 2px solid #fff; }
+/* Here and Enter are one size, whichever a room shows. */
+#servers button { min-width: 64px; }
+/* Before signing in there is nothing to list yet. */
+#servers:empty::before, #players:empty::before { content: "Not connected"; color: #8aa0b6; font-size: 13px; }
+#servers li.none { justify-content: flex-start; color: #8aa0b6; background: none; border-left: 0; padding-left: 0; }
 button { font: inherit; color: inherit; background: #1e3a52; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button:hover { background: #26506f; }
 #players li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }

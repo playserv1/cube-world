@@ -20,6 +20,7 @@ const css = readFileSync(join(web, "style.css"), "utf8");
 const config = readFileSync(join(web, "config.js"), "utf8");
 let html = readFileSync(join(web, "index.html"), "utf8");
 html = html.replace('<link rel="stylesheet" href="style.css">', `<style>\n${css}</style>`);
+html = html.replace('href="favicon.svg"', `href="data:image/svg+xml,${encodeURIComponent(readFileSync(join(web, "favicon.svg"), "utf8"))}"`);
 html = html.replace('<script src="config.js"></script>', `<script>\n${config}</script>`);
 html = html.replace('<script type="module" src="app.js"></script>', `<script type="module">\n${app.replace(/<\/script/g, "<\\/script")}</script>`);
 writeFileSync(join(out, "cube-world.html"), html);

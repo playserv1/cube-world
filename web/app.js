@@ -99,9 +99,15 @@ async function refreshServers() {
     li.style.setProperty("--c", SERVER_COLORS[room.room_name.split("-")[0]] || SERVER_COLORS.grey);
     li.innerHTML = `<span>${room.room_name} · ${room.players}/${room.capacity}</span>`;
     const button = document.createElement("button");
-    button.textContent = room.room_name === state.room ? "here" : "enter";
+    button.textContent = room.room_name === state.room ? "Here" : "Enter";
     button.onclick = () => enter(room.room_name).catch(() => {});
     li.append(button);
+    $("servers").append(li);
+  }
+  if (rooms.length === 0) {
+    const li = document.createElement("li");
+    li.className = "none";
+    li.textContent = "No server is running";
     $("servers").append(li);
   }
   return rooms;
