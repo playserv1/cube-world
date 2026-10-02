@@ -397,6 +397,27 @@ bool FCubeWorldPoseOrderTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldPresenceHandOffTest,
+	"CubeWorld.Server.APlayerWhoCrossesIsHandedOverWithoutAGap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// Blue keeps the pose of a player who left it, and red writes them a moment later. A delete of a row of blue's after that
+// (one left over from an older race) takes out nothing; the delete of the server that holds them does (PSV-3018).
+bool FCubeWorldPresenceHandOffTest::RunTest(const FString& Parameters)
+{
+	TMap<FString, FCubeElsewhere> Elsewhere;
+	auto Pose = [](const TCHAR* Server, double X, int64 SeenAt) { FCubeElsewhere E; E.Pose.Id = TEXT("plr_W"); E.Pose.Server = Server; E.Pose.X = X; E.SeenAt = SeenAt; return E; };
+	TestTrue(TEXT("the old server keeps the last pose it saw"), ACubeWorldGameMode::MergePose(Elsewhere, Pose(TEXT("blue"), 24.2, 1000)) == ECubePoseHeard::Taken);
+	TestTrue(TEXT("the next server's first pose takes its place"), ACubeWorldGameMode::MergePose(Elsewhere, Pose(TEXT("red"), 23.9, 1300)) == ECubePoseHeard::Taken);
+	TestFalse(TEXT("a late delete of the old server's row takes out nothing"), ACubeWorldGameMode::DeleteTakesOut(Elsewhere.Find(TEXT("plr_W")), TEXT("blue")));
+	TestTrue(TEXT("the delete of the server that holds them takes them out"), ACubeWorldGameMode::DeleteTakesOut(Elsewhere.Find(TEXT("plr_W")), TEXT("red")));
+	TestTrue(TEXT("so does a delete that names no server"), ACubeWorldGameMode::DeleteTakesOut(Elsewhere.Find(TEXT("plr_W")), FString()));
+	TestFalse(TEXT("a delete of a player nobody knows takes out nothing"), ACubeWorldGameMode::DeleteTakesOut(Elsewhere.Find(TEXT("plr_X")), TEXT("red")));
+	TestEqual(TEXT("the row is kept as long as the C# servers keep theirs"), CubeLeaveGraceMs, (int64)2000);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCubeWorldDoorCloseTest,
 	"CubeWorld.Wire.TheDoorAnswersABareCloseWithANormalOne",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)

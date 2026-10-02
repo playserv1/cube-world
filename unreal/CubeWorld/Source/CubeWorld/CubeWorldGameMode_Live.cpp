@@ -141,8 +141,13 @@ void ACubeWorldGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
 	if (Update.Entity == PresenceEntity)
 	{
 		const FString Id = Str(Update.Data, TEXT("player_id"));
-		// They left, or a server deleted the row as they crossed: gone until their next pose (HearPresence on the C# side).
-		if (Update.IsDelete()) { Elsewhere.Remove(Id.IsEmpty() ? Update.Id : Id); return; }
+		// They left: the server that held them deleted its row (HearPresence on the C# side).
+		if (Update.IsDelete())
+		{
+			const FString Gone = Id.IsEmpty() ? Update.Id : Id;
+			if (DeleteTakesOut(Elsewhere.Find(Gone), Str(Update.Data, TEXT("server")))) Elsewhere.Remove(Gone);
+			return;
+		}
 		if (!Update.Data.IsValid()) return;
 		FCubeElsewhere Pose = ElsewhereOf(Update.Data);
 		if (Pose.Pose.Id.IsEmpty()) Pose.Pose.Id = Update.Id;
@@ -199,6 +204,11 @@ ECubePoseHeard ACubeWorldGameMode::MergePose(TMap<FString, FCubeElsewhere>& Pose
 	const bool bHurt = Known && CubeWasHurt(Known->Pose.Health, Known->SeenAt, Pose.Pose.Health, Pose.SeenAt);
 	Poses.Add(Pose.Pose.Id, Pose);
 	return bHurt ? ECubePoseHeard::Hurt : ECubePoseHeard::Taken;
+}
+
+bool ACubeWorldGameMode::DeleteTakesOut(const FCubeElsewhere* Known, const FString& DeletedRowServer)
+{
+	return Known && (DeletedRowServer.IsEmpty() || Known->Pose.Server == DeletedRowServer);
 }
 
 // A player hurt elsewhere (a hit from here went over as a WorldHit, a fall or a blast happened there) is flashed for

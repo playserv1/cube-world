@@ -93,7 +93,11 @@ public sealed partial class CubeWorldServer
 
     private void HearPresence(WorldPresence pose, bool gone)
     {
-        if (gone) { _elsewhere.TryRemove(pose.player_id, out _); return; }
+        if (gone)
+        {
+            if (WorldPresence.DeleteTakesOut(_elsewhere.GetValueOrDefault(pose.player_id), pose)) _elsewhere.TryRemove(pose.player_id, out _);
+            return;
+        }
         var before = _elsewhere.GetValueOrDefault(pose.player_id);
         _elsewhere[pose.player_id] = pose;
         // A player another server hosts was hurt (a hit from here goes over as a WorldHit, a fall or a blast happens

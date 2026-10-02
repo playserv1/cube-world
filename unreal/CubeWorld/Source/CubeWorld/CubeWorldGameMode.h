@@ -170,6 +170,11 @@ public:
 	 * change on its own, so two writes of a row a moment apart can arrive the other way round.
 	 */
 	static ECubePoseHeard MergePose(TMap<FString, FCubeElsewhere>& Poses, const FCubeElsewhere& Pose);
+	/**
+	 * A presence row was deleted: it takes the player out unless the pose known of them came from another server than
+	 * the one whose row went (a row left over from an older race, while the server that holds them goes on writing).
+	 */
+	static bool DeleteTakesOut(const FCubeElsewhere* Known, const FString& DeletedRowServer);
 	static FCubeHitRecord HitOf(const TSharedPtr<FJsonObject>& Row);
 	static FCubeHitRecord HitOf(const UWorldHit* Row);
 
@@ -283,7 +288,10 @@ private:
 	void WriteCube(const FIntVector& At, int32 Attempt = 0);
 	void WritePresence(FCubeServerPlayer& Player);
 	void WriteInventory(FCubeServerPlayer& Player);
+	/** A player who left: their row goes CubeLeaveGraceMs later, unless another server took them over or they came back. */
 	void DeletePresence(const FString& PlayerId, UWorldPresence* Row);
+	/** A player who leaves this server goes on standing where it last saw them, until the next server's first pose. */
+	void KeepLastPose(const FCubeServerPlayer& Player);
 	void WriteHit(const FString& HitId, const FString& Victim, const FString& Attacker, double Damage, double KX, double KY, double Strength);
 	void WriteRegionClaim(const TFunction<void(bool)>& Done);
 	void ClearRegionAndExit();

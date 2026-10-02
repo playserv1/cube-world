@@ -29,6 +29,37 @@ public class PresenceTests
     }
 
     [Fact]
+    public void A_player_who_left_is_taken_over_by_the_next_server_that_writes_them()
+    {
+        var ours = SpawnOnBlue();
+        ours.seen_at = Now;
+
+        Assert.False(WorldPresence.TakenOver(null, ours));
+        Assert.False(WorldPresence.TakenOver(ours, ours));
+        Assert.True(WorldPresence.TakenOver(SeenOnRed(Now + 300), ours));
+    }
+
+    [Fact]
+    public void A_pose_another_server_wrote_before_the_player_came_here_does_not_take_them_over()
+    {
+        var ours = SpawnOnBlue();
+        ours.seen_at = Now;
+
+        Assert.False(WorldPresence.TakenOver(SeenOnRed(Now - 60_000), ours));
+    }
+
+    [Fact]
+    public void A_delete_takes_out_only_the_pose_of_the_server_whose_row_went()
+    {
+        var heldByRed = SeenOnRed(Now);
+
+        Assert.True(WorldPresence.DeleteTakesOut(heldByRed, SeenOnRed(Now - 100)));
+        Assert.False(WorldPresence.DeleteTakesOut(heldByRed, SpawnOnBlue()));
+        Assert.True(WorldPresence.DeleteTakesOut(heldByRed, new WorldPresence { player_id = "p" }));
+        Assert.False(WorldPresence.DeleteTakesOut(null, SeenOnRed(Now)));
+    }
+
+    [Fact]
     public void A_player_walking_over_a_border_keeps_their_health()
     {
         Assert.Equal(13, WorldPresence.Arriving(SpawnOnBlue(), SeenOnRed(Now - 200), Now).health);

@@ -197,6 +197,8 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 		// A browser's hello names no position: a player walking in over a border stands where their server last saw them.
 		Arrive(*Player, nullptr);
 		Players.Add(Id, Player);
+		// The other servers hear where they stand now, not on the next presence tick after the welcome.
+		WritePresence(*Player);
 		// The door is not an Unreal login, so the engine's PostLogin never tells the SDK: the player is admitted here,
 		// and so is in the room's roster, the admin's player list and within an operator's reach.
 		if (!bOffline) PlayServ::Rooms::AdmitVerified(Verdict);
@@ -227,7 +229,10 @@ void ACubeWorldGameMode::OnWebClosed(int32 Client)
 	if (FCubeServerPlayer* P = PlayerOfWeb(Client)) RemovePlayer(P->Id);
 }
 
-/** A player left, through either door: their dig stops, their presence row goes, the others hear it. */
+/**
+ * A player left, through either door: their dig stops, and their presence row goes once no other server has taken them
+ * over (DeletePresence). Until the next server's first pose they stand where this server last saw them (KeepLastPose).
+ */
 void ACubeWorldGameMode::RemovePlayer(const FString& Id)
 {
 	const TSharedPtr<FCubeServerPlayer>* Found = Players.Find(Id);
@@ -239,6 +244,7 @@ void ACubeWorldGameMode::RemovePlayer(const FString& Id)
 	if (Player->WebClient && !bOffline) PlayServ::Rooms::RemovePlayer(RoomName(), Id);
 	UWorldPresence* Row = Player->PresenceRow.Get();
 	TStrongObjectPtr<UWorldPresence> Keep(Row);
+	KeepLastPose(*Player);
 	Players.Remove(Id);
 	if (Row) DeletePresence(Id, Row);
 	PublishPlayers();

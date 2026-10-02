@@ -447,7 +447,7 @@ void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, boo
 	APlayerController* PC = Cast<APlayerController>(Pawn->GetController());
 	if (Pawn->PlayerId.IsEmpty() && PC) Pawn->PlayerId = PlayServ::Rooms::GetPlayerId(PC);
 	if (Pawn->PlayerId.IsEmpty()) Pawn->PlayerId = FString::Printf(TEXT("local-%s-%d"), *ServerName, ++LocalIds);
-	if (FCubeServerPlayer* Twice = PlayerById(Pawn->PlayerId)) Players.Remove(Twice->Id);
+	if (FCubeServerPlayer* Twice = PlayerById(Pawn->PlayerId)) { KeepLastPose(*Twice); Players.Remove(Twice->Id); }
 
 	TSharedPtr<FCubeServerPlayer> Player = MakeShared<FCubeServerPlayer>();
 	Player->Pawn = Pawn;
@@ -458,6 +458,8 @@ void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, boo
 	Arrive(*Player, bCross ? &Crossed : nullptr);
 	Players.Add(Player->Id, Player);
 	ServerLog(FString::Printf(TEXT("%s %s"), *Player->Name, bCross ? TEXT("crossed in") : TEXT("joined")));
+	// The other servers hear where they stand now, not on the next presence tick after the welcome.
+	WritePresence(*Player);
 	LoadInventoryAndWelcome(Player->Id);
 }
 
@@ -1271,10 +1273,23 @@ void ACubeWorldGameMode::WritePresence(FCubeServerPlayer& P)
 			if (!P) return;
 			P->bPresenceBusy = false;
 			if (bOk) return;
-			// The row is gone (another server took the player over and deleted it): find or make one next time. A refused
-			// version (a read in flight during the write) rights itself on the next read, so the row is kept.
-			if (Error.Code == EPlayServErrorCode::NotFound) P->PresenceRow.Reset();
 			P->bMoved = true;
+			// The row is gone: find or make one next time.
+			if (Error.Code == EPlayServErrorCode::NotFound) { P->PresenceRow.Reset(); return; }
+			// Another writer saved the row since this server read it (the server the player came from, its last pose): the
+			// save carried the old version and was refused, and so would every save after it. The 2 s presence poll used to
+			// read the row again; since the uplink took its place nothing did, and a player stood frozen for the others
+			// until they left (PSV-3018). The row is read again before the next save.
+			if (Error.Code == EPlayServErrorCode::PreconditionFailed && P->PresenceRow.IsValid())
+			{
+				P->bPresenceBusy = true;
+				TStrongObjectPtr<UWorldPresence> Stale(P->PresenceRow.Get());
+				PlayServ::Data::Reload(Stale.Get(), FPlayServSimpleCallback::CreateLambda([Weak, Id, Stale](bool, const FPlayServError&)
+				{
+					if (!Weak.IsValid()) return;
+					if (FCubeServerPlayer* Q = Weak->PlayerById(Id)) { Q->bPresenceBusy = false; Q->bMoved = true; }
+				}));
+			}
 		}));
 	};
 	if (P.PresenceRow.IsValid()) { Write(); return; }
@@ -1289,17 +1304,35 @@ void ACubeWorldGameMode::WritePresence(FCubeServerPlayer& P)
 	});
 }
 
-// A player who left: their row goes, unless another server already took them over (a border crossing).
+/**
+ * A player who left: their row goes a moment later, unless another server took them over meanwhile (a border crossing:
+ * the next server wrote the row) or they came back. The next server's first write can come up to a second after the
+ * leave, later than its hello when the old connection goes first, so the row is not deleted at once (PSV-3018).
+ */
 void ACubeWorldGameMode::DeletePresence(const FString& PlayerId, UWorldPresence* Row)
 {
 	if (bOffline || Row->server != ServerName) return;
 	TStrongObjectPtr<UWorldPresence> Keep(Row);
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::Reload(Row, FPlayServSimpleCallback::CreateLambda([Weak, Keep, PlayerId](bool bOk, const FPlayServError&)
+	FTimerHandle Later;
+	GetWorldTimerManager().SetTimer(Later, FTimerDelegate::CreateWeakLambda(this, [Weak, Keep, PlayerId]()
 	{
-		if (!Weak.IsValid() || !bOk || Keep->server != Weak->ServerName || Weak->Players.Contains(PlayerId)) return;
-		PlayServ::Data::Delete(Keep.Get(), FPlayServSimpleCallback::CreateLambda([Keep](bool, const FPlayServError&) {}));
-	}));
+		PlayServ::Data::Reload(Keep.Get(), FPlayServSimpleCallback::CreateLambda([Weak, Keep, PlayerId](bool bOk, const FPlayServError&)
+		{
+			if (!Weak.IsValid() || !bOk || Keep->server != Weak->ServerName || Weak->Players.Contains(PlayerId)) return;
+			PlayServ::Data::Delete(Keep.Get(), FPlayServSimpleCallback::CreateLambda([Keep](bool, const FPlayServError&) {}));
+		}));
+	}), CubeLeaveGraceMs / 1000.f, false);
+}
+
+// Their pose here stays among the players elsewhere: this server's players go on seeing them where they stood, and if
+// they come straight back (a bounce over the border, a second connection) Arrive finds their position and health.
+void ACubeWorldGameMode::KeepLastPose(const FCubeServerPlayer& P)
+{
+	FCubeElsewhere Last;
+	Last.Pose = PoseOf(P);
+	Last.SeenAt = Now();
+	MergePose(Elsewhere, Last);
 }
 
 void ACubeWorldGameMode::WriteInventory(FCubeServerPlayer& P)

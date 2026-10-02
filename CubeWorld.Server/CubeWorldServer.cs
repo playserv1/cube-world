@@ -187,10 +187,29 @@ public sealed partial class CubeWorldServer : PlatformGameServer
 
     protected override Task OnPlayerDisconnected(PlayerSession session, DisconnectReason reason)
     {
-        if (_players.TryRemove(session.Id, out var player)) lock (_world) StopDig(player);
-        Platform.RuntimeData.Delete(Uplink, "WorldPresence", session.Id);
+        if (_players.TryRemove(session.Id, out var player))
+        {
+            lock (_world) StopDig(player);
+            // They may be crossing, and the next server's first pose is a moment away: until it comes they stand where this
+            // server last saw them, for its players and for the next server, which keeps their position and health. Their
+            // row goes later, if nobody has taken them over by then (PSV-3018).
+            if (!WorldPresence.TakenOver(_elsewhere.GetValueOrDefault(session.Id), player.Pose))
+            {
+                _elsewhere[session.Id] = player.Pose;
+                _ = ForgetUnlessTakenOverAsync(session.Id, player.Pose);
+            }
+        }
         InRoom(room => room.RemovePlayer(session.Id));
         return Task.CompletedTask;
+    }
+
+    /// <summary>A player who left is forgotten a moment later, row and all, unless they came back or another server wrote them.</summary>
+    private async Task ForgetUnlessTakenOverAsync(string id, WorldPresence last)
+    {
+        await Task.Delay(WorldPresence.LeaveGraceMs);
+        if (_players.ContainsKey(id) || WorldPresence.TakenOver(_elsewhere.GetValueOrDefault(id), last)) return;
+        _elsewhere.TryRemove(id, out _);
+        Platform.RuntimeData.Delete(Uplink, "WorldPresence", id);
     }
 
     // ── what the other servers and the functions changed ────────────────────────────────────────────

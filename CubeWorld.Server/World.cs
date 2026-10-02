@@ -52,6 +52,29 @@ public sealed class WorldPresence
     public static bool WasHurt(WorldPresence? before, WorldPresence now) =>
         before is not null && now.health < before.health && now.health > 0 && now.seen_at - before.seen_at is >= 0 and < 5000;
 
+    /// <summary>
+    /// How long a server keeps the row of a player who left before it deletes it. One who crossed is written by the next
+    /// server well within it; a row deleted at once left nobody in the table until then, so every server lost the player
+    /// for up to a second and the next one put them at its spawn with full health (PSV-3018). CubeLeaveGraceMs on the
+    /// Unreal side.
+    /// </summary>
+    public const int LeaveGraceMs = 2000;
+
+    /// <summary>
+    /// The newest pose heard of a player who left this server is another server's, written after this server's last
+    /// one: they crossed, and that server holds them now. A pose another server wrote before they came here does not count.
+    /// </summary>
+    public static bool TakenOver(WorldPresence? heard, WorldPresence ours) =>
+        heard is not null && heard.server != ours.server && heard.seen_at >= ours.seen_at;
+
+    /// <summary>
+    /// A presence row was deleted: it takes the player out unless the pose known of them came from another server than
+    /// the one whose row went (a row left over from an older race, while the server that holds them goes on writing).
+    /// ACubeWorldGameMode::DeleteTakesOut on the Unreal side.
+    /// </summary>
+    public static bool DeleteTakesOut(WorldPresence? known, WorldPresence deleted) =>
+        known is not null && (string.IsNullOrEmpty(deleted.server) || known.server == deleted.server);
+
     /// <summary>How far outside a region the last server may have seen a player who walked in over its border, in blocks.</summary>
     public const double CrossingBand = 4;
 

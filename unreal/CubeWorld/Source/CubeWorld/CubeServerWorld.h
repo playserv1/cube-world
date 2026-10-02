@@ -257,6 +257,14 @@ inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now
 /** How long a pose another server wrote counts: the player is shown, hit and blasted for 5 s after it (Others on the C# side). */
 constexpr int64 CubePresenceTtlMs = 5000;
 
+/**
+ * How long a server keeps the presence row of a player who left before it deletes it. One who crossed is written by the
+ * next server well within it; a row deleted at once left nobody in the table until then, so every server lost the
+ * player for up to a second and the next one put them at its spawn with full health (PSV-3018). WorldPresence.LeaveGraceMs
+ * on the C# side.
+ */
+constexpr int64 CubeLeaveGraceMs = 2000;
+
 /** How long a hit another server wrote can still land (HearHit on the C# side). */
 constexpr int64 CubeHitTtlMs = 5000;
 

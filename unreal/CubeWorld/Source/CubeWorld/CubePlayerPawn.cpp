@@ -177,8 +177,10 @@ void ACubePlayerPawn::SetupUnattended()
 {
 	if (FParse::Param(FCommandLine::Get(), TEXT("autoplay")))
 	{
+		// Bound to this pawn: a crossing can put another pawn in its place within the second, and a timer that still ran
+		// on a destroyed pawn read freed memory (a crash on dev, 2026-10-02, PSV-3018).
 		FTimerHandle Handle;
-		GetWorldTimerManager().SetTimer(Handle, [this]() { if (Game) Game->StartPlay(Game->PlayerName); }, 1.f, false);
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, [this]() { if (Game) Game->StartPlay(Game->PlayerName); }), 1.f, false);
 	}
 	float Seconds = 0;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-screenshot="), Seconds) && Seconds > 0)
