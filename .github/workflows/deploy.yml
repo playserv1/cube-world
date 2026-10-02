@@ -95,6 +95,9 @@ on:
       - 'CubeWorld.Refill/**'
       - 'nuget.config'
       - '.github/workflows/deploy.yml'
+  # A PlayServ.Sdk release with no change here: run this workflow by hand on the branch.
+  # The servers float on 1.0.0-dev.*, so the image built now takes the newest SDK.
+  workflow_dispatch:
 
 # One deploy at a time per repo: two pushes must never roll a pool at once, and two
 # branches bound to the same env would otherwise race on a first registration.
@@ -241,6 +244,8 @@ jobs:
 
           # ── 6. game servers: first push registers, later pushes roll the pool's image
           tag="${GITHUB_SHA::12}"
+          # A manual run rebuilds the same commit: give its image a tag of its own.
+          [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && tag="$tag-r$GITHUB_RUN_NUMBER"
           room_config='{"capacity":16,"reservation_ttl_seconds":20,"room_lifetime_seconds":2592000,"max_rooms":20}'
           for entry in "${servers[@]}"; do
             slug=${entry%%|*}
