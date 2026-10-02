@@ -76,6 +76,8 @@ struct FCubeServerPlayer
 	int64 CorrectionLoggedAt = 0;
 	int64 LastAttackTick = -1000000, LastHurtTick = -1000000;
 	TOptional<FCubeDig> Dig;
+	/** When the player stepped out of this server's region (ms); 0 while they stand in it. */
+	int64 OutsideSince = 0;
 	/** The bomb in the player's hand. A player holds one at a time and can only throw it. */
 	FString Bomb;
 	FCubeInventory Inventory;
@@ -241,8 +243,14 @@ private:
 	void SendRespawn(FCubeServerPlayer& Player);
 	/** A move too far for the time it took: the player is put back where their last good move left them. */
 	void Correct(FCubeServerPlayer& Player, double X, double Y, double Z);
-	/** The player stands in this server's region or just past its border, or in a region no other server holds. */
+	/** This server digs, places and hands out bombs for the player (CubeServes). */
 	bool InThisRegion(const FCubeServerPlayer& Player) const;
+	/** The block is in this server's region or in another live server's (CubeServesBlock). */
+	bool ServesBlock(int32 X, int32 Y) const;
+	/** The regions other live servers hold now. */
+	TArray<int32> HeldElsewhere() const;
+	/** When the player stepped out of this server's region; 0 while they stand in it. */
+	void NoteWhere(FCubeServerPlayer& Player);
 	void RemovePlayer(const FString& Id);
 	void BroadcastDig(const FString& PlayerId, int32 X, int32 Y, int32 Z, int32 Stage);
 	void BroadcastHurt(const FString& PlayerId, double Health, double KX, double KY, double Strength, const FString& By);

@@ -438,6 +438,7 @@ void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 	}
 	if (bHeard || HelloPos) P.LastAttackTick = TickCount;
 	P.Moves.Arrive(P.X, P.Y, P.Z, Region, Now());
+	NoteWhere(P);
 }
 
 void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, bool bCross, double X, double Y, double Z)
@@ -744,6 +745,7 @@ void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double
 	P->Yaw = Yaw; P->Pitch = Pitch;
 	P->bSneaking = bSneaking; P->bSprinting = bSprinting;
 	P->bMoved = true;
+	NoteWhere(*P);
 
 	// Fall damage, from the height reached since the player last stood on the ground (on this server or, over a border,
 	// the one before: the client says its own peak).
@@ -758,7 +760,7 @@ void ACubeWorldGameMode::OnDig(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, 
 	if (!bStart || P->bDead) return;
 	const FBlockDef& Block = World.BlockAt(X, Y, Z);
 	const double Ex = P->X, Ey = P->Y, Ez = P->Z + EyeHeightOf(P->bSneaking);
-	if (!FCubeServerWorld::Inside(X, Y, Z) || !Block.IsSolid() || !Block.IsBreakable() || !InThisRegion(*P)
+	if (!FCubeServerWorld::Inside(X, Y, Z) || !Block.IsSolid() || !Block.IsBreakable() || !InThisRegion(*P) || !ServesBlock(X, Y)
 		|| FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) > CubeSpec::BlockReach + CubeSpec::ReachTolerance) return;
 	P->Dig = FCubeDig{ X, Y, Z, TickCount, Block.BreakTicks, 0 };
 	BroadcastDig(P->Id, X, Y, Z, 0);
@@ -768,7 +770,7 @@ void ACubeWorldGameMode::OnPlace(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z
 {
 	if (!P || P->bDead) return;
 	const double Ex = P->X, Ey = P->Y, Ez = P->Z + EyeHeightOf(P->bSneaking);
-	const bool bReachable = FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) <= CubeSpec::BlockReach + CubeSpec::ReachTolerance && InThisRegion(*P);
+	const bool bReachable = FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) <= CubeSpec::BlockReach + CubeSpec::ReachTolerance && InThisRegion(*P) && ServesBlock(X + NX, Y + NY);
 	FCubeWorldUpdate Update;
 	const bool bPlaced = bReachable && P->Inventory.Count(Kind) > 0 && World.Place(X, Y, Z, NX, NY, NZ, Kind, P->Id, ServerName, Hitboxes(), Update);
 	if (!bPlaced) { SendInventory(*P, true); return; }
@@ -777,13 +779,31 @@ void ACubeWorldGameMode::OnPlace(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z
 	Publish(Update);
 }
 
-// A server digs and places only for the players in its region: one standing anywhere else edits through that region's
-// server. The C# servers' InThisRegion.
+// A server digs, places and hands out bombs only for the players in its region, or just over its border into a live
+// server's region (CubeServes): one who stays here in a region whose room did not let them in, or that no live server
+// holds, can only walk there. The C# servers' InThisRegion.
 bool ACubeWorldGameMode::InThisRegion(const FCubeServerPlayer& P) const
 {
-	if (CubeNear(Region, P.X, P.Y, CubeSpec::BorderSlack)) return true;
-	const int32 There = CubeSpec::RegionOf(P.X, P.Y);
-	return !Regions.ContainsByPredicate([&](const FCubeRegionRep& R) { return R.Region == There && R.Server != ServerName; });
+	return CubeServes(Region, P.X, P.Y, P.OutsideSince > 0 ? Now() - P.OutsideSince : 0, HeldElsewhere());
+}
+
+bool ACubeWorldGameMode::ServesBlock(int32 X, int32 Y) const
+{
+	return CubeServesBlock(Region, X, Y, HeldElsewhere());
+}
+
+TArray<int32> ACubeWorldGameMode::HeldElsewhere() const
+{
+	TArray<int32> Held;
+	for (const FCubeRegionRep& R : Regions)
+		if (R.Region != Region) Held.Add(R.Region);   // by region, not server name: every offline server is "offline"
+	return Held;
+}
+
+void ACubeWorldGameMode::NoteWhere(FCubeServerPlayer& P)
+{
+	if (CubeNear(Region, P.X, P.Y, 0)) P.OutsideSince = 0;
+	else if (P.OutsideSince == 0) P.OutsideSince = Now();
 }
 
 /** A hit on whoever is within reach: a player on this server, or one another server hosts. */
@@ -988,7 +1008,7 @@ void ACubeWorldGameMode::TickBombs()
 				const double Reach = CubeSpec::Width / 2 + CubeSpec::PickupReach;
 				const bool bNear = FMath::Abs(Bomb.X - Box.X) <= Reach && FMath::Abs(Bomb.Y - Box.Y) <= Reach
 					&& Live->Z >= Box.Z - CubeSpec::PickupReachUp && Live->Z <= Box.Z + Box.Height + CubeSpec::PickupReachUp;
-				if (P.bWelcomed && !P.bDead && P.Bomb.IsEmpty() && bNear)
+				if (P.bWelcomed && !P.bDead && P.Bomb.IsEmpty() && bNear && InThisRegion(P))
 				{
 					ShareBomb(Next(Bomb, TEXT("held"), P.Id, Bomb.X, Bomb.Y, Live->Z), false);
 					break;
@@ -1034,7 +1054,8 @@ void ACubeWorldGameMode::TickBombs()
 
 void ACubeWorldGameMode::OnThrow(FCubeServerPlayer* P, double DX, double DY, double DZ)
 {
-	if (!P || P->bDead || P->Bomb.IsEmpty()) return;
+	// A player past the border whose next room did not let them in keeps the bomb in the hand until they walk back.
+	if (!P || P->bDead || P->Bomb.IsEmpty() || !InThisRegion(*P)) return;
 	const FString Id = P->Bomb;
 	P->Bomb.Empty();
 	const FCubeLiveBomb* Live = Bombs.Find(Id);

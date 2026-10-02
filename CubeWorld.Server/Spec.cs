@@ -29,6 +29,14 @@ public static class Spec
     public const double BorderSlack = 6.0;
 
     /// <summary>
+    /// How long a player may stand past the border, in a region another server holds, and still dig, place and pick up
+    /// bombs through the old server: a crossing that works is done by then. One who is still with the old server after
+    /// that was not let into the next room (its server is down, or the room refuses them): they can walk there, nothing
+    /// more. The client gives up on a crossing after 10 s.
+    /// </summary>
+    public const long CrossingMs = 5000;
+
+    /// <summary>
     /// A client walks itself (SPEC "Server authority"), but no faster than MoveSpeed blocks a second, counted
     /// horizontally plus upward (a fall is free, it reaches 78 m/s): a sprint-jump averages 7.1. Unspent, the allowance
     /// holds up to MoveBurst, for the network's jitter and a crossing's first move; a hit's knockback adds

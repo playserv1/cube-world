@@ -93,8 +93,11 @@ move, and a hit's knockback adds 12 blocks per unit of strength. A move past tha
 `correct` (`seq`, `x`, `y`, `z`, where the last good move left the player), the client goes there, and every
 later `move` carries that `seq`, so the server drops the moves sent before the client heard of it. A client
 that sends no `seq` cannot take a correction, and after a second of refusals it is taken where it says. A
-server digs and places only for a player in its region or within 6 blocks of its border, or in a region no
-other server holds.
+server digs, places and hands out and throws bombs only for a player in its region, or within 6 blocks of its
+border in a region another live server holds, and there only for the 5 s a crossing takes. A player who stays
+with the old server past the border, because the next room did not let them in or no live server holds that
+region, can only walk there. A block is dug or placed only in the server's own region or in one another live
+server holds.
 
 ## Where this world differs, on purpose
 

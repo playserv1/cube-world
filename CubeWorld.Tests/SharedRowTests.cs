@@ -96,6 +96,30 @@ public class SharedRowTests
     }
 
     [Fact]
+    public void A_player_past_the_border_whose_next_room_is_not_up_can_only_walk_there()
+    {
+        // Region 3, yellow: x 0..24, y 24..48; region 4, purple, beside it: x 24..48.
+        int[] purpleUp = [4], nobodyElse = [];
+        Assert.True(World.Serves(3, 12, 36, 0, nobodyElse));
+        Assert.True(World.Serves(3, 12, 36, 60_000, nobodyElse));
+        // Crossing into a live purple: the old server edits for the moment the crossing takes.
+        Assert.True(World.Serves(3, 26.5, 36, 0, purpleUp));
+        Assert.True(World.Serves(3, 26.5, 36, Spec.CrossingMs, purpleUp));
+        // Purple's room did not let them in: they stay with yellow and can only walk.
+        Assert.False(World.Serves(3, 26.5, 36, Spec.CrossingMs + 1, purpleUp));
+        // No live server holds purple: not even for a moment.
+        Assert.False(World.Serves(3, 26.5, 36, 0, nobodyElse));
+        Assert.False(World.Serves(3, 31.5, 36, 0, purpleUp));
+        Assert.False(World.Serves(-1, 12, 36, 0, purpleUp));
+
+        // Blocks: yellow's own, or a live server's region; a region nobody holds keeps its blocks.
+        Assert.True(World.ServesBlock(3, 23, 36, nobodyElse));
+        Assert.True(World.ServesBlock(3, 24, 36, purpleUp));
+        Assert.False(World.ServesBlock(3, 24, 36, nobodyElse));
+        Assert.False(World.ServesBlock(-1, 23, 36, nobodyElse));
+    }
+
+    [Fact]
     public void A_player_another_server_hosts_shows_hurt_when_their_health_drops_between_two_fresh_poses()
     {
         var before = new WorldPresence { player_id = "v", health = 17, seen_at = 10_000 };

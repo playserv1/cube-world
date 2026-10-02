@@ -297,7 +297,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
 
 // A bot on red stood in purple without crossing and dug and placed there (PSV-2979): a server edits the world for a
-// player in its region or a crossing's step past its border (InThisRegion, which also lets a region nobody holds through).
+// player in its region or a crossing's step past its border (InThisRegion).
 bool FCubeWorldEditRegionTest::RunTest(const FString& Parameters)
 {
 	const int32 Blue = 1;   // x in [24, 48), y in [0, 24)
@@ -306,6 +306,32 @@ bool FCubeWorldEditRegionTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("deep in green"), CubeNear(Blue, 60, 10, CubeSpec::BorderSlack));
 	TestFalse(TEXT("in purple, the other row"), CubeNear(Blue, 30, 40, CubeSpec::BorderSlack));
 	TestFalse(TEXT("a server with no region is near none"), CubeNear(-1, 30, 10, CubeSpec::BorderSlack));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldStuckPastBorderTest,
+	"CubeWorld.Rules.APlayerWhoseNextRoomIsNotUpCanOnlyWalkThere",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A player who walked over a border into a room that was down stayed with the old server and dug, placed and took bombs
+// there: past the border the old server serves them only for a crossing's moment, and only into a live server's region.
+bool FCubeWorldStuckPastBorderTest::RunTest(const FString& Parameters)
+{
+	const int32 Yellow = 3;   // x in [0, 24), y in [24, 48); purple, 4, is beside it
+	const TArray<int32> PurpleUp = { 4 }, NobodyElse;
+	TestTrue(TEXT("in its region"), CubeServes(Yellow, 12, 36, 0, NobodyElse));
+	TestTrue(TEXT("in its region, however long"), CubeServes(Yellow, 12, 36, 60000, NobodyElse));
+	TestTrue(TEXT("crossing into a live purple"), CubeServes(Yellow, 26.5, 36, 0, PurpleUp));
+	TestTrue(TEXT("crossing into a live purple, at the end of the moment"), CubeServes(Yellow, 26.5, 36, CubeSpec::CrossingMs, PurpleUp));
+	TestFalse(TEXT("purple's room did not let them in"), CubeServes(Yellow, 26.5, 36, CubeSpec::CrossingMs + 1, PurpleUp));
+	TestFalse(TEXT("no live server holds purple"), CubeServes(Yellow, 26.5, 36, 0, NobodyElse));
+	TestFalse(TEXT("deep in purple"), CubeServes(Yellow, 31.5, 36, 0, PurpleUp));
+	TestFalse(TEXT("a server with no region"), CubeServes(-1, 12, 36, 0, PurpleUp));
+	TestTrue(TEXT("a block of its own"), CubeServesBlock(Yellow, 23, 36, NobodyElse));
+	TestTrue(TEXT("a block of a live purple"), CubeServesBlock(Yellow, 24, 36, PurpleUp));
+	TestFalse(TEXT("a block of a purple nobody holds"), CubeServesBlock(Yellow, 24, 36, NobodyElse));
+	TestFalse(TEXT("a server with no region, a block of nobody's"), CubeServesBlock(-1, 23, 36, NobodyElse));
 	return true;
 }
 

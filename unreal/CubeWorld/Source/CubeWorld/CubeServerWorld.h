@@ -228,6 +228,29 @@ inline bool CubeNear(int32 Region, double X, double Y, double Slack)
 	return X >= X0 - Slack && X <= X1 + Slack && Y >= Y0 - Slack && Y <= Y1 + Slack;
 }
 
+/**
+ * Whether the server of Region changes the world for a player at (X, Y) who has been outside its region for OutsideMs:
+ * digs, placements, bombs picked up and thrown. In its region, yes. Just past its border, in a region another live server
+ * holds (HeldElsewhere), only for the moment a crossing takes. Anywhere else no: a player who stays with the old server
+ * because the next room did not let them in, or who walked into a region no live server holds, can only walk there.
+ * World.Serves on the C# side.
+ */
+inline bool CubeServes(int32 Region, double X, double Y, int64 OutsideMs, const TArray<int32>& HeldElsewhere)
+{
+	return CubeNear(Region, X, Y, 0)
+		|| (CubeNear(Region, X, Y, CubeSpec::BorderSlack) && OutsideMs <= CubeSpec::CrossingMs && HeldElsewhere.Contains(CubeSpec::RegionOf(X, Y)));
+}
+
+/**
+ * Whether the server of Region may change the block at (X, Y): one of its own region, or of a region another live server
+ * holds. A region no live server holds keeps its blocks until a server claims it. World.ServesBlock on the C# side.
+ */
+inline bool CubeServesBlock(int32 Region, int32 X, int32 Y, const TArray<int32>& HeldElsewhere)
+{
+	const int32 There = CubeSpec::RegionOf(X + 0.5, Y + 0.5);
+	return (Region >= 0 && There == Region) || HeldElsewhere.Contains(There);
+}
+
 /** A player another server saw is the one walking in over the border when it saw them in the last 5 s, alive (World.Arriving on the C# side). */
 inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now - SeenAt < 5000 && Health > 0; }
 

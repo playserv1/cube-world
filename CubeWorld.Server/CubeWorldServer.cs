@@ -155,6 +155,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
         // A crossing takes the hand's charge with it, so a player cannot cross for a full-strength hit.
         if (!ReferenceEquals(player.Pose, spawn)) player.LastAttackTick = _tick;
         player.Moves.Arrive(player.Pose.x, player.Pose.y, player.Pose.z, _region, Now);
+        NoteWhere(player);
 
         _players[session.Id] = player;
         // A row heard while the read was out is newer than what the read returned; one heard from now on finds the player.

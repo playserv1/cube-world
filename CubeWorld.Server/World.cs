@@ -270,6 +270,27 @@ public sealed class World
         return x >= x0 - slack && x <= x1 + slack && y >= y0 - slack && y <= y1 + slack;
     }
 
+    /// <summary>
+    /// Whether the server of <paramref name="region"/> changes the world for a player standing at x, y, who has been
+    /// outside its region for <paramref name="outsideMs"/>: digs, placements, bombs picked up and thrown. In its region,
+    /// yes. Just past its border, in a region another live server holds (<paramref name="heldElsewhere"/>), only for the
+    /// moment a crossing takes. Anywhere else no: a player who stays with the old server because the next room did not
+    /// let them in, or who walked into a region no live server holds, can only walk there.
+    /// </summary>
+    public static bool Serves(int region, double x, double y, long outsideMs, IReadOnlyCollection<int> heldElsewhere) =>
+        Near(region, x, y, 0)
+        || (Near(region, x, y, Spec.BorderSlack) && outsideMs <= Spec.CrossingMs && heldElsewhere.Contains(RegionOf(x, y)));
+
+    /// <summary>
+    /// Whether the server of <paramref name="region"/> may change the block at x, y: one of its own region, or of a region
+    /// another live server holds. A region no live server holds keeps its blocks until a server claims it.
+    /// </summary>
+    public static bool ServesBlock(int region, int x, int y, IReadOnlyCollection<int> heldElsewhere)
+    {
+        var there = RegionOf(x + 0.5, y + 0.5);
+        return (region >= 0 && there == region) || heldElsewhere.Contains(there);
+    }
+
     /// <summary>Where a region's players spawn: its middle.</summary>
     public static (double X, double Y) Centre(int region) => ((region % Columns + 0.5) * RegionSize, (region / Columns + 0.5) * RegionSize);
 

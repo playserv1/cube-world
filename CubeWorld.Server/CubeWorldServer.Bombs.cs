@@ -48,7 +48,7 @@ public sealed partial class CubeWorldServer
         live.Z = Bomb.Descend(_world, bomb.x, bomb.y, live.Z);
         if (World.RegionOf(bomb.x, bomb.y) != _region) return;
 
-        var taker = _players.Values.FirstOrDefault(p => !p.Dead && p.Bomb is null
+        var taker = _players.Values.FirstOrDefault(p => !p.Dead && p.Bomb is null && InThisRegion(p)
                                                         && Bomb.InPickupReach(HitboxOf(p.Pose), bomb.x, bomb.y, live.Z));
         if (taker is not null)
             Share(Next(bomb, Bomb.Held, taker.Pose.player_id, bomb.x, bomb.y, live.Z), owned: false);
@@ -65,7 +65,8 @@ public sealed partial class CubeWorldServer
 
     private void Throw(Player player, Command command)
     {
-        if (player.Dead || player.Bomb is not { } id) return;
+        // A player past the border whose next room did not let them in keeps the bomb in the hand until they walk back.
+        if (player.Dead || player.Bomb is not { } id || !InThisRegion(player)) return;
         player.Bomb = null;
         if (!_bombs.TryGetValue(id, out var live) || live.Record.state != Bomb.Held || live.Record.holder != player.Pose.player_id) return;
 

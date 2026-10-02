@@ -73,6 +73,7 @@ public sealed partial class CubeWorldServer
         pose.sneaking = command.sneaking ? 1 : 0;
         pose.sprinting = command.sprinting ? 1 : 0;
         player.Moved = true;
+        NoteWhere(player);
 
         // Fall damage, from the height reached since the player last stood on the ground (on this server or, over a
         // border, the one before: the client says its own peak).
@@ -100,7 +101,8 @@ public sealed partial class CubeWorldServer
 
         var (x, y, z) = command.Block;
         var block = _world.BlockAt(x, y, z);
-        if (!World.Inside(x, y, z) || !block.Solid || !block.Breakable || !CanReach(player, x, y, z) || !InThisRegion(player)) return;
+        if (!World.Inside(x, y, z) || !block.Solid || !block.Breakable || !CanReach(player, x, y, z) || !InThisRegion(player)
+            || !ServesBlock(x, y)) return;
 
         player.Dig = new DigState(x, y, z, _tick, block.BreakTicks);
         ShowCrack(player, player.Dig, stage: 0);
@@ -154,7 +156,7 @@ public sealed partial class CubeWorldServer
         var (x, y, z) = command.Block;
         // The Unreal client names stone "Stone" (its FName): every kind goes on under its own name.
         var kind = Spec.Canonical(command.kind ?? "");
-        var update = CanReach(player, x, y, z) && InThisRegion(player) && player.Inventory.Count(kind) > 0
+        var update = CanReach(player, x, y, z) && InThisRegion(player) && ServesBlock(x + command.nx, y + command.ny) && player.Inventory.Count(kind) > 0
             ? _world.Place(x, y, z, command.nx, command.ny, command.nz, kind, player.Pose.player_id, _server, EveryoneAlive().Select(HitboxOf))
             : null;
 
@@ -315,15 +317,25 @@ public sealed partial class CubeWorldServer
     }
 
     /// <summary>
-    /// The player stands in this server's region, or just past its border (the crossing to the next server takes a
-    /// moment), or in a region no server holds now (a player stays with the old server there): only then does this
-    /// server edit the world for them. Anywhere else the region's own server does.
+    /// This server digs, places and hands out bombs for the player only while they stand in its region, or have just
+    /// stepped over its border into a live server's region (World.Serves). A player who stays with this server in a
+    /// region whose room did not let them in, or that no live server holds, can only walk there.
     /// </summary>
-    private bool InThisRegion(Player player)
+    private bool InThisRegion(Player player) =>
+        World.Serves(_region, player.Pose.x, player.Pose.y, player.OutsideSince is { } since ? Now - since : 0, HeldElsewhere());
+
+    /// <summary>The block is in this server's region or in another live server's (World.ServesBlock).</summary>
+    private bool ServesBlock(int x, int y) => World.ServesBlock(_region, x, y, HeldElsewhere());
+
+    /// <summary>The regions other live servers hold now.</summary>
+    private int[] HeldElsewhere() =>
+        _regions.Select(r => int.TryParse(r.region, out var n) ? n : -1).Where(n => n >= 0 && n != _region).ToArray();
+
+    /// <summary>When the player stepped out of this server's region; null while they stand in it.</summary>
+    private void NoteWhere(Player player)
     {
-        if (World.Near(_region, player.Pose.x, player.Pose.y, Spec.BorderSlack)) return true;
-        var there = World.RegionOf(player.Pose.x, player.Pose.y).ToString();
-        return !_regions.Any(r => r.region == there && r.server != _server);
+        if (World.Near(_region, player.Pose.x, player.Pose.y, 0)) player.OutsideSince = null;
+        else player.OutsideSince ??= Now;
     }
 
     private static (double x, double y, double z) Eye(Player player) => (player.Pose.x, player.Pose.y, player.Pose.z + EyeHeightOf(player.Pose));
@@ -346,6 +358,8 @@ public sealed partial class CubeWorldServer
         public long LastAttackTick { get; set; } = long.MinValue / 2;
         public long LastHurtTick { get; set; } = long.MinValue / 2;
         public DigState? Dig { get; set; }
+        /// <summary>When the player stepped out of this server's region (ms); null while they stand in it.</summary>
+        public long? OutsideSince { get; set; }
         /// <summary>The bomb in the player's hand. A player holds one at a time and can only throw it.</summary>
         public string? Bomb { get; set; }
     }

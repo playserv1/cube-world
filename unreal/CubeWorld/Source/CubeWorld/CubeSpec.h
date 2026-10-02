@@ -25,6 +25,10 @@ namespace CubeSpec
 	// network's jitter and a crossing's first move; a hit's knockback adds KnockbackReach per unit of strength
 	// (FCubeMoveCheck, Spec.cs). A server digs and places only for a player within BorderSlack of its region.
 	constexpr double MoveSpeed = 10, MoveBurst = 12, MoveSlack = 1, KnockbackReach = 12, BorderSlack = 6.0;
+	// How long a player past the border, in a region another server holds, still digs, places and takes bombs through
+	// the old server: a crossing that works is done by then. One still with the old server after that was not let into
+	// the next room, and can only walk there (CubeServes, Spec.CrossingMs). The client gives up on a crossing after 10 s.
+	constexpr int64 CrossingMs = 5000;
 	constexpr double MaxHealth = 20, KnockbackLift = 0.4, Push = 0.05;
 	constexpr int32 HurtTicks = 10, DigCooldownTicks = 5;
 	// Field of view 70° is Minecraft's VERTICAL angle (Options); Unreal's camera takes the horizontal one, so
