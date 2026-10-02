@@ -29,10 +29,25 @@ public sealed class WorldPresence
     public long seen_at { get; set; }
 }
 
-/// Every minute: 4 bombs, one every 15 seconds. At most 5 lie free.
+/// Only what this function reads of a region: which one it is and when its server last said it holds it.
+[EntityName("WorldRegion")]
+public sealed class WorldRegion
+{
+    public string region { get; set; } = "";
+    public long seen_at { get; set; }
+}
+
+/// Every minute: two bombs over every region a server holds, that is over every room. At most five lie free in a region.
 public sealed class DropBombs : PlatformFunction<object>
 {
-    private const int BombsPerRun = 4, MaxFreeBombs = 5, PageSize = 200;
+    public const int BombsPerRegion = 2, MaxFreeBombs = 5;
+    private const int PageSize = 200;
+
+    /// The world's regions, as CubeWorld.Server's World lays them out: 24 × 24 blocks, three to a row, two rows.
+    public const int RegionSize = 24, Columns = 3, Regions = 6;
+
+    /// A region whose server has not said it holds it for this long has no room: the servers read it the same way.
+    public const long RegionGoneMs = 30_000;
 
     /// A held bomb whose holder no server has seen for this long: the player left with it, and it goes up in smoke.
     public const long HolderGoneMs = 60_000;
@@ -40,30 +55,38 @@ public sealed class DropBombs : PlatformFunction<object>
     /// A thrown bomb flies 200 ticks (10 s) at most: one still flying after this long lost its thrower's server.
     public const long FlightLostMs = 30_000;
 
+    /// A presence row can be missing for a moment while a player crosses from one server to the next, so a holder
+    /// with no row at all is looked up once more after this long before their bomb goes up in smoke.
+    private static readonly TimeSpan CrossingGrace = TimeSpan.FromSeconds(5);
+
     private ITable<WorldBomb> WorldBombs => Platform.Table<WorldBomb>();
     private ITable<WorldPresence> Presences => Platform.Table<WorldPresence>();
+    private ITable<WorldRegion> WorldRegions => Platform.Table<WorldRegion>();
 
     private static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     protected override async Task<FunctionResponse> HandleAsync(object _, CancellationToken ct)
     {
-        var suspects = new HashSet<string>();
-        for (var i = 0; i < BombsPerRun; i++)
+        var bombs = await LoadBombs(ct);
+
+        await ForgetFinishedBombs(bombs, ct);
+        await FizzleLostBombs(bombs, ct);
+
+        var regions = LiveRegions((await WorldRegions.Query().ToListAsync(ct)).Select(r => r.Fields).OfType<WorldRegion>(), Now);
+        foreach (var region in regions)
         {
-            if (i > 0)
+            foreach (var old in OldestFreeToFizzle(bombs.Select(b => Furthest(b.Select(r => r.Fields!))), region))
             {
-                await Task.Delay(TimeSpan.FromSeconds(15), ct);
+                await WorldBombs.CreateAsync(Bomb(old.bomb_id, "fizzled", null, old.x, old.y, old.dropped_at, Now), ct);
             }
-
-            var bombs = await LoadBombs(ct);
-
-            await ForgetFinishedBombs(bombs, ct);
-            await FizzleLostBombs(bombs, suspects, ct);
-            await FizzleOldestFreeBombs(bombs, ct);
-            await DropNewBomb(ct);
+            foreach (var (x, y) in Spots(region, Random.Shared))
+            {
+                var now = Now;
+                await WorldBombs.CreateAsync(Bomb($"drop-{now}-{region}-{x}-{y}", "free", null, x, y, now, now), ct);
+            }
         }
 
-        return FunctionResponse.Json(new { ok = true });
+        return FunctionResponse.Json(new { ok = true, regions, dropped = regions.Count * BombsPerRegion });
     }
 
     /// Every bomb with all its rows (this function writes the first one, the servers add theirs as it is picked up and
@@ -96,32 +119,41 @@ public sealed class DropBombs : PlatformFunction<object>
     /// <summary>
     /// A bomb in the hand of a player who left the game, or still flying long after any throw would have landed: it
     /// goes up in smoke. A held bomb is kept through a border crossing (the next server hands it back), so only a
-    /// holder no server has seen for a minute counts as gone, and only when they are still gone 15 s later (the next
-    /// drop of this run): a presence row can be missing for a moment while a player crosses from one server to the next.
+    /// holder no server has seen for a minute counts as gone, and a holder with no presence row at all only when the
+    /// row is still missing <see cref="CrossingGrace"/> later.
     /// </summary>
-    private async Task FizzleLostBombs(List<BombRows> bombs, HashSet<string> suspects, CancellationToken ct)
+    private async Task FizzleLostBombs(List<BombRows> bombs, CancellationToken ct)
     {
+        var lost = new List<WorldBomb>();
+        var missing = new List<WorldBomb>();
         foreach (var bomb in bombs)
         {
             var now = Now;
             var furthest = Furthest(bomb.Select(r => r.Fields!));
-            var lost = furthest.state switch
+            if (furthest.state == "flying" && now - furthest.at > FlightLostMs)
             {
-                "flying" => now - furthest.at > FlightLostMs,
-                "held" => now - furthest.at > HolderGoneMs && HolderGone(await LastSeen(furthest.holder, ct), now),
-                _ => false,
-            };
-            if (!lost)
-            {
-                suspects.Remove(furthest.bomb_id);
-                continue;
+                lost.Add(furthest);
             }
-            if (furthest.state == "held" && suspects.Add(furthest.bomb_id))
+            else if (furthest.state == "held" && now - furthest.at > HolderGoneMs)
             {
-                continue;
+                var seen = await LastSeen(furthest.holder, ct);
+                if (seen is null) missing.Add(furthest);
+                else if (HolderGone(seen, now)) lost.Add(furthest);
             }
+        }
 
-            await WorldBombs.CreateAsync(Bomb(furthest.bomb_id, "fizzled", furthest.holder, furthest.x, furthest.y, furthest.dropped_at, Now), ct);
+        if (missing.Count > 0)
+        {
+            await Task.Delay(CrossingGrace, ct);
+            foreach (var bomb in missing)
+            {
+                if (HolderGone(await LastSeen(bomb.holder, ct), Now)) lost.Add(bomb);
+            }
+        }
+
+        foreach (var bomb in lost)
+        {
+            await WorldBombs.CreateAsync(Bomb(bomb.bomb_id, "fizzled", bomb.holder, bomb.x, bomb.y, bomb.dropped_at, Now), ct);
         }
     }
 
@@ -136,26 +168,38 @@ public sealed class DropBombs : PlatformFunction<object>
         return row?.Fields?.seen_at;
     }
 
-    /// Five bombs already free: the oldest goes up in smoke, to make room for the new one.
-    private async Task FizzleOldestFreeBombs(List<BombRows> bombs, CancellationToken ct)
-    {
-        var free = bombs
-            .Select(b => Furthest(b.Select(r => r.Fields!)))
-            .Where(b => b.state == "free")
-            .OrderBy(b => b.dropped_at)
+    /// <summary>The regions a server holds now, each once: a room is up there.</summary>
+    public static List<int> LiveRegions(IEnumerable<WorldRegion> rows, long now) =>
+        rows.Where(r => now - r.seen_at < RegionGoneMs)
+            .Select(r => int.TryParse(r.region, out var region) ? region : -1)
+            .Where(region => region is >= 0 and < Regions)
+            .Distinct()
+            .Order()
             .ToList();
 
-        foreach (var old in free.Take(free.Count - (MaxFreeBombs - 1)))
-        {
-            await WorldBombs.CreateAsync(Bomb(old.bomb_id, "fizzled", null, old.x, old.y, old.dropped_at, Now), ct);
-        }
+    public static int RegionOf(double x, double y) => (int)Math.Floor(y / RegionSize) * Columns + (int)Math.Floor(x / RegionSize);
+
+    /// <summary>
+    /// The oldest free bombs of a region that go up in smoke so that the new ones leave at most
+    /// <see cref="MaxFreeBombs"/> lying there.
+    /// </summary>
+    public static IEnumerable<WorldBomb> OldestFreeToFizzle(IEnumerable<WorldBomb> bombs, int region)
+    {
+        var free = bombs.Where(b => b.state == "free" && RegionOf(b.x, b.y) == region).OrderBy(b => b.dropped_at).ToList();
+        return free.Take(Math.Max(0, free.Count - (MaxFreeBombs - BombsPerRegion)));
     }
 
-    /// A new bomb somewhere over the world.
-    private async Task DropNewBomb(CancellationToken ct)
+    /// <summary>Where a region's new bombs come down: different blocks, a block in from its border.</summary>
+    public static List<(int X, int Y)> Spots(int region, Random random)
     {
-        var now = Now;
-        await WorldBombs.CreateAsync(Bomb($"drop-{now}", "free", null, Random.Shared.Next(1, 71), Random.Shared.Next(1, 47), now, now), ct);
+        var (x0, y0) = (region % Columns * RegionSize, region / Columns * RegionSize);
+        var spots = new List<(int X, int Y)>();
+        while (spots.Count < BombsPerRegion)
+        {
+            var spot = (random.Next(x0 + 1, x0 + RegionSize), random.Next(y0 + 1, y0 + RegionSize));
+            if (!spots.Contains(spot)) spots.Add(spot);
+        }
+        return spots;
     }
 
     /// <summary>Free, held, flying, then over (exploded or fizzled): a bomb only ever moves forward through these.</summary>

@@ -53,4 +53,50 @@ public class FunctionTests
         Assert.True(DropBombs.WentOffLongAgo([Row("free", 0), Row("exploded", 1000)], 1000 + 120_001));
         Assert.False(DropBombs.WentOffLongAgo([Row("free", 0), Row("exploded", 1000)], 1000 + 60_000));
     }
+
+    [Fact]
+    public void Bombs_fall_over_every_region_a_server_holds_now_and_nowhere_else()
+    {
+        const long now = 10_000_000;
+        var rows = new[]
+        {
+            new Drop.WorldRegion { region = "0", seen_at = now - 5_000 },
+            new Drop.WorldRegion { region = "4", seen_at = now - 1_000 },
+            new Drop.WorldRegion { region = "2", seen_at = now - DropBombs.RegionGoneMs - 1 },
+            new Drop.WorldRegion { region = "x", seen_at = now },
+        };
+
+        Assert.Equal([0, 4], DropBombs.LiveRegions(rows, now));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void A_regions_two_bombs_come_down_on_different_blocks_inside_it(int region)
+    {
+        for (var seed = 0; seed < 200; seed++)
+        {
+            var spots = DropBombs.Spots(region, new Random(seed));
+
+            Assert.Equal(DropBombs.BombsPerRegion, spots.Count);
+            Assert.Equal(spots.Count, spots.Distinct().Count());
+            Assert.All(spots, s => Assert.Equal(region, DropBombs.RegionOf(s.X, s.Y)));
+        }
+    }
+
+    [Fact]
+    public void A_region_keeps_at_most_five_free_bombs_and_the_others_regions_are_not_counted()
+    {
+        var bombs = Enumerable.Range(0, 5)
+            .Select(i => new Drop.WorldBomb { bomb_id = $"a{i}", state = "free", x = 5, y = 5, dropped_at = 1000 + i })
+            .Append(new Drop.WorldBomb { bomb_id = "held", state = "held", x = 6, y = 6, dropped_at = 500 })
+            .Append(new Drop.WorldBomb { bomb_id = "other", state = "free", x = 30, y = 5, dropped_at = 100 })
+            .ToList();
+
+        var fizzled = DropBombs.OldestFreeToFizzle(bombs, region: 0).Select(b => b.bomb_id).ToList();
+
+        Assert.Equal(["a0", "a1"], fizzled);
+        Assert.Empty(DropBombs.OldestFreeToFizzle(bombs, region: 1));
+    }
 }

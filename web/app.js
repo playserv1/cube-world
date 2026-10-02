@@ -928,8 +928,9 @@ function enterOffline() {
     if (kind === generated(x, y, z)) { overrides.delete(cube.key); emit({ type: "cube", op: "delete", cube, remote: false }); }
     else { overrides.set(cube.key, kind); emit({ type: "cube", op: "upsert", cube, remote: false }); }
   };
-  // Bombs as the drop function and the server handle them: one dropped every 15 seconds (two to start, near the
-  // spawn), at most five free, picked up by walking into them, thrown with right click.
+  // Bombs as the drop function and the server handle them: two dropped every minute over each room's region (here the
+  // one local room's, region 1; two more to start, near the spawn), at most five free in a region, picked up by walking
+  // into them, thrown with right click.
   const offBombs = new Map();
     const record = (b, p, extra = {}) => ({ bomb_id: b.id, state: b.state, holder: b.holder ?? "", ...toServer(p), vx: 0, vy: 0, vz: 0, dropped_at: b.dropped, at: Date.now(), ...extra });
   const emitBomb = (b, p, extra) => emit({ type: "bomb", bomb: record(b, p, extra), age: 0, z: p.y });
@@ -967,7 +968,7 @@ function enterOffline() {
     offBombs.delete(b.id);
     emitBomb(b, b.p);
   };
-  setInterval(() => dropBomb(1 + Math.random() * 70, 1 + Math.random() * 22), 15000);
+  setInterval(() => { for (let i = 0; i < 2; i++) dropBomb(25 + Math.random() * 22, 1 + Math.random() * 22); }, 60000);
   setInterval(() => {
     for (const b of [...offBombs.values()]) {
       if (b.state === "free") {
