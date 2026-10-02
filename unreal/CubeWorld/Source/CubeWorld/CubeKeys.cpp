@@ -85,13 +85,9 @@ bool CubeKeys::Read(FCubeKeys& Out)
 
 void CubeKeys::StartMouse()
 {
-	if (!FSlateApplication::IsInitialized()) return;
-	if (!Tap.IsValid())
-	{
-		Tap = MakeShared<FMouseTap>();
-		FSlateApplication::Get().RegisterInputPreProcessor(Tap);
-	}
-	Tap->Delta = FVector2D::ZeroVector;
+	if (!FSlateApplication::IsInitialized() || Tap.IsValid()) return;
+	Tap = MakeShared<FMouseTap>();
+	FSlateApplication::Get().RegisterInputPreProcessor(Tap);
 }
 
 FVector2D CubeKeys::TakeMouse()

@@ -18,7 +18,10 @@ namespace CubeKeys
 	/** False when the keyboard is not the game's to read: not Windows, or another window is in front. */
 	bool Read(FCubeKeys& Out);
 
-	/** Starts adding up the mouse's movement (Slate's raw deltas, before any controller sees them). */
+	/** Starts adding up the mouse's movement (Slate's raw deltas, before any controller sees them), if it was not already:
+	 *  from then on it runs for the whole game, and whoever turns the view by it takes it (the pawn on every frame, a
+	 *  crossing's gap while there is no pawn). A gap that took over from a pawn goes on from the very movement that pawn
+	 *  never saw: the frame's movement its controller had and lost with it when the old server's actors went. */
 	void StartMouse();
 	/** The movement since the last call, as the engine's MouseX and MouseY axes carry it (MouseY is up). */
 	FVector2D TakeMouse();

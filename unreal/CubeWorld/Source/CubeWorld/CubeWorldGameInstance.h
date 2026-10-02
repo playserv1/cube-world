@@ -18,6 +18,7 @@
 
 class FCubeSocket;
 class FViewport;
+class APlayerCameraManager;
 struct FCubeSocketFrame;
 class FJsonObject;
 class ACubeAvatar;
@@ -91,6 +92,18 @@ public:
 	void Log(const FString& Text);
 	/** The pawn of the next server is placed: the view is its own again. */
 	void EndCrossingView();
+	/** The view as drawn this frame, from the pawn: a crossing's gap starts from it, not from the last game tick's (taken
+	 *  20 times a second, up to 50 ms behind the view while the player turns: the view snapped back, PSV-3027). */
+	void NoteDrawnView(const FRotator& View);
+	/** The view a crossing pose looks with, in Unreal's degrees. */
+	static FRotator LookOf(const FCubeCrossing& Pose);
+	/** How far a mouse movement of Pixels turns the view while HorizontalFov is drawn, as the engine turns the pawn by it:
+	 *  0.15 degrees a pixel, scaled with the field of view when the input settings say so (bEnableFOVScaling). */
+	static float MouseDegrees(float Pixels, float HorizontalFov);
+	/** Draws a camera manager's own view at HorizontalFov without locking its field of view. A lock (SetFOV) is kept by
+	 *  the camera manager whatever its view target's camera says: left on a controller that went on into a C# room, the
+	 *  sprint's zoom never showed there, and showed all at once at the next crossing (PSV-3027). */
+	static void HoldFov(APlayerCameraManager* Cam, float HorizontalFov);
 
 	/** True once this server's welcome arrived and until the connection goes. */
 	bool IsConnected() const { return bWelcomed; }

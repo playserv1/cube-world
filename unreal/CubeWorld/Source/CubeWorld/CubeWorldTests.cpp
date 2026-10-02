@@ -13,6 +13,10 @@
 #include "Misc/AutomationTest.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/InputSettings.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -627,6 +631,110 @@ bool FCubeWorldMoveCheckTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("yellow is near its border"), CubeNear(3, 26.5, 36, CubeSpec::BorderSlack));
 	TestFalse(TEXT("green is not near yellow"), CubeNear(3, 60.5, 5.5, CubeSpec::BorderSlack));
+	return true;
+}
+
+// ── the player's own view at a crossing (PSV-3027) ───────────────────────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldGapStartsFromTheDrawnViewTest,
+	"CubeWorld.Camera.TheGapStartsFromTheViewAsDrawn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FCubeWorldGapStartsFromTheDrawnViewTest::RunTest(const FString& Parameters)
+{
+	UCubeWorldGameInstance* Game = NewObject<UCubeWorldGameInstance>();
+	// The last game tick took the body and the view; the player turned on in the frames since, and each frame noted the
+	// view it drew. The gap starts from that one, not from the tick's: 50 ms of turning at 300 degrees a second is 15.
+	const FRotator Ticked(-5.f, 160.f, 0), Drawn(-11.5f, 172.25f, 0);
+	Game->LastBody = { true, 10.0, 12.0, 0.0, CubeSpec::YawFromUnreal(Ticked.Yaw), CubeSpec::PitchFromUnreal(Ticked.Pitch) };
+	Game->NoteDrawnView(Drawn);
+	const FRotator Look = UCubeWorldGameInstance::LookOf(Game->LastBody);
+	TestTrue(TEXT("the gap looks the way the last frame was drawn"), FMath::IsNearlyZero(FRotator::NormalizeAxis(Look.Yaw - Drawn.Yaw), 1e-3f));
+	TestTrue(TEXT("up and down too"), FMath::IsNearlyEqual(Look.Pitch, Drawn.Pitch, 1e-3f));
+	TestTrue(TEXT("the body is the game tick's still"), Game->LastBody.X == 10.0 && Game->LastBody.Y == 12.0);
+	// Unreal keeps a view looking down as 360 minus the angle: the gap takes it as the same view.
+	Game->NoteDrawnView(FRotator(348.5f, -10.f, 0));
+	const FRotator Down = UCubeWorldGameInstance::LookOf(Game->LastBody);
+	TestTrue(TEXT("a view looking down is the same view"), FMath::IsNearlyEqual(Down.Pitch, -11.5f, 1e-3f) && FMath::IsNearlyZero(FRotator::NormalizeAxis(Down.Yaw + 10.f), 1e-3f));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldFovNeverLockedTest,
+	"CubeWorld.Camera.TheFieldOfViewIsNeverLeftLocked",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FCubeWorldFovNeverLockedTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	Context.SetCurrentWorld(World);
+	APlayerCameraManager* Cam = World->SpawnActor<APlayerCameraManager>();
+	TestNotNull(TEXT("a camera manager"), Cam);
+	if (Cam)
+	{
+		// The gap draws the camera manager's own view at the pawn's field of view: as its default, never as a lock, which
+		// the camera manager would keep for the pawn after the gap, whatever the pawn's camera said.
+		UCubeWorldGameInstance::HoldFov(Cam, 112.8f);
+		TestEqual(TEXT("the gap draws the pawn's field of view"), Cam->DefaultFOV, 112.8f);
+		TestEqual(TEXT("and leaves it unlocked"), Cam->GetLockedFOV(), 0.f);
+		TestEqual(TEXT("so what is drawn is the view's own"), Cam->GetFOVAngle(), Cam->GetCameraCacheView().FOV);
+		// A lock from anywhere else does not outlive the next gap either.
+		Cam->SetFOV(96.5f);
+		UCubeWorldGameInstance::HoldFov(Cam, 101.6f);
+		TestEqual(TEXT("a lock left from before is released"), Cam->GetLockedFOV(), 0.f);
+	}
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldGapTurnsAsThePawnTest,
+	"CubeWorld.Camera.TheGapTurnsAsThePawnDoes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FCubeWorldGapTurnsAsThePawnTest::RunTest(const FString& Parameters)
+{
+	const UInputSettings* Settings = GetDefault<UInputSettings>();
+	TestTrue(TEXT("the project scales the mouse with the field of view (DefaultInput.ini)"), Settings->bEnableFOVScaling);
+	// What UPlayerInput gives the pawn's Turn for 100 pixels while 101.6 degrees are drawn (70 vertical at 16:9).
+	const float Pawn = 100.f * Settings->FOVScale * 101.6f * CubeSpec::DegreesPerMousePixel;
+	TestTrue(TEXT("the gap turns as far as the pawn would"), FMath::IsNearlyEqual(UCubeWorldGameInstance::MouseDegrees(100.f, 101.6f), Pawn, 1e-4f));
+	TestTrue(TEXT("further at the sprint's wider view, as the pawn does"), UCubeWorldGameInstance::MouseDegrees(100.f, 112.8f) > UCubeWorldGameInstance::MouseDegrees(100.f, 101.6f));
+	TestEqual(TEXT("no field of view known yet: unscaled"), UCubeWorldGameInstance::MouseDegrees(100.f, 0.f), 15.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldFakeHandTest,
+	"CubeWorld.Camera.TheFakeHandSwingsAndTheWalkKeepsItsHeading",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FCubeWorldFakeHandTest::RunTest(const FString& Parameters)
+{
+	// -fakemouse=300: 30 degrees each way at 300 a second, there at 0.1 s, back through the middle at 0.2 s.
+	TestTrue(TEXT("the swing starts in the middle"), FMath::IsNearlyZero(UCubeWorldGameInstance::SwingAt(0, 300, 30), 1e-6));
+	TestTrue(TEXT("at the rate"), FMath::IsNearlyEqual(UCubeWorldGameInstance::SwingAt(0.05, 300, 30), 15.0, 1e-6));
+	TestTrue(TEXT("as far as 30"), FMath::IsNearlyEqual(UCubeWorldGameInstance::SwingAt(0.1, 300, 30), 30.0, 1e-6));
+	TestTrue(TEXT("back through the middle"), FMath::IsNearlyZero(UCubeWorldGameInstance::SwingAt(0.2, 300, 30), 1e-6));
+	TestTrue(TEXT("as far the other way"), FMath::IsNearlyEqual(UCubeWorldGameInstance::SwingAt(0.3, 300, 30), -30.0, 1e-6));
+	TestTrue(TEXT("and round again"), FMath::IsNearlyZero(UCubeWorldGameInstance::SwingAt(0.4, 300, 30), 1e-6));
+
+	// The walk's keys go the heading's way whichever way the view looks (Unreal yaw: 0 is +x, 90 is +y).
+	TestTrue(TEXT("ahead: forward"), UCubeWorldGameInstance::WalkKeys(90, 90).Equals(FVector2D(1, 0), 1e-6));
+	TestTrue(TEXT("to the view's right: strafing right (Minecraft's strafe is positive to the left)"), UCubeWorldGameInstance::WalkKeys(90, 0).Equals(FVector2D(0, -1), 1e-6));
+	TestTrue(TEXT("behind: backwards"), UCubeWorldGameInstance::WalkKeys(180, 0).Equals(FVector2D(-1, 0), 1e-6));
+	// And the body goes that way: one tick with the keys for +y while the view looks along +x.
+	const FVector2D Keys = UCubeWorldGameInstance::WalkKeys(90, 0);
+	FCubeBody Body;
+	Body.Teleport(10, 10, 0);
+	Body.bOnGround = true;
+	FCubeInput Input;
+	Input.Forward = Keys.X; Input.Strafe = Keys.Y; Input.Yaw = CubeSpec::YawFromUnreal(0);
+	CubePhysics::Tick(Body, Input, [](int32, int32, int32 Z) { return Z < 0; });
+	TestTrue(TEXT("the body walks +y"), Body.Y > 10 && FMath::IsNearlyEqual(Body.X, 10.0, 1e-6));
 	return true;
 }
 

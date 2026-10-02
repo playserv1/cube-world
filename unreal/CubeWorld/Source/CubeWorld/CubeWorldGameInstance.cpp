@@ -84,6 +84,7 @@ void UCubeWorldGameInstance::HandleSessionLost()
 void UCubeWorldGameInstance::Shutdown()
 {
 	CloseSockets();
+	CubeKeys::StopMouse();
 	if (FakeMouseHandle.IsValid()) { FCoreDelegates::OnBeginFrame.Remove(FakeMouseHandle); FakeMouseHandle.Reset(); }
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 	if (GEngine) GEngine->OnNetworkFailure().RemoveAll(this);
@@ -115,7 +116,8 @@ void UCubeWorldGameInstance::BeginCrossingGap(UWorld* InWorld)
 {
 	EndCrossingView();
 	const FVector Eye(Crossing.X * CubeSpec::BlockCm, Crossing.Y * CubeSpec::BlockCm, (Crossing.Z + CubeSpec::EyeHeight) * CubeSpec::BlockCm);
-	const FRotator Look(-FMath::RadiansToDegrees(Crossing.Pitch), FMath::RadiansToDegrees(Crossing.Yaw) + 90.f, 0);
+	// The view drawn in the frame before this one (NoteDrawnView), so the first frame of the gap goes on from it.
+	const FRotator Look = LookOf(Crossing);
 	CrossingEye = Eye; CrossingLook = Look;
 	// The body goes on from the old pawn's very state, and the time the map took to load is walked too.
 	GapBody = LastFullBody;
@@ -126,7 +128,10 @@ void UCubeWorldGameInstance::BeginCrossingGap(UWorld* InWorld)
 	FString WalkTo;
 	bGapTestWalk = FParse::Value(FCommandLine::Get(), TEXT("-walkto="), WalkTo, false) && !WalkTo.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("holdkeys"));
 	bGapActive = true;
+	// The mouse movement no controller took since the old pawn's last frame is the gap's first turn. After a stretch with
+	// no pawn at all (a map loaded meanwhile) it is too old to be anyone's turn, and is dropped.
 	CubeKeys::StartMouse();
+	if (FPlatformTime::Seconds() - LastBodyTime > 0.1) CubeKeys::TakeMouse();
 	StepGap();
 	CrossingCamera = InWorld->SpawnActor<ACameraActor>(Eye, Look);
 	// The same picture as the pawn's: no 16:9 bars (a camera actor constrains its aspect by default), the same field of view.
@@ -247,11 +252,12 @@ void UCubeWorldGameInstance::StepGap()
 	const double Now = FPlatformTime::Seconds();
 	const double Dt = FMath::Clamp(Now - GapLastTime, 0.0, 0.25);
 	GapLastTime = Now;
-	// The mouse turns the view as the pawn's OnTurn and OnLookUp do (MouseX and MouseY at 0.15 degrees each).
+	// The mouse turns the view as the pawn's OnTurn and OnLookUp do: 0.15 degrees a pixel, scaled with the field of view
+	// drawn as the engine scales the pawn's (without it the gap turned 7-19 % slower than the pawn on either side of it).
 	const FVector2D Mouse = CubeKeys::TakeMouse();
 	FrameTapMouse += Mouse;
-	GapYawDeg += Mouse.X * CubeSpec::DegreesPerMousePixel;
-	GapPitchDeg = FMath::Clamp(GapPitchDeg + (float)Mouse.Y * CubeSpec::DegreesPerMousePixel, -89.9f, 89.9f);
+	GapYawDeg += MouseDegrees(Mouse.X, LastHorizontalFov);
+	GapPitchDeg = FMath::Clamp(GapPitchDeg + MouseDegrees(Mouse.Y, LastHorizontalFov), -89.9f, 89.9f);
 	FCubeInput Input;
 	FCubeKeys Keys;
 	if (CubeKeys::Read(Keys))
@@ -283,6 +289,32 @@ void UCubeWorldGameInstance::StepGap()
 	Crossing.Yaw = CubeSpec::YawFromUnreal(GapYawDeg); Crossing.Pitch = CubeSpec::PitchFromUnreal(GapPitchDeg);
 	Crossing.bSprinting = GapBody.bSprinting; Crossing.bSneaking = GapBody.bSneaking;
 	Crossing.Forward = Input.Forward; Crossing.Strafe = -Input.Strafe;
+}
+
+void UCubeWorldGameInstance::NoteDrawnView(const FRotator& View)
+{
+	LastBody.Yaw = CubeSpec::YawFromUnreal(View.Yaw);
+	LastBody.Pitch = CubeSpec::PitchFromUnreal(View.Pitch);
+}
+
+FRotator UCubeWorldGameInstance::LookOf(const FCubeCrossing& Pose)
+{
+	return FRotator(-FMath::RadiansToDegrees(Pose.Pitch), FMath::RadiansToDegrees(Pose.Yaw) + 90.f, 0);
+}
+
+float UCubeWorldGameInstance::MouseDegrees(float Pixels, float HorizontalFov)
+{
+	const UInputSettings* Settings = GetDefault<UInputSettings>();
+	const float Scale = Settings && Settings->bEnableFOVScaling && HorizontalFov > 0 ? Settings->FOVScale * HorizontalFov : 1.f;
+	return Pixels * CubeSpec::DegreesPerMousePixel * Scale;
+}
+
+void UCubeWorldGameInstance::HoldFov(APlayerCameraManager* Cam, float HorizontalFov)
+{
+	if (!Cam || HorizontalFov <= 0) return;
+	// The camera manager's own view (the controller as its own view target, as in the gap) is drawn at its default.
+	Cam->DefaultFOV = HorizontalFov;
+	Cam->UnlockFOV();
 }
 
 double UCubeWorldGameInstance::SwingAt(double Seconds, double Rate, double Amplitude)
@@ -339,7 +371,7 @@ void UCubeWorldGameInstance::AimPlaceholder(APlayerController* PC)
 	if (PC->GetViewTarget() != PC) PC->SetViewTarget(PC);
 	if (APlayerCameraManager* Cam = PC->PlayerCameraManager)
 	{
-		if (LastHorizontalFov > 0) { Cam->DefaultFOV = LastHorizontalFov; Cam->SetFOV(LastHorizontalFov); }
+		if (LastHorizontalFov > 0) HoldFov(Cam, LastHorizontalFov);
 		Cam->UpdateCamera(0.f);
 	}
 }
@@ -456,7 +488,10 @@ void UCubeWorldGameInstance::LogEndOfFrame()
 
 void UCubeWorldGameInstance::EndCrossingView()
 {
-	if (bGapActive) { bGapActive = false; CubeKeys::StopMouse(); }
+	// The mouse goes on being added up: the pawn takes it from here (ACubePlayerPawn::TakeUnreadMouse).
+	bGapActive = false;
+	// Whatever locked the field of view (the gap did, until PSV-3027), the pawn's own is drawn from here.
+	if (APlayerController* Local = GetFirstLocalPlayerController()) if (Local->PlayerCameraManager) Local->PlayerCameraManager->UnlockFOV();
 	if (CrossingCamera.IsValid()) Log(FString::Printf(TEXT("crossing: %d frame(s) without a view, %d held from a wrong place"), CrossingBlankFrames, CrossingWrongFrames));
 	if (CrossingViewTicker.IsValid()) { FWorldDelegates::OnWorldPostActorTick.Remove(CrossingViewTicker); CrossingViewTicker.Reset(); }
 	if (CrossingDrawHandle.IsValid()) { if (GEngine && GEngine->GameViewport) GEngine->GameViewport->OnBeginDraw().Remove(CrossingDrawHandle); CrossingDrawHandle.Reset(); }

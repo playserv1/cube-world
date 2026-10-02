@@ -101,6 +101,8 @@ void ACubePlayerPawn::Bind()
 	Game->OnCube.AddUObject(this, &ACubePlayerPawn::HandleCube);
 	Game->OnBomb.AddUObject(this, &ACubePlayerPawn::HandleBomb);
 	Game->OnBombList.AddUObject(this, &ACubePlayerPawn::HandleBombList);
+	// The mouse is added up for the rest of the game from here: a crossing's gap turns the view by what no controller took.
+	CubeKeys::StartMouse();
 	bBound = true;
 	OnRep_PlayerId();
 
@@ -434,7 +436,8 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 	}
 	// -walkto=<x>, -walkto=<x>,<y>, or spots one after another, -walkto=<x>,<y>;<x>,<y>: keep walking towards each spot in
 	// turn, one axis at a time (a border crossing test). The spot reached so far is the game instance's, so the walk goes
-	// on from it after a crossing.
+	// on from it after a crossing, at once: walking on blind for 2 s took the walk 15 blocks off its route, over the
+	// next border and into craters it could not climb out of. A fresh join still waits 2 s for the world to settle.
 	FString TargetText;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), TargetText, false) && !TargetText.IsEmpty())
 	{
@@ -458,7 +461,7 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 			// must carry the player on (the test of keys surviving a crossing).
 			bMouseCaptured = true;
 			if (!FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) || !Game->bCrossedOnce) { TestForward = 1.f; bTestSprint = true; }
-		}), 2.f, false);
+		}), bKeep ? 0.05f : 2.f, false);
 		FTimerHandle Where;
 		GetWorldTimerManager().SetTimer(Where, FTimerDelegate::CreateWeakLambda(this, [this]() { Game->Log(FString::Printf(TEXT("walkto: at %.1f %.1f %.1f yaw %.0f in %s"), Body.X, Body.Y, Body.Z, GetControlRotation().Yaw, *Game->Room)); }), 1.f, true);
 	}
@@ -582,6 +585,31 @@ void ACubePlayerPawn::SendMove(double Yaw, double Pitch)
 	CmdMove(Body.X, Body.Y, Body.Z, Yaw, Pitch, Body.bOnGround, Body.bSneaking, Body.bSprinting, Body.Peak);
 }
 
+// The controller turns the view by the mouse through this pawn's Turn and LookUp. Until the next server's ClientRestart
+// wires this pawn's input up, a moment after the pawn arrives, nothing would: the pawn turns the view by the tap's
+// movement itself, with the engine's scaling, so no turn is lost at the hand-over. Either way this frame's movement is
+// taken from the tap here, so a crossing's gap later starts from the movement that came after it.
+void ACubePlayerPawn::TakeUnreadMouse()
+{
+	const FVector2D Mouse = CubeKeys::TakeMouse();
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	const bool bWired = InputComponent && PC && PC->GetPawn() == this;
+	if (bWired && UnwiredTurnFrames > 0)
+	{
+		Game->Log(FString::Printf(TEXT("the pawn's input was wired after %d frame(s) turned by the mouse tap"), UnwiredTurnFrames));
+		UnwiredTurnFrames = 0;
+	}
+	if (bWired || !PC || !bMouseCaptured || Mouse.IsZero()) return;
+	const float Drawn = PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : Game->LastHorizontalFov;
+	const FVector2D Turn(UCubeWorldGameInstance::MouseDegrees(Mouse.X, Drawn), UCubeWorldGameInstance::MouseDegrees(Mouse.Y, Drawn));
+	FRotator View = PC->GetControlRotation();
+	View.Yaw += Turn.X;
+	View.Pitch = FMath::Clamp(FRotator::NormalizeAxis(View.Pitch) + Turn.Y, -89.9f, 89.9f);
+	PC->SetControlRotation(View);
+	Game->FrameTurn += Turn;
+	UnwiredTurnFrames++;
+}
+
 void ACubePlayerPawn::GameTick()
 {
 	TickCount++;
@@ -660,8 +688,10 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 	if (!Game || !bBound) return;
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { GameTick(); Accumulator -= CubeSpec::TickSeconds; }
-	// What a crossing goes on from, if the world is torn down after this frame.
+	TakeUnreadMouse();
+	// What a crossing goes on from, if the world is torn down after this frame: the body, and the view as drawn now.
 	Game->LastFullBody = Body; Game->LastAccumulator = Accumulator; Game->LastBodyTime = FPlatformTime::Seconds();
+	if (Game->LastBody.bSet) Game->NoteDrawnView(GetControlRotation());
 	const double Partial = Accumulator / CubeSpec::TickSeconds;
 
 	const FVector Feet(Body.PX + (Body.X - Body.PX) * Partial, Body.PY + (Body.Y - Body.PY) * Partial, Body.PZ + (Body.Z - Body.PZ) * Partial);

@@ -110,6 +110,11 @@ private:
 	void DigTick();
 	void UpdateAim();
 	void SendMove(double Yaw, double Pitch);
+	/** Takes the mouse's movement of this frame from the tap, and turns the view by it while no input is wired to this
+	 *  pawn yet (the frames before the next server's ClientRestart). */
+	void TakeUnreadMouse();
+	/** Frames this pawn turned the view by the tap itself, before its input was wired; logged once it is. */
+	int32 UnwiredTurnFrames = 0;
 	void HandleWelcome(const FCubePose& You, bool bTeleport);
 	void HandleRespawn(const FCubePose& You);
 	void HandleCorrect(const FCubePose& At);
