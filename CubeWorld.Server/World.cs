@@ -52,19 +52,38 @@ public sealed class WorldPresence
     public static bool WasHurt(WorldPresence? before, WorldPresence now) =>
         before is not null && now.health < before.health && now.health > 0 && now.seen_at - before.seen_at is >= 0 and < 5000;
 
+    /// <summary>How far outside a region the last server may have seen a player who walked in over its border, in blocks.</summary>
+    public const double CrossingBand = 4;
+
     /// <summary>
-    /// Where a player who joins this server stands. One who walked over a border from another server is still
-    /// where that server last saw them, with the health they had; only a player nobody has seen in the last 5 s
-    /// starts at <paramref name="spawn"/>. The pose keeps the time it was heard, so this server does not announce it
-    /// again as new: a player who is walking is announced with their first move here, not a step behind.
+    /// Where a player who joins this server stands. One another server saw in the last 5 s, alive, comes with the
+    /// health they had. Seen in this server's region or within <see cref="CrossingBand"/> of it, they walked over the
+    /// border: they stand where that server last saw them, moved inside the region. Seen farther away, they jumped here
+    /// from the server list, and start at <paramref name="spawn"/>: a jump moves them, it does not heal them. A player
+    /// nobody has seen in the last 5 s starts at the spawn, whole. A crossing pose keeps the time it was heard, so this
+    /// server does not announce it again as new: a player who is walking is announced with their first move here, not a
+    /// step behind. FCubeServerWorld's CubeCrossedInto on the Unreal side.
     /// </summary>
-    public static WorldPresence Arriving(WorldPresence spawn, WorldPresence? heard, long now) =>
-        heard is null || now - heard.seen_at >= 5000 || heard.health <= 0 ? spawn : new()
+    public static WorldPresence Arriving(WorldPresence spawn, WorldPresence? heard, long now)
+    {
+        if (heard is null || now - heard.seen_at >= 5000 || heard.health <= 0) return spawn;
+        // The spawn is the region's middle, so it names the region.
+        var (x0, x1, y0, y1) = World.Bounds(World.RegionOf(spawn.x, spawn.y));
+        var crossed = heard.x >= x0 - CrossingBand && heard.x <= x1 + CrossingBand && heard.y >= y0 - CrossingBand && heard.y <= y1 + CrossingBand;
+        if (!crossed) return new()
         {
             player_id = spawn.player_id, name = spawn.name, server = spawn.server, color = spawn.color,
-            x = heard.x, y = heard.y, z = heard.z, yaw = heard.yaw, pitch = heard.pitch, health = heard.health,
+            x = spawn.x, y = spawn.y, z = spawn.z, health = heard.health,
+        };
+        const double half = Spec.PlayerWidth / 2;
+        return new()
+        {
+            player_id = spawn.player_id, name = spawn.name, server = spawn.server, color = spawn.color,
+            x = Math.Clamp(heard.x, x0 + half, x1 - half), y = Math.Clamp(heard.y, y0 + half, y1 - half), z = heard.z,
+            yaw = heard.yaw, pitch = heard.pitch, health = heard.health,
             sneaking = heard.sneaking, sprinting = heard.sprinting, seen_at = heard.seen_at,
         };
+    }
 }
 
 /// <summary>The fall a player is in, as their moves report it. FCubePlayerFall on the Unreal side.</summary>

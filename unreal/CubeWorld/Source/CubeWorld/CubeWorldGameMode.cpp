@@ -417,10 +417,11 @@ void ACubeWorldGameMode::Spawn(FCubeServerPlayer& P)
 	P.Health = CubeSpec::MaxHealth;
 }
 
-// A player another server saw in the last 5 s, alive, walked over the border: they go on with the health that server
-// last gave them, and stand where it last saw them unless their hello says where they crossed (newer). The crossing
-// takes the hand's charge with it, so a player cannot cross for a full-strength hit. Anyone else starts at this
-// region's spawn, whole. World.Arriving on the C# side.
+// A player another server saw in the last 5 s, alive, goes on with the health that server last gave them. Seen in this
+// region or near its border, they walked over it: they stand where that server last saw them, moved inside the region,
+// unless their hello says where they crossed (newer). Seen farther away, they jumped here from the server list, and
+// start at the region's spawn: a jump moves them, it does not heal them. The crossing takes the hand's charge with it,
+// so a player cannot cross for a full-strength hit. Anyone else starts at the spawn, whole. World.Arriving on the C# side.
 void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 {
 	Spawn(P);
@@ -428,9 +429,13 @@ void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 	const bool bHeard = Seen && CubeSeenJustNow(Seen->SeenAt, Seen->Pose.Health, Now());
 	if (bHeard)
 	{
-		P.X = Seen->Pose.X; P.Y = Seen->Pose.Y; P.Z = Seen->Pose.Z; P.Yaw = Seen->Pose.Yaw; P.Pitch = Seen->Pose.Pitch;
 		P.Health = Seen->Pose.Health;
-		P.bSneaking = Seen->Pose.bSneaking; P.bSprinting = Seen->Pose.bSprinting;
+		double X = Seen->Pose.X, Y = Seen->Pose.Y;
+		if (CubeCrossedInto(Region, X, Y))
+		{
+			P.X = X; P.Y = Y; P.Z = Seen->Pose.Z; P.Yaw = Seen->Pose.Yaw; P.Pitch = Seen->Pose.Pitch;
+			P.bSneaking = Seen->Pose.bSneaking; P.bSprinting = Seen->Pose.bSprinting;
+		}
 	}
 	if (HelloPos)
 	{

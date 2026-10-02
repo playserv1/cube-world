@@ -245,4 +245,27 @@ bool FCubeWorldInventoryCaseTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldArrivalTest,
+	"CubeWorld.Crossing.AJumpFromTheServerListLandsInTheRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A player another server just saw comes over the border when they were seen at it, and jumps from the server list when
+// they were seen anywhere else: the next server used to place both where they were seen, so a jump sent the player back.
+bool FCubeWorldArrivalTest::RunTest(const FString& Parameters)
+{
+	const int32 Blue = 1;   // x in [24, 48), y in [0, 24)
+	double X = 25.1, Y = 6;
+	TestTrue(TEXT("seen just inside, they walked in"), CubeCrossedInto(Blue, X, Y));
+	TestTrue(TEXT("and stand where they were seen"), X == 25.1 && Y == 6);
+	X = 22.5; Y = 6;
+	TestTrue(TEXT("seen a step short of the border (the last pose lags), they walked in too"), CubeCrossedInto(Blue, X, Y));
+	TestEqual(TEXT("and stand inside the region"), X, 24 + CubeSpec::Width / 2);
+	X = 12; Y = 12;
+	TestFalse(TEXT("seen in the middle of red, they jumped"), CubeCrossedInto(Blue, X, Y));
+	X = 60; Y = 36;
+	TestFalse(TEXT("seen in another row, they jumped"), CubeCrossedInto(Blue, X, Y));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

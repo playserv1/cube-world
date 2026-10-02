@@ -181,6 +181,24 @@ struct FCubePlayerFall
 /** A player another server saw is the one walking in over the border when it saw them in the last 5 s, alive (World.Arriving on the C# side). */
 inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now - SeenAt < 5000 && Health > 0; }
 
+/** How far outside a region the last server may have seen a player who walked in over its border, in blocks. */
+constexpr double CubeCrossingBand = 4.0;
+
+/**
+ * Whether a player another server just saw at (X, Y) walked into Region over its border: they were seen in it or within
+ * CubeCrossingBand of it. Then X and Y are moved inside the region, where they stand. Seen farther away, they jumped to
+ * this room from the server list, and start at its spawn. World.Arriving on the C# side.
+ */
+inline bool CubeCrossedInto(int32 Region, double& X, double& Y)
+{
+	int32 X0, X1, Y0, Y1;
+	CubeSpec::RegionBounds(Region, X0, X1, Y0, Y1);
+	if (X < X0 - CubeCrossingBand || X > X1 + CubeCrossingBand || Y < Y0 - CubeCrossingBand || Y > Y1 + CubeCrossingBand) return false;
+	X = FMath::Clamp(X, X0 + CubeSpec::Width / 2, X1 - CubeSpec::Width / 2);
+	Y = FMath::Clamp(Y, Y0 + CubeSpec::Width / 2, Y1 - CubeSpec::Width / 2);
+	return true;
+}
+
 /** What a player carries, per block kind. */
 struct FCubeInventory
 {
