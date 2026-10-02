@@ -134,6 +134,15 @@ around it (the largest step of the view and gap between two frames), any map loa
 `-DoorRegions 4` plays region 4 through its server's JSON door, as a C# server is played, so crossings between Iris
 and a socket are tried as well.
 
+**Packaging the client** for others to run is UAT's BuildCookRun, in a checkout of its own:
+
+- **Windows**, on Windows: `<engine>\Engine\Build\BatchFiles\RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory=<repo>\unreal\CubeWorld\Saved\Packaged -unattended -utf8output -nop4`. The game is `Saved\Packaged\Windows\CubeWorld.exe`.
+- **Mac**, on a Mac: `<engine>/Engine/Build/BatchFiles/RunUAT.sh BuildCookRun -project=<repo>/unreal/CubeWorld/CubeWorld.uproject -platform=Mac -clientconfig=Development -build -cook -stage -pak -package -archive -archivedirectory=<dir> -unattended -utf8output -nop4`. The game is `<dir>/Mac/CubeWorld.app`.
+  - **`-package` is required on Mac.** The archive step copies `Binaries/Mac/CubeWorld.app`, and only the package step (Xcode) puts the staged game into it. Without `-package` the archived app has no content and no `libtbb`, and dies at launch (PSV-2988). Unarchived, `Saved/StagedBuilds/Mac/CubeWorld.app` runs as well.
+  - `Saved/StagedBuilds/Mac/Manifest_UFSFiles_Mac.txt` must list `cacert.pem`. The Mac build has no other root certificates, and without them it cannot reach a C# room (`Config/Mac/MacEngine.ini`, PSV-2986).
+  - A packaged Mac game logs to `~/Library/Containers/com.YourCompany.CubeWorld/Data/Library/Logs/CubeWorld/CubeWorld.log`, not `Saved/Logs`.
+  - On a Mac, a key held through a border crossing stops working until it is pressed again: the game reads the keyboard itself only on Windows (`CubeKeys`).
+
 Putting the server on the platform's machine pool takes the Server target, `CubeWorldServer`, built for Linux. The
 Launcher's engine has no Server target, so that build takes an engine built from source (here
 `C:\PlayServ\UnrealEngine`); the clients stay on the Launcher's. `RUNBOOK.md`, "Part E".
