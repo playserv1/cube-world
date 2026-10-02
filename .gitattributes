@@ -1,0 +1,6 @@
+# What runs in a Linux container keeps LF line endings on every checkout. On Windows (core.autocrlf) the Unreal
+# server image's entrypoint came out as "#!/bin/sh\r", and the container could not start: "exec /server/entrypoint.sh:
+# no such file or directory".
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
