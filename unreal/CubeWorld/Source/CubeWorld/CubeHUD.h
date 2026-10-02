@@ -35,6 +35,8 @@ private:
 	void DrawCentered(const FString& Text, float Y, float Size, FLinearColor Color, bool bBold = false);
 	void DrawIcon(FName Kind, float X, float Y, float Size, float Alpha);
 	void DrawHearts(float X, float Y, double Health);
+	/** The servers and the players, top left, as the web client's panel. */
+	void DrawPanel();
 	/** Draws a menu button and remembers where it is on the screen, for a click to find it. */
 	void DrawButton(const FString& Label, float Y, FBox2D& OutRect, FVector2D Mouse);
 

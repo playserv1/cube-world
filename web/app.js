@@ -118,9 +118,10 @@ async function signIn(name) {
     : await resumeGuest(name) ?? await api("POST", "/auth/players/anon", { display_name: name });
   state.player.name = name;
   if (!OFFLINE) { keepGuest(state.player); scheduleRefresh(state.player.expires_in); }
-  $("join").hidden = true;
+  // Once in, the panel holds the servers and the players only; the control hints are for before Play, as in Unreal.
+  $("you").hidden = true;
   $("name").blur();
-  $("me").textContent = name;
+  document.querySelector(".hint").hidden = true;
 }
 
 async function refreshServers() {
@@ -130,25 +131,9 @@ async function refreshServers() {
   const pages = await Promise.all(ROOM_SLUGS.map(slug => api("GET", `/rooms/${slug}:browse`)
     .then(page => page.data.map(room => ({ ...room, slug })), e => { if (e.status === 404) return []; throw e; })));
   const rooms = pages.flat().sort((a, b) => a.room_name.localeCompare(b.room_name));
-  $("servers").innerHTML = "";
-  for (const room of rooms) {
-    state.roomSlugs[room.room_name] = room.slug;
-    const li = document.createElement("li");
-    li.className = room.room_name === state.room ? "current" : "";
-    li.style.setProperty("--c", SERVER_COLORS[room.room_name.split("-")[0]] || SERVER_COLORS.grey);
-    li.innerHTML = `<span>${room.room_name} · ${room.players}/${room.capacity}</span>`;
-    const button = document.createElement("button");
-    button.textContent = room.room_name === state.room ? "Here" : "Enter";
-    button.onclick = () => enter(room.room_name).catch(() => {});
-    li.append(button);
-    $("servers").append(li);
-  }
-  if (rooms.length === 0) {
-    const li = document.createElement("li");
-    li.className = "none";
-    li.textContent = "No server is running";
-    $("servers").append(li);
-  }
+  // The browse finds the room to join and each room's type; the panel lists the live regions (renderPanel).
+  for (const room of rooms) state.roomSlugs[room.room_name] = room.slug;
+  if (rooms.length === 0 && !state.placed) $("servers").innerHTML = `<li class="none">No server is running</li>`;
   return rooms;
 }
 
@@ -257,8 +242,7 @@ function onFrame(frame, teleport) {
       // This client can show a bomb in the hand and throw it, and reads blocks batched in one "cubes" frame; the
       // server hands bombs, and batches, only to clients that say so.
       send({ op: "bombs" });
-      $("banner").textContent = `you are on server ${frame.color}-${frame.server}`;
-      $("banner").style.borderLeft = `6px solid ${SERVER_COLORS[frame.color]}`;
+      renderPanel();
       $("death").hidden = true;
       renderHotbar();
       renderHearts();
@@ -267,6 +251,7 @@ function onFrame(frame, teleport) {
     case "regions":
       state.regions = frame.regions;
       rebuild(world.setDown(downNow()));
+      renderPanel();
       break;
     case "cube": {
       const c = frame.cube;
@@ -617,9 +602,27 @@ function syncAvatars(players) {
     avatar.info = p;
   }
   for (const [id, avatar] of avatars) if (!seen.has(id)) { scene.remove(avatar.model, avatar.tomb); avatars.delete(id); }
-  $("players").innerHTML = [...avatars.values()].map(a => a.info)
-    .concat(state.player ? [{ player_id: state.player.player_id, name: `${state.player.name} (you)`, color: state.color, health: state.health }] : [])
-    .map(p => `<li>${p.name}<span>${isDead(p) ? "dead" : `${Math.ceil(p.health ?? 20)} hp`}</span><em style="color:${SERVER_COLORS[p.color]}">${p.color}</em></li>`).join("");
+  renderPanel();
+}
+
+const esc = text => String(text ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// The panel: the live servers with how many players each holds now, where you are, and the players. The counts are
+// taken from the presence frames (ten a second), not from the room browse, so a player who crosses shows on the next
+// server as soon as their movement does. The Unreal client draws the same panel (CubeHUD::DrawPanel).
+function renderPanel() {
+  const players = [...avatars.values()].map(a => a.info);
+  if (state.player && state.placed) players.push({ name: state.player.name, me: true, color: state.color, health: state.health });
+  const servers = [...state.regions].sort((a, b) => Number(a.region) - Number(b.region));
+  if (servers.length > 0 || state.placed) {
+    $("servers").innerHTML = servers.map(r => {
+      const count = players.filter(p => p.color === r.color).length;
+      const here = state.placed && r.color === state.color ? `<small>${esc(state.player.name)} — you are here</small>` : "";
+      return `<li style="--c:${SERVER_COLORS[r.color] || SERVER_COLORS.grey}"><div><b>${esc(r.room)}</b>${here}</div><span>${count}</span></li>`;
+    }).join("");
+  }
+  $("players").innerHTML = players
+    .map(p => `<li><b class="who">${esc(p.name)}</b>${p.me ? `<i class="you">(you)</i>` : ""}<span>${isDead(p) ? "dead" : `${Math.ceil(p.health ?? 20)} hp`}</span><em style="color:${SERVER_COLORS[p.color]}">${esc(p.color)}</em></li>`).join("");
 }
 
 function avatarBoxes() {
@@ -646,6 +649,8 @@ const keys = new Set();
 const mouse = { left: false };
 addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
+  // The console key (` / ~) hides the panel and shows it again, as in the Unreal client.
+  if (e.code === "Backquote" || e.key === "`" || e.key === "~") { $("panel").hidden = !$("panel").hidden; return; }
   if (e.code === "KeyI" && state.placed) { toggleInventory(); return; }
   if (e.code === "Escape" && state.inventoryOpen) { closeInventory(); return; }
   if (state.inventoryOpen) return;
@@ -1049,7 +1054,7 @@ function enterOffline() {
     },
   };
   state.room = "offline";
-  emit({ type: "welcome", server: "local", color: "grey", region: 1, regions: [], you: { x: 36, y: 12, z: 0, health: 20 },
+  emit({ type: "welcome", server: "local", color: "grey", region: 1, regions: [{ region: 1, room: "grey-local", color: "grey", server: "local" }], you: { x: 36, y: 12, z: 0, health: 20 },
     width: 72, depth: 48, regionSize: 24, minZ: -4, maxZ: 64, layers: [{ z: -4, kind: "bedrock" }, { z: -3, kind: "dirt" }, { z: -2, kind: "dirt" }, { z: -1, kind: "grass" }], trees: TREES,
     blocks, hotbar, world: [], inventory: Object.fromEntries(hotbar.map(k => [k, 64])), tick: 0 });
   dropBomb(38.5, 14.5);

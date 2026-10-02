@@ -149,6 +149,7 @@ private:
 	void OnSlotPrevious() { OnSlot((Slot() + 8) % 9); }
 	void OnConfirm();
 	void OnRelease();
+	void OnTogglePanel();
 	int32 Slot() const;
 
 	UPROPERTY() UCameraComponent* Camera = nullptr;

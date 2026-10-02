@@ -54,6 +54,71 @@ void ACubeHUD::DrawCentered(const FString& Text, float Y, float Size, FLinearCol
 	DrawLabel(Text, Canvas->SizeX / UiScale / 2 - TextSize(Text, Size, bBold).X / 2, Y, Size, Color, bBold);
 }
 
+// The panel the web client draws over its view (web/index.html, renderPanel): the live regions' servers, each with how
+// many players it holds now, the line "Name — you are here" under the server the player is on, then the players with
+// their health and the colour of the server they are on. The counts come from the presence list, which the server
+// refreshes ten times a second, so a crossing shows as soon as the player has moved. Sized for the 480-pixel layout.
+void ACubeHUD::DrawPanel()
+{
+	UCubeWorldGameInstance* Game = Cast<UCubeWorldGameInstance>(GetGameInstance());
+	if (!Game) return;
+	const float X = 8, Y = 8, Width = 148, Pad = 6, Head = 7, Name = 8.5f, Small = 7;
+	const FLinearColor Grey(0.54f, 0.63f, 0.71f), Light(0.80f, 0.84f, 0.88f);
+	TArray<FCubeRegion> Servers = Game->Regions;
+	Servers.Sort([](const FCubeRegion& A, const FCubeRegion& B) { return A.Region < B.Region; });
+	const float HeadH = TextSize(TEXT("SERVERS"), Head, true).Y, NameH = TextSize(TEXT("Ag"), Name, true).Y, SmallH = TextSize(TEXT("Ag"), Small).Y;
+	const float RowH = NameH + 4, RowHereH = NameH + SmallH + 4, LineH = NameH + 2;
+
+	float Height = Pad + HeadH + 3 + Pad + HeadH + 3 + Pad;
+	for (const FCubeRegion& R : Servers) Height += (R.Color == Game->Color ? RowHereH : RowH) + 2;
+	if (Servers.Num() == 0) Height += LineH;
+	Height += FMath::Max(1, Game->Players.Num()) * LineH;
+	DrawRect(FLinearColor(0.03f, 0.05f, 0.07f, 0.55f), X, Y, Width, Height);
+
+	const float L = X + Pad, R = X + Width - Pad;
+	float CY = Y + Pad;
+	DrawLabel(TEXT("SERVERS"), L, CY, Head, Grey, true);
+	CY += HeadH + 3;
+	if (Servers.Num() == 0) { DrawLabel(TEXT("Not connected"), L, CY, Small, Grey); CY += LineH; }
+	for (const FCubeRegion& S : Servers)
+	{
+		const bool bHere = S.Color == Game->Color;
+		const float H = bHere ? RowHereH : RowH;
+		int32 Count = 0;
+		for (const FCubePresence& P : Game->Players) if (P.Color == S.Color) Count++;
+		DrawRect(FLinearColor(0.09f, 0.14f, 0.20f, 0.6f), L, CY, R - L, H);
+		DrawRect(ServerColor(S.Color), L, CY, 3, H);
+		DrawLabel(S.Room, L + 7, CY + 2, Name, FLinearColor::White, true);
+		const FString CountText = FString::FromInt(Count);
+		DrawLabel(CountText, R - 4 - TextSize(CountText, Name, true).X, CY + 2, Name, FLinearColor::White, true);
+		if (bHere) DrawLabel(FString::Printf(TEXT("%s — you are here"), *Game->PlayerName), L + 7, CY + 2 + NameH, Small, Light);
+		CY += H + 2;
+	}
+
+	CY += Pad - 2;
+	DrawLabel(TEXT("PLAYERS"), L, CY, Head, Grey, true);
+	CY += HeadH + 3;
+	if (Game->Players.Num() == 0) DrawLabel(TEXT("Not connected"), L, CY, Small, Grey);
+	for (const FCubePresence& P : Game->Players)
+	{
+		const FString Health = P.Health <= 0 ? FString(TEXT("dead")) : FString::Printf(TEXT("%d hp"), FMath::CeilToInt32(P.Health));
+		const float ColorW = TextSize(P.Color, Small).X, HealthX = R - ColorW - 6 - TextSize(Health, Small).X;
+		DrawLabel(P.Color, R - ColorW, CY + 1, Small, ServerColor(P.Color));
+		DrawLabel(Health, HealthX, CY + 1, Small, Grey);
+		// A long name is cut short with an ellipsis rather than run into the health.
+		// " (you)" always stays.
+		const FString You = P.Id == Game->PlayerId ? FString(TEXT(" (you)")) : FString();
+		FString Who = P.Name;
+		if (TextSize(Who + You, Name).X > HealthX - 4 - L)
+		{
+			while (Who.Len() > 1 && TextSize(Who + TEXT("…") + You, Name).X > HealthX - 4 - L) Who.LeftChopInline(1);
+			Who += TEXT("…");
+		}
+		DrawLabel(Who + You, L, CY, Name, FLinearColor::White);
+		CY += LineH;
+	}
+}
+
 // The block as a flat icon: its top face above its side face, lit as in the world.
 void ACubeHUD::DrawIcon(FName Kind, float X, float Y, float Size, float Alpha)
 {
@@ -106,25 +171,8 @@ void ACubeHUD::DrawHUD()
 		DrawRect(FLinearColor(1, 1, 1, 0.9f), W / 2 - 9, H / 2 - 1, 18, 2);
 	}
 
-	// Server banner and the players, top left and right.
-	if (Game->IsInPlay())
-	{
-		const FString Banner = FString::Printf(TEXT("you are on server %s-%s"), *Game->Color, *Game->Server);
-		const FVector2D BS = TextSize(Banner, 10); const float BW = BS.X, BH = BS.Y;
-		DrawRect(FLinearColor(0, 0, 0, 0.45f), 12, 12, BW + 24, BH + 10);
-		DrawRect(ServerColor(Game->Color), 12, 12, 6, BH + 10);
-		DrawLabel(Banner, 26, 17, 10, FLinearColor::White);
-
-		float PY = 12;
-		for (const FCubePresence& P : Game->Players)
-		{
-			const FString Health = P.Health <= 0 ? FString(TEXT("dead")) : FString::Printf(TEXT("%d hp"), FMath::CeilToInt32(P.Health));
-			const FString Line = FString::Printf(TEXT("%s%s  %s  %s"), *P.Name, P.Id == Game->PlayerId ? TEXT(" (you)") : TEXT(""), *Health, *P.Color);
-			const FVector2D LS = TextSize(Line, 10); const float LW = LS.X, LH = LS.Y;
-			DrawLabel(Line, W - LW - 12, PY, 10, ServerColor(P.Color));
-			PY += LH + 2;
-		}
-	}
+	// The panel, top left: the servers and the players. The console key hides it.
+	if (Game->IsInPlay() && !Game->bPanelHidden) DrawPanel();
 
 	if (Pawn && FParse::Param(FCommandLine::Get(), TEXT("debughud")))
 	{
@@ -183,7 +231,7 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(FString::Printf(TEXT("Playing as %s  (start with -name=YourName to change it)"), *Game->PlayerName), H / 2 - 24, 11, FLinearColor(0.8f, 0.85f, 0.9f));
 		DrawCentered(Game->Status, H / 2 + 4, 15, FLinearColor::White, true);
 		DrawCentered(TEXT("WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak. Hold left click to break, right click places, 1-9 or the wheel picks a block, Esc opens the menu."), H / 2 + 50, 9, FLinearColor(0.7f, 0.75f, 0.8f));
-		DrawCentered(TEXT("Left click a player to hit them. Bombs come down on parachutes: walk into one to pick it up, right click throws it."), H / 2 + 64, 9, FLinearColor(0.7f, 0.75f, 0.8f));
+		DrawCentered(TEXT("Left click a player to hit them. Bombs come down on parachutes: walk into one to pick it up, right click throws it. The ` key hides the panel and shows it again."), H / 2 + 64, 9, FLinearColor(0.7f, 0.75f, 0.8f));
 	}
 	else if (Pawn && !Pawn->bMouseCaptured)
 	{

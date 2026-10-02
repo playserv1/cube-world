@@ -145,6 +145,8 @@ public:
 	double CurtainUntil = 0;
 	/** How far the curtain is down, 0 to 1: kept here, as the HUD is made again with every map. */
 	float Curtain = 0.f;
+	/** The console key (` / ~) hides the HUD's panel of servers and players and shows it again, as on the web. */
+	bool bPanelHidden = false;
 	/** Set once a border has been crossed in this run (the -holdkeys test walks by itself only up to the first one). */
 	bool bCrossedOnce = false;
 	/** The -walkto spot the test walks to now, kept through crossings (each server's pawn is a new one). */

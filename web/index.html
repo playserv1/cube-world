@@ -14,16 +14,15 @@
   </script>
 </head>
 <body>
-  <aside>
-    <h1>Cube World</h1>
+  <!-- The panel over the game, top left, as the Unreal client draws it (CubeHUD::DrawPanel); the console key hides it. -->
+  <aside id="panel">
+    <section id="you">
+      <h2>You</h2>
+      <form id="join"><input id="name" placeholder="your name" maxlength="20" required><button>Play</button></form>
+    </section>
     <section>
       <h2>Servers</h2>
       <ul id="servers"></ul>
-    </section>
-    <section>
-      <h2>You</h2>
-      <form id="join"><input id="name" placeholder="your name" maxlength="20" required><button>Play</button></form>
-      <p id="me"></p>
     </section>
     <section>
       <h2>Players</h2>
@@ -32,12 +31,12 @@
     <p class="hint">Click the world to play. WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak.<br>
       Hold left click to break, right click places, 1–9 or the wheel picks a block, Esc opens the menu.<br>
       Left click a player to hit them.<br>
-      Bombs come down on parachutes: walk into one to pick it up, right click throws it.</p>
+      Bombs come down on parachutes: walk into one to pick it up, right click throws it.<br>
+      The ` key hides this panel and shows it again.</p>
   </aside>
   <main>
     <div id="view"></div>
     <div id="hurt"></div>
-    <div id="banner"></div>
     <div id="crosshair"></div>
     <div id="hud">
       <div id="hearts"></div>

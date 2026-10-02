@@ -221,6 +221,7 @@ void ACubePlayerPawn::SetupPlayerInputComponent(UInputComponent* Input)
 	Input->BindAction(TEXT("SlotPrevious"), IE_Pressed, this, &ACubePlayerPawn::OnSlotPrevious);
 	Input->BindAction(TEXT("Confirm"), IE_Pressed, this, &ACubePlayerPawn::OnConfirm);
 	Input->BindAction(TEXT("Release"), IE_Pressed, this, &ACubePlayerPawn::OnRelease);
+	Input->BindAction(TEXT("TogglePanel"), IE_Pressed, this, &ACubePlayerPawn::OnTogglePanel);
 }
 
 // The axis value is the raw pixel delta (DefaultInput.ini sets the mouse sensitivity to 1 and the legacy scales off).
@@ -264,6 +265,12 @@ void ACubePlayerPawn::OnRelease()
 {
 	if (!bMouseCaptured && Game && Game->IsConnected() && !Game->bDead) { CaptureMouse(true); return; }
 	CaptureMouse(false);
+}
+
+// The console key (` / ~): the HUD's panel goes and comes back, as on the web. The engine's console moved to F10.
+void ACubePlayerPawn::OnTogglePanel()
+{
+	if (Game) Game->bPanelHidden = !Game->bPanelHidden;
 }
 
 /** A click while the game menu is open: Resume goes back to the game, Exit closes it; anywhere else does nothing. */
