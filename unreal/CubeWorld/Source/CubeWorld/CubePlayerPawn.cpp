@@ -807,7 +807,9 @@ void ACubePlayerPawn::HandleBombList(const TSet<FString>& Known)
 {
 	TArray<FString> Ids;
 	Bombs.GetKeys(Ids);
-	for (const FString& Id : Ids) if (!Known.Contains(Id)) RemoveBomb(Id);
+	int32 Gone = 0;
+	for (const FString& Id : Ids) if (!Known.Contains(Id)) { RemoveBomb(Id); Gone++; }
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs"))) Game->Log(FString::Printf(TEXT("bombs: the server lists %d; this pawn had %d, %d of them gone"), Known.Num(), Ids.Num(), Gone));
 }
 
 void ACubePlayerPawn::RemoveBomb(const FString& Id)

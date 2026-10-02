@@ -159,6 +159,7 @@ void UCubeWorldGameInstance::BeginCrossingGap(UWorld* InWorld)
 
 void UCubeWorldGameInstance::CarryOver(TMap<FString, ACubeAvatar*>& InAvatars, TMap<FString, ACubeBomb*>& InBombs, ACubeTombstone*& InTomb)
 {
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs"))) Log(FString::Printf(TEXT("bombs: %d carried over from the pawn that goes, with %d players"), InBombs.Num(), InAvatars.Num()));
 	for (const auto& Pair : InAvatars) if (Pair.Value) CarriedAvatars.Add(Pair.Key, Pair.Value);
 	for (const auto& Pair : InBombs) if (Pair.Value) CarriedBombs.Add(Pair.Key, Pair.Value);
 	if (InTomb) CarriedTomb = InTomb;
@@ -167,6 +168,7 @@ void UCubeWorldGameInstance::CarryOver(TMap<FString, ACubeAvatar*>& InAvatars, T
 
 void UCubeWorldGameInstance::TakeCarried(TMap<FString, ACubeAvatar*>& OutAvatars, TMap<FString, ACubeBomb*>& OutBombs, ACubeTombstone*& OutTomb)
 {
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs"))) Log(FString::Printf(TEXT("bombs: the new pawn takes %d carried (it has %d)"), CarriedBombs.Num(), OutBombs.Num()));
 	for (const auto& Pair : CarriedAvatars) if (Pair.Value.IsValid() && !OutAvatars.Contains(Pair.Key)) OutAvatars.Add(Pair.Key, Pair.Value.Get());
 	for (const auto& Pair : CarriedBombs) if (Pair.Value.IsValid() && !OutBombs.Contains(Pair.Key)) OutBombs.Add(Pair.Key, Pair.Value.Get());
 	if (CarriedTomb.IsValid() && !OutTomb) OutTomb = CarriedTomb.Get();
@@ -175,6 +177,7 @@ void UCubeWorldGameInstance::TakeCarried(TMap<FString, ACubeAvatar*>& OutAvatars
 
 void UCubeWorldGameInstance::DropCarried()
 {
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs")) && CarriedBombs.Num() > 0) Log(FString::Printf(TEXT("bombs: %d carried dropped (a pawn bound with no crossing in progress)"), CarriedBombs.Num()));
 	for (const auto& Pair : CarriedAvatars) if (Pair.Value.IsValid()) Pair.Value->Destroy();
 	for (const auto& Pair : CarriedBombs) if (Pair.Value.IsValid()) Pair.Value->Destroy();
 	if (CarriedTomb.IsValid()) CarriedTomb->Destroy();
