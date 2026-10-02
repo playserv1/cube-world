@@ -226,9 +226,21 @@ void ACubePlayerPawn::SetupPlayerInputComponent(UInputComponent* Input)
 	Input->BindAction(TEXT("TogglePanel"), IE_Pressed, this, &ACubePlayerPawn::OnTogglePanel);
 }
 
-// The axis value is the raw pixel delta (DefaultInput.ini sets the mouse sensitivity to 1 and the legacy scales off).
-void ACubePlayerPawn::OnTurn(float V) { if (bMouseCaptured) AddControllerYawInput(V * CubeSpec::DegreesPerMousePixel); }
-void ACubePlayerPawn::OnLookUp(float V) { if (bMouseCaptured) AddControllerPitchInput(V * CubeSpec::DegreesPerMousePixel); }
+// The axis value is the raw pixel delta (DefaultInput.ini sets the mouse sensitivity to 1 and the legacy scales off),
+// scaled by the engine with the field of view (bEnableFOVScaling).
+void ACubePlayerPawn::OnTurn(float V)
+{
+	if (!bMouseCaptured) return;
+	AddControllerYawInput(V * CubeSpec::DegreesPerMousePixel);
+	if (Game) Game->FrameTurn.X += V * CubeSpec::DegreesPerMousePixel;
+}
+
+void ACubePlayerPawn::OnLookUp(float V)
+{
+	if (!bMouseCaptured) return;
+	AddControllerPitchInput(V * CubeSpec::DegreesPerMousePixel);
+	if (Game) Game->FrameTurn.Y += V * CubeSpec::DegreesPerMousePixel;
+}
 
 void ACubePlayerPawn::CaptureMouse(bool bCapture)
 {

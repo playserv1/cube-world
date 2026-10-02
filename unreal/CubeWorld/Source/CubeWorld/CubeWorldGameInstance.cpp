@@ -30,6 +30,7 @@
 #include "CubeAvatar.h"
 #include "CubeBombs.h"
 #include "CubeTombstone.h"
+#include "InputCoreTypes.h"
 
 namespace
 {
@@ -242,6 +243,7 @@ void UCubeWorldGameInstance::StepGap()
 	GapLastTime = Now;
 	// The mouse turns the view as the pawn's OnTurn and OnLookUp do (MouseX and MouseY at 0.15 degrees each).
 	const FVector2D Mouse = CubeKeys::TakeMouse();
+	FrameTapMouse += Mouse;
 	GapYawDeg += Mouse.X * CubeSpec::DegreesPerMousePixel;
 	GapPitchDeg = FMath::Clamp(GapPitchDeg + (float)Mouse.Y * CubeSpec::DegreesPerMousePixel, -89.9f, 89.9f);
 	FCubeInput Input;
@@ -326,9 +328,44 @@ void UCubeWorldGameInstance::HoldCrossingView(UWorld* InWorld, ELevelTick, float
 void UCubeWorldGameInstance::LogFramesFor(double Seconds)
 {
 	if (!FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) || !GEngine || !GEngine->GameViewport) return;
+	WatchFrames();
+	// A new stretch of frame lines starts from this frame's mouse, not from all that came while none was logged.
+	if (!DrawLogHandle.IsValid()) { FrameMouse = FrameTapMouse = FrameTurn = FVector2D::ZeroVector; }
 	DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + Seconds);
 	if (!DrawLogHandle.IsValid()) DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
 	if (!EndFrameLogHandle.IsValid()) EndFrameLogHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UCubeWorldGameInstance::LogEndOfFrame);
+}
+
+void UCubeWorldGameInstance::WatchFrames()
+{
+	if (!FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) || !GEngine || !GEngine->GameViewport) return;
+	if (!InputAxisHandle.IsValid()) InputAxisHandle = GEngine->GameViewport->OnInputAxis().AddUObject(this, &UCubeWorldGameInstance::HandleInputAxis);
+	if (!FovCheckHandle.IsValid()) FovCheckHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::CheckDrawnFov);
+}
+
+void UCubeWorldGameInstance::HandleInputAxis(FViewport*, int32, FKey Key, float Delta, float, int32, bool)
+{
+	if (Key == EKeys::MouseX) FrameMouse.X += Delta;
+	else if (Key == EKeys::MouseY) FrameMouse.Y += Delta;
+}
+
+// The camera manager draws its locked field of view, if it has one, whatever the view target's camera says: locked at a
+// crossing and left so, the sprint's zoom never showed in a C# room, and showed all at once at the next crossing.
+void UCubeWorldGameInstance::CheckDrawnFov()
+{
+	APlayerController* PC = GetFirstLocalPlayerController();
+	const APlayerCameraManager* Cam = PC ? PC->PlayerCameraManager : nullptr;
+	if (!Cam || bGapActive || !PC->GetPawn() || PC->GetViewTarget() != PC->GetPawn() || LastHorizontalFov <= 0) return;
+	const float Drawn = Cam->GetFOVAngle(), Off = FMath::Abs(Drawn - LastHorizontalFov);
+	if (Off > 0.1f)
+	{
+		if (FovOffFrames++ == 0) UE_LOG(LogCubeWorld, Log, TEXT("fov off: drawn %.1f, the pawn's %.1f, locked %.1f, in %s"), Drawn, LastHorizontalFov, Cam->GetLockedFOV(), Room.IsEmpty() ? *Travelling : *Room);
+		FovOffWorst = FMath::Max(FovOffWorst, Off);
+		return;
+	}
+	if (FovOffFrames == 0) return;
+	UE_LOG(LogCubeWorld, Log, TEXT("fov back to the pawn's after %d frame(s), %.1f off at most"), FovOffFrames, FovOffWorst);
+	FovOffFrames = 0; FovOffWorst = 0;
 }
 
 void UCubeWorldGameInstance::LogDrawnFrame()
@@ -343,8 +380,13 @@ void UCubeWorldGameInstance::LogDrawnFrame()
 		FVector Loc; FRotator Rot;
 		PC->GetPlayerViewPoint(Loc, Rot);
 		const AActor* Target = PC->GetViewTarget();
-		Line += FString::Printf(TEXT("view %.3f %.3f %.3f yaw %.1f fov %.1f target %s pc %s pawn %s"), Loc.X / CubeSpec::BlockCm, Loc.Y / CubeSpec::BlockCm, Loc.Z / CubeSpec::BlockCm, Rot.Yaw, PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : 0.f, Target ? *Target->GetClass()->GetName() : TEXT("none"), PC->GetLocalRole() == ROLE_Authority ? TEXT("placeholder") : TEXT("server"), PC->GetPawn() ? *PC->GetPawn()->GetActorLocation().ToString() : TEXT("none"));
+		const APlayerCameraManager* Cam = PC->PlayerCameraManager;
+		Line += FString::Printf(TEXT("view %.3f %.3f %.3f yaw %.1f fov %.1f target %s pc %s pawn %s"), Loc.X / CubeSpec::BlockCm, Loc.Y / CubeSpec::BlockCm, Loc.Z / CubeSpec::BlockCm, Rot.Yaw, Cam ? Cam->GetFOVAngle() : 0.f, Target ? *Target->GetClass()->GetName() : TEXT("none"), PC->GetLocalRole() == ROLE_Authority ? TEXT("placeholder") : TEXT("server"), PC->GetPawn() ? *PC->GetPawn()->GetActorLocation().ToString() : TEXT("none"));
+		// What turned it: the pitch; a locked field of view (0: none) and the pawn's own; the mouse at the viewport and at
+		// the gap's tap (pixels); the turn the pawn applied (degrees); and whether the gap holds the view.
+		Line += FString::Printf(TEXT(" pitch %.1f lock %.1f pawnfov %.1f mouse %.1f %.1f tap %.1f %.1f turn %.2f %.2f gap %d"), FRotator::NormalizeAxis(Rot.Pitch), Cam ? Cam->GetLockedFOV() : 0.f, LastHorizontalFov, FrameMouse.X, FrameMouse.Y, FrameTapMouse.X, FrameTapMouse.Y, FrameTurn.X, FrameTurn.Y, bGapActive ? 1 : 0);
 	}
+	FrameMouse = FrameTapMouse = FrameTurn = FVector2D::ZeroVector;
 	UE_LOG(LogCubeWorld, Log, TEXT("%s"), *Line);
 }
 
@@ -380,6 +422,7 @@ void UCubeWorldGameInstance::Log(const FString& Text)
 void UCubeWorldGameInstance::StartPlay(const FString& Name)
 {
 	if (bSigningIn || IsConnected() || bSwitching) return;
+	WatchFrames();
 	PlayerName = Name;
 	bSigningIn = true;
 	bEntering = true;

@@ -13,9 +13,11 @@
 #include "CubeBombs.h"
 #include "CubeWorldState.h"
 #include "Engine/EngineTypes.h"
+#include "InputCoreTypes.h"
 #include "CubeWorldGameInstance.generated.h"
 
 class FCubeSocket;
+class FViewport;
 struct FCubeSocketFrame;
 class FJsonObject;
 class ACubeAvatar;
@@ -98,6 +100,10 @@ public:
 	float WorldLoaded() const { return ChunksExpected > 0 ? FMath::Clamp(float(ChunksReceived) / ChunksExpected, 0.f, 1.f) : 0.f; }
 	/** The field of view the pawn draws with (horizontal degrees), for the view held through a crossing. */
 	float LastHorizontalFov = 0, LastFov = 0;
+	/** -logcrossing: what turned the view in the frame being drawn, for its frame line. The mouse as it reached the
+	 *  viewport (the engine's MouseX and MouseY) and as the gap took it from the tap, in pixels; the turn the pawn's Turn
+	 *  and LookUp axes applied, in degrees (after the engine's FOV scaling). */
+	FVector2D FrameMouse = FVector2D::ZeroVector, FrameTapMouse = FVector2D::ZeroVector, FrameTurn = FVector2D::ZeroVector;
 	/** True while the server is a C# one, reached over the JSON socket; false on an Unreal server, reached over Iris. */
 	bool IsViaSocket() const { return bViaSocket; }
 	/** A JSON frame to the C# server (nothing while on an Unreal server). */
@@ -270,6 +276,16 @@ private:
 	uint64 LastDrawnFrame = 0;
 	FDelegateHandle DrawLogHandle;
 	double DrawLogUntil = 0;
+	/** -logcrossing, for the whole run: the mouse that reaches the viewport (FrameMouse), and the field-of-view check. */
+	void WatchFrames();
+	void HandleInputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad);
+	FDelegateHandle InputAxisHandle;
+	/** Every frame the player's own pawn is the view, its field of view is the one drawn; a frame that is not (a locked
+	 *  camera manager draws its lock) is logged, once per stretch. */
+	void CheckDrawnFov();
+	FDelegateHandle FovCheckHandle;
+	int32 FovOffFrames = 0;
+	float FovOffWorst = 0;
 	bool bSnapshotDiff = false;
 	TMap<FIntVector, FName> Snapshot;
 	void ApplySnapshot();
