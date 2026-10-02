@@ -100,7 +100,11 @@ bool FCubeSocket::DoConnect(FString& OutError)
 	{
 		SSL_CTX* Ctx = SSL_CTX_new(TLS_client_method());
 		if (!Ctx) { OutError = TEXT("no TLS context"); return false; }
-		FSslModule::Get().GetCertificateManager().AddCertificatesToSslContext(Ctx);
+		ISslCertificateManager& Certificates = FSslModule::Get().GetCertificateManager();
+		// A build that staged no root certificates can verify no server, and every wss server then fails with "certificate
+		// verify failed", which reads as the server's fault (the Mac build without n.VerifyPeer, PSV-2986).
+		if (!Certificates.HasCertificatesAvailable()) UE_LOG(LogCubeWorld, Error, TEXT("socket: this build carries no root certificates, so no wss server can be verified (n.VerifyPeer stages cacert.pem)"));
+		Certificates.AddCertificatesToSslContext(Ctx);
 		SSL_CTX_set_verify(Ctx, SSL_VERIFY_PEER, nullptr);
 		SSL_CTX_set_min_proto_version(Ctx, TLS1_2_VERSION);
 		SslContext = Ctx;
