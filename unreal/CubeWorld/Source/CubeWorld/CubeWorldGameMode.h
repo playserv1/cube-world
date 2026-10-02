@@ -177,6 +177,14 @@ public:
 	static bool DeleteTakesOut(const FCubeElsewhere* Known, const FString& DeletedRowServer);
 	static FCubeHitRecord HitOf(const TSharedPtr<FJsonObject>& Row);
 	static FCubeHitRecord HitOf(const UWorldHit* Row);
+	/**
+	 * The bombs a read of the bomb table takes out of play here (PSV-2977): in play here, dropped more than
+	 * CubeBombNoRowGraceMs ago, and with no row in any read for CubeBombRecheckMs. A bomb's rows go two minutes after it
+	 * went off or fizzled (the drop function's sweep), so such a bomb is long over and this server missed its end. One read
+	 * is not enough: a read of more than one page can skip a row that another write moved (PSV-3014). MissingSince comes in
+	 * as when each bomb was first found with no row, and goes out as that for the bombs this read did not take out.
+	 */
+	static TArray<FString> BombsGoneFromTable(const TMap<FString, FCubeLiveBomb>& InPlay, const TSet<FString>& InTable, TMap<FString, int64>& MissingSince, int64 NowMs);
 
 private:
 	// ---- startup ----------------------------------------------------------------------------
@@ -187,6 +195,8 @@ private:
 	void ApplyBombTable(const TArray<UWorldBomb*>& Rows);
 	/** Reads the bomb table again: the uplink's subscription is new and heard nothing written before it. */
 	void ReloadBombs();
+	/** After a read of the bomb table again: the bombs in play here that the table no longer has go out of play (BombsGoneFromTable). */
+	void EndBombsGoneFromTable(const TArray<UWorldBomb*>& Rows);
 	/** Reads the poses of the last 5 s again, for the same reason. */
 	void ReloadPresence();
 	/** Reads the hits of the last 5 s again, for the same reason. */
@@ -319,6 +329,9 @@ private:
 	bool bBombsLoaded = false;
 	bool bBombsReloading = false, bPresenceReloading = false, bHitsReloading = false;
 	static constexpr int64 BombsOverKeepMs = 15 * 60000;
+	/** The bombs in play here that the last read of the bomb table had no row of, and since when (BombsGoneFromTable). */
+	TMap<FString, int64> BombsMissingSince;
+	FTimerHandle BombsRecheckTimer;
 	TArray<FCubeRegionRep> Regions;
 	TStrongObjectPtr<UWorldRegion> RegionRow;
 	UPROPERTY() ACubeWorldState* State = nullptr;

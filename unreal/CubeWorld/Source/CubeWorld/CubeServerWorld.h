@@ -271,6 +271,18 @@ constexpr int64 CubeHitTtlMs = 5000;
 /** A hit written at At lands now only within CubeHitTtlMs of being written; one with no time never does. */
 inline bool CubeHitIsFresh(int64 At, int64 Now) { return At > 0 && Now - At < CubeHitTtlMs; }
 
+/**
+ * How recently a bomb may have been dropped and still have no row in a read of the bomb table: its first rows may be
+ * written while the read runs, or pushed before they are stored. Older, a bomb with no row is long over (PSV-2977).
+ */
+constexpr int64 CubeBombNoRowGraceMs = 10000;
+
+/**
+ * How long a bomb in play must have no row in every read of the bomb table before it goes out of play: the table is read
+ * again this long after a read that found such bombs, to be sure (PSV-2977).
+ */
+constexpr int64 CubeBombRecheckMs = 5000;
+
 /** How far outside a region the last server may have seen a player who walked in over its border, in blocks. */
 constexpr double CubeCrossingBand = 4.0;
 

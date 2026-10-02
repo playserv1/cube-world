@@ -418,6 +418,51 @@ bool FCubeWorldPresenceHandOffTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldBombGoneFromTableTest,
+	"CubeWorld.Server.ABombTheTableNoLongerHasGoesOutOfPlay",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// On dev on 2026-10-02 red and green kept 24 bombs whose fizzles the platform lost: by the next read of the table the drop
+// function had swept their rows, and nothing ended them (PSV-2977). Two reads that both find no row of a bomb end it.
+bool FCubeWorldBombGoneFromTableTest::RunTest(const FString& Parameters)
+{
+	const int64 T = 1790955000000;
+	auto Bomb = [](const TCHAR* State, int64 DroppedAt) { FCubeLiveBomb B; B.Record.State = State; B.Record.DroppedAt = DroppedAt; return B; };
+	TMap<FString, FCubeLiveBomb> InPlay;
+	InPlay.Add(TEXT("ghost"), Bomb(TEXT("free"), T - 42 * 60000));
+	InPlay.Add(TEXT("held-ghost"), Bomb(TEXT("held"), T - 20 * 60000));
+	InPlay.Add(TEXT("live"), Bomb(TEXT("free"), T - 60000));
+	InPlay.Add(TEXT("fresh"), Bomb(TEXT("free"), T - 2000));
+	const TSet<FString> Table = { TEXT("live"), TEXT("held-elsewhere") };
+	TMap<FString, int64> Missing;
+
+	TestEqual(TEXT("one read with no row of a bomb takes nothing out"), ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T).Num(), 0);
+	TestTrue(TEXT("but marks the bombs it had no row of"), Missing.Num() == 2 && Missing.Contains(TEXT("ghost")) && Missing.Contains(TEXT("held-ghost")));
+	TestFalse(TEXT("not one dropped a moment ago, whose row may not be in a read yet"), Missing.Contains(TEXT("fresh")));
+	TestEqual(TEXT("a second read a moment later takes nothing out yet"), ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T + 100).Num(), 0);
+	TestEqual(TEXT("and keeps when they were first missed"), Missing.FindRef(TEXT("ghost")), T);
+
+	const TArray<FString> Gone = ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T + CubeBombRecheckMs);
+	TestTrue(TEXT("a read 5 s on with no row of them takes them out, free or held"), Gone.Num() == 2 && Gone.Contains(TEXT("ghost")) && Gone.Contains(TEXT("held-ghost")));
+	TestEqual(TEXT("and nothing stays marked"), Missing.Num(), 0);
+
+	Missing.Reset();
+	Missing.Add(TEXT("ghost"), T);
+	const TSet<FString> Found = { TEXT("live"), TEXT("ghost") };
+	TestEqual(TEXT("a bomb a later read finds a row of is not taken out"), ACubeWorldGameMode::BombsGoneFromTable(InPlay, Found, Missing, T + CubeBombRecheckMs).Num(), 0);
+	TestFalse(TEXT("and is no longer marked"), Missing.Contains(TEXT("ghost")));
+
+	Missing.Reset();
+	Missing.Add(TEXT("ghost"), T);
+	TestEqual(TEXT("a read that found no row at all takes nothing out"), ACubeWorldGameMode::BombsGoneFromTable(InPlay, TSet<FString>(), Missing, T + CubeBombRecheckMs).Num(), 0);
+	TestEqual(TEXT("and marks nothing"), Missing.Num(), 0);
+
+	ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T + CubeBombNoRowGraceMs + 1000);
+	TestTrue(TEXT("a bomb dropped longer ago than the grace is marked too"), Missing.Contains(TEXT("fresh")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCubeWorldDoorCloseTest,
 	"CubeWorld.Wire.TheDoorAnswersABareCloseWithANormalOne",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)

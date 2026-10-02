@@ -960,7 +960,56 @@ void ACubeWorldGameMode::ReloadBombs()
 		Weak->bBombsReloading = false;
 		if (!bOk) { Weak->ServerLog(FString::Printf(TEXT("bombs not read again: %s"), *Error.Message)); return; }
 		Weak->ApplyBombTable(Rows);
+		Weak->EndBombsGoneFromTable(Rows);
 	});
+}
+
+TArray<FString> ACubeWorldGameMode::BombsGoneFromTable(const TMap<FString, FCubeLiveBomb>& InPlay, const TSet<FString>& InTable, TMap<FString, int64>& MissingSince, int64 NowMs)
+{
+	TArray<FString> Gone;
+	TMap<FString, int64> StillMissing;
+	// A read that found no row at all says nothing of any bomb: while a room is up, the table holds the bombs in play.
+	if (InTable.Num() > 0)
+		for (const auto& Pair : InPlay)
+		{
+			if (InTable.Contains(Pair.Key) || NowMs - Pair.Value.Record.DroppedAt <= CubeBombNoRowGraceMs) continue;
+			const int64* Since = MissingSince.Find(Pair.Key);
+			if (Since && NowMs - *Since >= CubeBombRecheckMs) Gone.Add(Pair.Key);
+			else StillMissing.Add(Pair.Key, Since ? *Since : NowMs);
+		}
+	MissingSince = MoveTemp(StillMissing);
+	return Gone;
+}
+
+/**
+ * On dev on 2026-10-02 red and green kept 24 bombs for over half an hour that every other server knew were gone (PSV-2977):
+ * the platform lost the fizzles, and by the next read of the table the drop function had swept the rows, so
+ * ApplyBombTable, which walks only the rows it finds, could not end them. Their players saw free bombs that could not
+ * be picked up. Such a bomb goes as one that fizzled: no blast, and nothing written, since its rows are gone already. A
+ * bomb with no row is looked for again 5 s later, and goes only if no read in that time found a row of it. The C#
+ * servers need the same rule.
+ */
+void ACubeWorldGameMode::EndBombsGoneFromTable(const TArray<UWorldBomb*>& Rows)
+{
+	TSet<FString> InTable;
+	for (const UWorldBomb* Row : Rows) InTable.Add(Row->bomb_id);
+	const TArray<FString> Gone = BombsGoneFromTable(Bombs, InTable, BombsMissingSince, Now());
+	for (const FString& Id : Gone)
+	{
+		const FCubeLiveBomb* Live = Bombs.Find(Id);
+		if (!Live) continue;
+		FCubeBombRecord Fizzled = Live->Record;
+		Fizzled.State = TEXT("fizzled");
+		Fizzled.Z = Live->Z;
+		OnBomb(Fizzled, false);
+	}
+	if (Gone.Num() > 0)
+		ServerLog(FString::Printf(TEXT("bombs read again: %d the table no longer has went out of play, their ends missed (%s)"), Gone.Num(), *FString::Join(Gone, TEXT(", "))));
+	if (BombsMissingSince.Num() > 0 && !bClosing)
+	{
+		ServerLog(FString::Printf(TEXT("bombs read again: %d in play have no row in the table, reading it again in %lld s"), BombsMissingSince.Num(), CubeBombRecheckMs / 1000));
+		GetWorldTimerManager().SetTimer(BombsRecheckTimer, this, &ACubeWorldGameMode::ReloadBombs, CubeBombRecheckMs / 1000.f, false);
+	}
 }
 
 FCubeBombRecord ACubeWorldGameMode::RecordOf(const UWorldBomb* Row)
