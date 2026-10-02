@@ -603,8 +603,10 @@ void ACubePlayerPawn::GameTick()
 			bThereX = FMath::Abs(TestWalkTo.GetValue() - Body.X) < 0.5;
 			Game->Log(FString::Printf(TEXT("walkto: on to %.1f%s"), Next.Key, Next.Value.IsSet() ? *FString::Printf(TEXT(", %.1f"), Next.Value.GetValue()) : TEXT("")));
 		}
-		if (bThereX && TestWalkToY.IsSet()) PC->SetControlRotation(FRotator(0, TestWalkToY.GetValue() > Body.Y ? 90.f : -90.f, 0));
-		else PC->SetControlRotation(FRotator(0, TestWalkTo.GetValue() > Body.X ? 0.f : 180.f, 0));
+		const float Heading = bThereX && TestWalkToY.IsSet() ? (TestWalkToY.GetValue() > Body.Y ? 90.f : -90.f) : (TestWalkTo.GetValue() > Body.X ? 0.f : 180.f);
+		// -fakemouse: the hand on the mouse turns the view, and the walk steers by the keys (below).
+		if (Game->IsFakeMouse()) Game->WalkHeading = Heading;
+		else PC->SetControlRotation(FRotator(0, Heading, 0));
 	}
 	const FRotator View = GetControlRotation();
 	const double Yaw = CubeSpec::YawFromUnreal(View.Yaw), Pitch = CubeSpec::PitchFromUnreal(View.Pitch);
@@ -620,6 +622,22 @@ void ACubePlayerPawn::GameTick()
 			Input.Forward = FMath::Clamp(AxisForward + TestForward, -1.f, 1.f);
 			Input.Strafe = -FMath::Clamp(AxisRight, -1.f, 1.f);   // Minecraft's strafe is positive to the left
 			Input.bJump = bJumpHeld; Input.bSneak = bSneakHeld; Input.bSprint = bSprintHeld || bTestSprint;
+			// -fakemouse: whichever way the hand has the view looking, the keys walk the test's way.
+			if (Game->IsFakeMouse() && Game->WalkHeading.IsSet() && Input.Forward > 0)
+			{
+				const FVector2D K = UCubeWorldGameInstance::WalkKeys(Game->WalkHeading.GetValue(), View.Yaw);
+				Input.Forward = K.X; Input.Strafe = K.Y;
+			}
+			// -fakesprint=<s>: in a C# room, more than 3 blocks inside its region, the sprint is let go and taken again every
+			// s seconds, so the zoom there must follow it; near a border, and on an Unreal server, it is held as -fakekeys
+			// holds it, so a crossing starts at a steady zoom.
+			static const float SprintEvery = [] { float S = 0; FParse::Value(FCommandLine::Get(), TEXT("-fakesprint="), S); return S; }();
+			if (SprintEvery > 0 && Game->IsViaSocket())
+			{
+				int32 X0, X1, Y0, Y1;
+				CubeSpec::RegionBounds(CubeSpec::RegionOf(Body.X, Body.Y), X0, X1, Y0, Y1);
+				if (Body.X > X0 + 3 && Body.X < X1 - 3 && Body.Y > Y0 + 3 && Body.Y < Y1 - 3) Input.bSprint = FMath::Fmod(FPlatformTime::Seconds(), 2.0 * SprintEvery) < SprintEvery;
+			}
 		}
 		Input.Yaw = Yaw;
 		TArray<FCubeOtherBody> Others;

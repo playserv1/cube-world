@@ -23,4 +23,6 @@ namespace CubeKeys
 	/** The movement since the last call, as the engine's MouseX and MouseY axes carry it (MouseY is up). */
 	FVector2D TakeMouse();
 	void StopMouse();
+	/** -fakemouse: a movement nobody's hand made, added where a real one is seen while the mouse is being added up. */
+	void AddMouse(const FVector2D& Delta);
 }

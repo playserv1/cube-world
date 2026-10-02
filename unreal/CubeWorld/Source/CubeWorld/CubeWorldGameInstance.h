@@ -181,6 +181,24 @@ public:
 	/** Steps the carried body up to now and aims the view at its eyes. */
 	void StepGap();
 
+	// ---- -fakemouse: a hand on the mouse for unattended runs ----------------------------------------
+	/** -fakemouse=<deg/s>: nobody's hand swings the mouse right and left at that rate, 30° each way (and up and down at
+	 *  a fifth of it, 10° each way). Its movement goes in where a real mouse's does: to the viewport, whose controller
+	 *  turns the view by it (the pawn's Turn and LookUp, with the engine's FOV scaling), and to the crossing gap's tap.
+	 *  With -walkto the hand also turns the swing's centre towards the walk's heading, and the walk steers by the keys,
+	 *  never by setting the view. */
+	float FakeMouseRate = 0;
+	bool IsFakeMouse() const { return FakeMouseRate > 0; }
+	/** The way the -walkto test goes now (Unreal yaw degrees), kept through crossings; unset until it has a spot. */
+	TOptional<float> WalkHeading;
+	/** What the hand turned the view by in the frame being drawn, in degrees, for the frame line. */
+	FVector2D FakeTurn = FVector2D::ZeroVector;
+	/** The hand's swing at a moment: a triangle from 0 to +Amplitude, to -Amplitude and back, at Rate degrees a second. */
+	static double SwingAt(double Seconds, double Rate, double Amplitude);
+	/** The keys that walk the Heading's way while the view looks ViewYaw's way (Unreal yaw degrees): forward, and the
+	 *  strafe to the left as Minecraft's is. */
+	static FVector2D WalkKeys(float Heading, float ViewYaw);
+
 	// ---- the client's own actors, from one pawn to the next across a crossing that keeps the world (UCubeGameEngine) ----
 	void CarryOver(TMap<FString, ACubeAvatar*>& InAvatars, TMap<FString, ACubeBomb*>& InBombs, ACubeTombstone*& InTomb);
 	void TakeCarried(TMap<FString, ACubeAvatar*>& OutAvatars, TMap<FString, ACubeBomb*>& OutBombs, ACubeTombstone*& OutTomb);
@@ -284,6 +302,12 @@ private:
 	 *  camera manager draws its lock) is logged, once per stretch. */
 	void CheckDrawnFov();
 	FDelegateHandle FovCheckHandle;
+	/** -fakemouse: the hand's movement for the frame that begins. */
+	void TickFakeMouse();
+	FDelegateHandle FakeMouseHandle;
+	double FakeMouseClock = 0, FakeMouseLastTime = 0;
+	/** The swing the hand has put in so far, off the centre it swings around (yaw, pitch). */
+	FVector2D FakeSwing = FVector2D::ZeroVector;
 	int32 FovOffFrames = 0;
 	float FovOffWorst = 0;
 	bool bSnapshotDiff = false;

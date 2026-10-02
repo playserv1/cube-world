@@ -31,6 +31,9 @@
 #include "CubeBombs.h"
 #include "CubeTombstone.h"
 #include "InputCoreTypes.h"
+#include "InputKeyEventArgs.h"
+#include "GameFramework/InputSettings.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 namespace
 {
@@ -55,6 +58,8 @@ void UCubeWorldGameInstance::Init()
 		PlayServ::Auth::OnSessionLost().AddDynamic(this, &UCubeWorldGameInstance::HandleSessionLost);
 	}
 	Hotbar = CubeSpec::Hotbar();
+	if (!CubeIsServerProcess() && FParse::Value(FCommandLine::Get(), TEXT("-fakemouse="), FakeMouseRate) && FakeMouseRate > 0)
+		FakeMouseHandle = FCoreDelegates::OnBeginFrame.AddUObject(this, &UCubeWorldGameInstance::TickFakeMouse);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCubeWorldGameInstance::HandlePostLoadMap);
 	if (GEngine) GEngine->OnNetworkFailure().AddUObject(this, &UCubeWorldGameInstance::HandleNetworkFailure);
 	if (UCubeGameEngine* Engine = UCubeGameEngine::Get())
@@ -79,6 +84,7 @@ void UCubeWorldGameInstance::HandleSessionLost()
 void UCubeWorldGameInstance::Shutdown()
 {
 	CloseSockets();
+	if (FakeMouseHandle.IsValid()) { FCoreDelegates::OnBeginFrame.Remove(FakeMouseHandle); FakeMouseHandle.Reset(); }
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 	if (GEngine) GEngine->OnNetworkFailure().RemoveAll(this);
 	if (UCubeGameEngine* Engine = UCubeGameEngine::Get()) { Engine->OnServerSwitched.RemoveAll(this); Engine->OnSeamlessTravelFailed.RemoveAll(this); }
@@ -254,6 +260,8 @@ void UCubeWorldGameInstance::StepGap()
 		Input.bJump = Keys.bJump; Input.bSprint = Keys.bSprint; Input.bSneak = Keys.bSneak;
 	}
 	if (bGapTestWalk) { Input.Forward = 1; Input.bSprint = true; }
+	// -fakemouse: the hand has the view swing, and the walk keeps to its heading by the keys (as the pawn's does).
+	if (IsFakeMouse() && WalkHeading.IsSet() && Input.Forward > 0) { const FVector2D K = WalkKeys(WalkHeading.GetValue(), GapYawDeg); Input.Forward = K.X; Input.Strafe = K.Y; }
 	Input.Yaw = CubeSpec::YawFromUnreal(GapYawDeg);
 	const FCubeSolidQuery Solid = [this](int32 X, int32 Y, int32 Z) { return World.IsSolidForPhysics(X, Y, Z); };
 	GapAccumulator += Dt;
@@ -275,6 +283,52 @@ void UCubeWorldGameInstance::StepGap()
 	Crossing.Yaw = CubeSpec::YawFromUnreal(GapYawDeg); Crossing.Pitch = CubeSpec::PitchFromUnreal(GapPitchDeg);
 	Crossing.bSprinting = GapBody.bSprinting; Crossing.bSneaking = GapBody.bSneaking;
 	Crossing.Forward = Input.Forward; Crossing.Strafe = -Input.Strafe;
+}
+
+double UCubeWorldGameInstance::SwingAt(double Seconds, double Rate, double Amplitude)
+{
+	if (Rate <= 0 || Amplitude <= 0) return 0;
+	const double Period = 4 * Amplitude / Rate;
+	const double P = FMath::Fmod(FMath::Max(0.0, Seconds), Period) / Period;
+	return Amplitude * (P < 0.25 ? 4 * P : P < 0.75 ? 2 - 4 * P : 4 * P - 4);
+}
+
+FVector2D UCubeWorldGameInstance::WalkKeys(float Heading, float ViewYaw)
+{
+	const double Off = FMath::DegreesToRadians(FRotator::NormalizeAxis(Heading - ViewYaw));
+	return FVector2D(FMath::Cos(Off), -FMath::Sin(Off));
+}
+
+// The hand's movement for this frame, worked out in degrees (the swing, and a turn of the centre it swings around
+// towards the walk's heading and back to level) and handed in as a mouse's pixels are, before this frame's input is
+// read: to the viewport, which gives it to whatever controller holds the player now, and to the gap's tap, which a
+// real mouse reaches as well. A crossing that drops or doubles a real mouse's movement drops or doubles this too.
+void UCubeWorldGameInstance::TickFakeMouse()
+{
+	const double Now = FPlatformTime::Seconds();
+	const double Dt = FakeMouseLastTime > 0 ? FMath::Min(Now - FakeMouseLastTime, 0.1) : 0.0;
+	FakeMouseLastTime = Now;
+	UGameViewportClient* Client = GEngine ? GEngine->GameViewport : nullptr;
+	APlayerController* PC = GetFirstLocalPlayerController();
+	// The hand moves only while the player plays: from the first placement on, through every crossing.
+	if (Dt <= 0 || !bPlaced || !Client || !Client->Viewport || !PC) return;
+	FakeMouseClock += Dt;
+	const FVector2D Swing(SwingAt(FakeMouseClock, FakeMouseRate, 30.0), SwingAt(FakeMouseClock, FakeMouseRate / 5, 10.0));
+	FVector2D Turn = Swing - FakeSwing;
+	const FRotator View = PC->GetControlRotation();
+	if (WalkHeading.IsSet()) Turn.X += FMath::Clamp((double)FRotator::NormalizeAxis(WalkHeading.GetValue() - (View.Yaw - FakeSwing.X)), -90.0 * Dt, 90.0 * Dt);
+	Turn.Y += FMath::Clamp(-(double)FRotator::NormalizeAxis(View.Pitch - FakeSwing.Y), -30.0 * Dt, 30.0 * Dt);
+	FakeSwing = Swing;
+	// In pixels, as the engine reads a mouse: 0.15° each, scaled by the field of view drawn (bEnableFOVScaling).
+	const UInputSettings* Settings = GetDefault<UInputSettings>();
+	const float Fov = PC->PlayerCameraManager ? PC->PlayerCameraManager->GetFOVAngle() : 90.f;
+	const double Degrees = CubeSpec::DegreesPerMousePixel * (Settings && Settings->bEnableFOVScaling ? Settings->FOVScale * Fov : 1.0);
+	const FVector2D Pixels = Turn / Degrees;
+	const FInputDeviceId Device = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+	Client->InputAxis(FInputKeyEventArgs(Client->Viewport, Device, EKeys::MouseX, (float)Pixels.X, (float)Dt, 1, (uint64)0));
+	Client->InputAxis(FInputKeyEventArgs(Client->Viewport, Device, EKeys::MouseY, (float)Pixels.Y, (float)Dt, 1, (uint64)0));
+	CubeKeys::AddMouse(Pixels);
+	FakeTurn += Turn;
 }
 
 void UCubeWorldGameInstance::AimPlaceholder(APlayerController* PC)
@@ -330,7 +384,7 @@ void UCubeWorldGameInstance::LogFramesFor(double Seconds)
 	if (!FParse::Param(FCommandLine::Get(), TEXT("logcrossing")) || !GEngine || !GEngine->GameViewport) return;
 	WatchFrames();
 	// A new stretch of frame lines starts from this frame's mouse, not from all that came while none was logged.
-	if (!DrawLogHandle.IsValid()) { FrameMouse = FrameTapMouse = FrameTurn = FVector2D::ZeroVector; }
+	if (!DrawLogHandle.IsValid()) { FrameMouse = FrameTapMouse = FrameTurn = FakeTurn = FVector2D::ZeroVector; }
 	DrawLogUntil = FMath::Max(DrawLogUntil, FPlatformTime::Seconds() + Seconds);
 	if (!DrawLogHandle.IsValid()) DrawLogHandle = GEngine->GameViewport->OnBeginDraw().AddUObject(this, &UCubeWorldGameInstance::LogDrawnFrame);
 	if (!EndFrameLogHandle.IsValid()) EndFrameLogHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UCubeWorldGameInstance::LogEndOfFrame);
@@ -385,8 +439,10 @@ void UCubeWorldGameInstance::LogDrawnFrame()
 		// What turned it: the pitch; a locked field of view (0: none) and the pawn's own; the mouse at the viewport and at
 		// the gap's tap (pixels); the turn the pawn applied (degrees); and whether the gap holds the view.
 		Line += FString::Printf(TEXT(" pitch %.1f lock %.1f pawnfov %.1f mouse %.1f %.1f tap %.1f %.1f turn %.2f %.2f gap %d"), FRotator::NormalizeAxis(Rot.Pitch), Cam ? Cam->GetLockedFOV() : 0.f, LastHorizontalFov, FrameMouse.X, FrameMouse.Y, FrameTapMouse.X, FrameTapMouse.Y, FrameTurn.X, FrameTurn.Y, bGapActive ? 1 : 0);
+		// -fakemouse: the turn the hand meant this frame, which the view should show.
+		if (IsFakeMouse()) Line += FString::Printf(TEXT(" fake %.2f %.2f"), FakeTurn.X, FakeTurn.Y);
 	}
-	FrameMouse = FrameTapMouse = FrameTurn = FVector2D::ZeroVector;
+	FrameMouse = FrameTapMouse = FrameTurn = FakeTurn = FVector2D::ZeroVector;
 	UE_LOG(LogCubeWorld, Log, TEXT("%s"), *Line);
 }
 

@@ -102,6 +102,11 @@ FVector2D CubeKeys::TakeMouse()
 	return D;
 }
 
+void CubeKeys::AddMouse(const FVector2D& Delta)
+{
+	if (Tap.IsValid()) Tap->Delta += Delta;
+}
+
 void CubeKeys::StopMouse()
 {
 	if (Tap.IsValid() && FSlateApplication::IsInitialized()) FSlateApplication::Get().UnregisterInputPreProcessor(Tap);
