@@ -1,9 +1,9 @@
 // The server's live view of what the other servers and the functions write: the uplink's data subscriptions, one for
 // each shared table and keyed as the C# servers key them (CubeWorldServer.Subscribe). The platform sends every upsert
 // and every delete, whoever made it, the moment it lands, whatever its timestamp. What changed while a subscription
-// was not in place (while the world loaded, or while the uplink reconnected) is not sent again, so on every
-// (re)subscription the table is read again. Which server holds which region is read in the heartbeat every 5 s, as
-// the C# servers read it (LiveRegionsAsync).
+// was not in place (while the world loaded, or while the uplink reconnected) is not sent again, so a moment after
+// every (re)subscription the table is read again. Which server holds which region is read in the heartbeat every 5 s,
+// as the C# servers read it (LiveRegionsAsync).
 //
 // Until PSV-3009 presence and hits came only through windows on their timestamps (collection subscriptions on the
 // realtime socket, with table polls behind them). A window keyed on the writer's clock missed rows stamped below it,
@@ -22,6 +22,8 @@ namespace
 	constexpr TCHAR PresenceEntity[] = TEXT("WorldPresence");
 	constexpr TCHAR HitEntity[] = TEXT("WorldHit");
 	constexpr TCHAR BombEntity[] = TEXT("WorldBomb");
+	/** How long after a subscription goes out its table is read again: the platform has taken it in by then. */
+	constexpr float RereadDelaySeconds = 3.f;
 
 	double Num(const TSharedPtr<FJsonObject>& Row, const TCHAR* Field, double Default = 0)
 	{
@@ -109,19 +111,29 @@ void ACubeWorldGameMode::SubscribeUplink()
 	Rooms->SubscribeData(BombEntity, TEXT("field:bomb_id"));
 }
 
-// The subscription went out, first once the room was open, then on every new uplink socket: what changed before it
-// was in place was not heard, so the table is read again.
+/**
+ * The subscription went out, first once the room was open, then on every new uplink socket: what changed before it
+ * was in place was not heard, so the table is read again. Not at once: the SDK reports the subscription as it sends
+ * it, the platform takes it in a moment later and acknowledges nothing, and a row written between a read made at once
+ * and that moment was neither read nor sent. On dev a new server kept a fizzled bomb that way, free and falling for
+ * as long as it ran: the drop function fizzled it in the same tenth of a second as the server subscribed. A row read
+ * and also heard changes nothing.
+ */
 void ACubeWorldGameMode::HandleDataSubscribed(const FString& Entity)
+{
+	if (bClosing) return;
+	if (Entity == CubeEntity && CubesSubscribedAt == 0) CubesSubscribedAt = Now();
+	const FString Table = Entity;
+	GetWorldTimerManager().SetTimer(RereadTimers.FindOrAdd(Entity), FTimerDelegate::CreateWeakLambda(this, [this, Table]() { RereadTable(Table); }), RereadDelaySeconds, false);
+}
+
+void ACubeWorldGameMode::RereadTable(const FString& Entity)
 {
 	if (bClosing) return;
 	if (Entity == BombEntity) ReloadBombs();
 	else if (Entity == PresenceEntity) ReloadPresence();
 	else if (Entity == HitEntity) ReloadHits();
-	else if (Entity == CubeEntity)
-	{
-		if (CubesSubscribedAt == 0) CubesSubscribedAt = Now();
-		ReconcileCubes();
-	}
+	else if (Entity == CubeEntity) ReconcileCubes();
 }
 
 void ACubeWorldGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)

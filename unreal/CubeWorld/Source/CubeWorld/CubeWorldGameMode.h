@@ -207,6 +207,8 @@ private:
 	// ---- the uplink's data subscriptions: every write and delete of the shared tables, whoever made it ---------
 	void SubscribeUplink();
 	void HandleDataSubscribed(const FString& Entity);
+	/** Reads a subscribed table again, a moment after its subscription went out (HandleDataSubscribed). */
+	void RereadTable(const FString& Entity);
 	void HandleDataUpdate(const FPlayServDataUpdate& Update);
 	/** A pose of a player another server hosts: taken unless older than the one known, and a drop in health flashes them here. */
 	void HearPose(const FCubeElsewhere& Pose);
@@ -318,6 +320,8 @@ private:
 	/** This server's writes of each block still on their way to the table. */
 	TMap<FIntVector, int32> WritesInFlight;
 	bool bReconciling = false, bReconcileAgain = false;
+	/** One read of each table again after its subscription went out; another subscription meanwhile waits again. */
+	TMap<FString, FTimerHandle> RereadTimers;
 	/** When the WorldCube subscription first went out, when a write of this server's first landed after it, and whether any change came over it. */
 	int64 CubesSubscribedAt = 0, CubeWriteLandedAt = 0;
 	bool bCubeUpdatesHeard = false, bCubeUpdatesWarned = false;
