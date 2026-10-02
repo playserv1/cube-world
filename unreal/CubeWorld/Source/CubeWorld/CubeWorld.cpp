@@ -40,8 +40,7 @@ IMPLEMENT_PRIMARY_GAME_MODULE(FCubeWorldModule, CubeWorld, "CubeWorld");
 
 bool CubeIsServerProcess()
 {
-	static const bool bHeadless = FParse::Param(FCommandLine::Get(), TEXT("cubeserver"));
-	return IsRunningDedicatedServer() || bHeadless;
+	return IsRunningDedicatedServer();
 }
 
 bool CubeIsOffline()

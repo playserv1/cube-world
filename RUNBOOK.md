@@ -105,27 +105,23 @@ lists their rooms (`list_game_sessions(env="dev")`) beside the C# servers', and 
 and **Delete room** work the same way: the room's server turns the players away, clears its region and exits
 (start it again by hand, since no Docker restarts it there).
 
-**On the platform's machine pool** the server is a Linux image. The Launcher's engine has no Server target, so
-the image is the Game target run headless as a listen server (`-cubeserver`, in the entrypoint `Docker/Dockerfile` writes; the
-process is a server in every way but the spectator it keeps for itself; the SDK logs one error line at start,
-that a server credential is set in a process that is not a dedicated server, and then serves with it; the
-`DedicatedServerGame.ini` layer is not read in this mode, so the key comes from `PLAYSERV_SERVER_KEY` or, on
-the pool, the deployment token). It needs, once, in the Epic Games
-Launcher (Library → Engine Versions → 5.8 → Options), the **Linux** target platform ticked, and the Linux
-cross-toolchain for 5.8 installed (`v26_clang-20.1.8-rockylinux8`, the installer sets `LINUX_MULTIARCH_ROOT`).
+**On the platform's machine pool** the server is a Linux image of the Server target, `CubeWorldServer`: a real
+dedicated server, which no game build replaces. The Launcher's engine has no Server target, so the image is built with
+a source-built engine (this machine's: `C:\PlayServ\UnrealEngine`, 5.8.2, with the Linux toolchain under
+`Engine\Extras\ThirdPartyNotUE\SDKs\HostWin64\Linux_x64`); the clients stay on the Launcher's. A game build run
+headless as a listen server (`-cubeserver`, how the images were made until 2026-10-02) is gone: it was the client's
+whole engine, ticking with no limit (`max tick rate 0`: an idle server took 1.5 cores and 366 MB here, where the
+dedicated server takes 4 % of one core and 116 MB at its 30 ticks a second), on machines of one vCPU and 1 GB.
 
-1. Build and package: `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -platform=Linux -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>` (the archive is `<out>\Linux`), or the Server target from a source-built engine (below; `<out>\LinuxServer`).
-2. Push the image: `playserv image push --slug cubeworld-ue --src <out>\Linux --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag ue-1.0.0` (logged in with an `sk_` key of environment `dev`). The build context is the archive and nothing else: the Dockerfile writes the entrypoint itself, and leaves out what a server never needs at run time (the debugger's `*.debug`, the Vulkan layers): the image a machine pulls was 1.31 GB compressed, 335 MB now.
-3. The pool: `set_machine_pool(env="dev", executor_slug="cubeworld-ue", desired_size=3, rooms_per_machine=1, image_version="ue-1.0.0")`. One process per machine, as the C# pool; each claims a region of the lower row and opens `<colour>-<machine>`. The process reads `PLAYSERV_DEPLOYMENT_TOKEN` for its credential and listens on the port the platform allots it (`PLAYSERV_ROOM_LISTEN_PORT`, 7777 when unset): Iris on UDP and the JSON door on TCP, both on that number (the image runs with host networking). Browsers never reach the door directly: the platform's TLS front offers it as `wss` on the public port that `PLAYSERV_PORTS_MAPPING` names (protocol `wss`), under the machine's name (`PLAYSERV_PUBLIC_HOST`, the certificate is for `*.pool.dev.playserv.com`), and the room registers that front as its connect, as the C# rooms do. The UDP address for Iris rides in the room's attribute `udp`, and the Unreal client dials it by the machine's address (`playserv_public_ip`), not its name.
-4. Taking the Unreal pool down (`destroy_machine_pool(executor_slug="cubeworld-ue")`, or `remove_pool_machine` one at a time) leaves the C# row playing: the rooms vanish from the browse within about fifteen seconds, the claims expire after thirty, and a C# server that restarts may then take a lower region.
+1. Build and package, in a checkout of its own: `C:\PlayServ\UnrealEngine\Engine\Build\BatchFiles\RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -target=CubeWorldServer -server -serverplatform=Linux -noclient -serverconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>`. The archive is `<out>\LinuxServer`. The first build takes long (it builds the editor for the cook against that engine), the next ones minutes.
+2. Push the image: `playserv image push --slug cubeworld-ue --src <out>\LinuxServer --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag ue-<commit>` (logged in with an `sk_` key of environment `dev`; `C:\PlayServ\cli-profiles\cubeworld` keeps that login apart from the machine's own). The build context is the archive and nothing else: the Dockerfile writes the entrypoint itself, refuses an archive with no `CubeWorldServer`, and leaves out what a server never needs at run time (the debugger's `*.debug`, the Vulkan layers): 335 MB compressed.
+3. The pool: `set_machine_pool(env="dev", executor_slug="cubeworld-ue", desired_size=3, rooms_per_machine=1, image_version="ue-<commit>")`. One process per machine, as the C# pool; each claims a region and opens `<colour>-<machine>`. The process reads `PLAYSERV_DEPLOYMENT_TOKEN` for its credential and listens on the port the platform allots it (`PLAYSERV_ROOM_LISTEN_PORT`, 7777 when unset): Iris on UDP and the JSON door on TCP, both on that number (the image runs with host networking). Browsers never reach the door directly: the platform's TLS front offers it as `wss` on the public port that `PLAYSERV_PORTS_MAPPING` names (protocol `wss`), under the machine's name (`PLAYSERV_PUBLIC_HOST`, the certificate is for `*.pool.dev.playserv.com`), and the room registers that front as its connect, as the C# rooms do. The UDP address for Iris rides in the room's attribute `udp`, and the Unreal client dials it by the machine's address (`playserv_public_ip`), not its name.
+4. Taking the Unreal pool down (`destroy_machine_pool(executor_slug="cubeworld-ue")`, or `remove_pool_machine` one at a time) leaves the C# servers playing: the rooms vanish from the browse within about fifteen seconds, the claims expire after thirty, and a C# server that restarts may then take a freed region.
 
-With a source-built engine the Server target works instead, and this is how the Linux server is built on a machine
-whose Launcher engine has no Linux platform (`C:\PlayServ\UnrealEngine`, 5.8.2): `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -target=CubeWorldServer -server -serverplatform=Linux -noclient -serverconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>`,
-then `--src <out>\LinuxServer`; the entrypoint runs whichever binary the archive holds. Three things make such a
-server work with the clients the Launcher builds, all in the project: the game module compiles file by file
-(`bUseUnity = false`: a source engine's unity file did not compile); the network version takes UE 5.8's compatible
-changelist when the engine has none (a source build has 0, and every Launcher-built client was turned away as
-"an incompatible version of the game"; `CubeWorld.cpp`); and `[Staging]` in `DefaultGame.ini` keeps
+Three things make a source-built server work with the Launcher's clients, all in the project: the game module compiles
+file by file (`bUseUnity = false`: a source engine's unity file did not compile); the network version takes UE 5.8's
+compatible changelist when the engine has none (a source build has 0, and every Launcher-built client was turned away
+as "an incompatible version of the game"; `CubeWorld.cpp`); and `[Staging]` in `DefaultGame.ini` keeps
 `DedicatedServerGame.ini` out of the pak (a Server target staged a developer's `sk_` key into the image).
 
 To try an image on a developer machine, with no platform: `docker run --rm -p 7777:7777/udp -p 7787:7787 <image> -cubeoffline -region=3`
