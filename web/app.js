@@ -25,7 +25,7 @@ const $ = id => document.getElementById(id);
 const ROOM_SLUGS = cfg.slugs ?? [cfg.slug, `${cfg.slug}-ue`];
 
 const state = { player: null, socket: null, room: null, server: null, color: "grey", region: -1, regions: [],
-  regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, placed: false,
+  regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, pending: null, placed: false,
   health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null,
   stash: [], carry: null, inventoryOpen: false,
   // A room that turned the player away is not tried again before this time (performance.now()), per room name.
@@ -158,6 +158,9 @@ async function enter(roomName, teleport = true) {
     const door = ticket.attributes && ticket.attributes.ws;
     const url = door ? door : c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${cfg.api.replace(/^http/, "ws")}/games/${slug}`;
     const socket = new WebSocket(url);
+    // This crossing's socket: only it ends the crossing. The old room's socket, closed once the welcome comes, closes
+    // later, and by then the player may have walked on into the next region and begun the next crossing.
+    state.pending = socket;
     // A server that has not welcomed the player in 10 s is given up, as the Unreal client gives up a handshake
     // (CubeGameEngine.h): the player plays on where they are, and the crossing is tried again.
     const giveUp = setTimeout(() => { if (state.socket !== socket) socket.close(); }, 10000);
@@ -172,6 +175,7 @@ async function enter(roomName, teleport = true) {
         const previous = state.socket;
         state.socket = socket;
         state.room = roomName;
+        if (state.pending === socket) state.pending = null;
         state.switching = false;
         previous?.close();
         onFrame(frame, teleport || !state.placed);
@@ -189,9 +193,11 @@ async function enter(roomName, teleport = true) {
         if (turned.message) state.notBefore[roomName] = performance.now() + turned.waitMs;
         state.room = null;
       }
-      if (state.socket !== socket) { state.switching = false; if (teleport) curtain(false); }
+      // A crossing that failed is over; the old room's socket closing ends nothing (see state.pending).
+      if (state.socket !== socket && state.pending === socket) { state.pending = null; state.switching = false; if (teleport) curtain(false); }
     };
   } catch (e) {
+    state.pending = null;
     state.switching = false;
     if (teleport) curtain(false);
     throw e;

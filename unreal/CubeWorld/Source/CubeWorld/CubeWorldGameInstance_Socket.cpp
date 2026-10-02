@@ -154,10 +154,17 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		Hello->SetStringField(TEXT("reservationToken"), ReservationToken);
 		WeakSocket.Pin()->Send(ToText(Hello));
 	});
+	// Only this crossing's socket (PendingSocket) ends the crossing. The old room's socket, closed once the welcome comes,
+	// reports its close later, and by then the player may have walked on into the next region and begun the next
+	// crossing: ending that one too started a second connection to the same room (the web client's rule too).
 	NewSocket->OnError.AddLambda([Weak, WeakSocket, RoomName](const FString& Error)
 	{
 		if (!Weak.IsValid()) return;
-		const bool bLive = Weak->Socket == WeakSocket.Pin();
+		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
+		const bool bLive = This.IsValid() && Weak->Socket == This;
+		const bool bPending = This.IsValid() && Weak->PendingSocket == This;
+		if (!bLive && !bPending) return;
+		if (bPending) Weak->PendingSocket.Reset();
 		Weak->bSwitching = false;
 		Weak->CrossAfter = FPlatformTime::Seconds() + 3;
 		Weak->Log(FString::Printf(TEXT("could not reach %s: %s"), *RoomName, *Error));
@@ -167,13 +174,18 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 	NewSocket->OnClosed.AddLambda([Weak, WeakSocket, RoomName](const FString& Reason)
 	{
 		if (!Weak.IsValid()) return;
-		if (Weak->Socket == WeakSocket.Pin())
+		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
+		if (This.IsValid() && Weak->Socket == This)
 		{
 			Weak->Socket.Reset();
 			Weak->bViaSocket = false;
 			Weak->Disconnected(Reason);
 		}
-		else Weak->bSwitching = false;
+		else if (This.IsValid() && Weak->PendingSocket == This)
+		{
+			Weak->PendingSocket.Reset();
+			Weak->bSwitching = false;
+		}
 	});
 	NewSocket->Decode = &UCubeWorldGameInstance::DecodeSocketFrame;
 	NewSocket->OnFrame.AddLambda([Weak, WeakSocket, RoomName, bTeleport](FCubeSocketFrame& Parsed)
