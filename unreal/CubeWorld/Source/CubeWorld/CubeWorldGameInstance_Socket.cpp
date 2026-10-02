@@ -175,9 +175,7 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		}
 		else Weak->bSwitching = false;
 	});
-	// A C# server's welcome carries every changed block of the world: the worker that parses it reads the blocks too, so
-	// the game thread only swaps them in (PSV-3004).
-	NewSocket->Decode = [](FCubeSocketFrame& Parsed) { if (Parsed.Json->HasField(TEXT("world"))) Parsed.World = ReadWorld(Parsed.Json); };
+	NewSocket->Decode = &UCubeWorldGameInstance::DecodeSocketFrame;
 	NewSocket->OnFrame.AddLambda([Weak, WeakSocket, RoomName, bTeleport](FCubeSocketFrame& Parsed)
 	{
 		if (!Weak.IsValid() || !WeakSocket.IsValid()) return;
@@ -199,6 +197,16 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 	NewSocket->Connect();
 }
 
+// A C# server's welcome carries every changed block of the world: the worker that parses it reads the blocks too, so the
+// game thread only swaps them in, and drops them from the frame, so that their JSON is freed there and not on the game
+// thread, where freeing it took most of a crossing's frame (PSV-3004).
+void UCubeWorldGameInstance::DecodeSocketFrame(FCubeSocketFrame& Parsed)
+{
+	if (!Parsed.Json.IsValid() || !Parsed.Json->HasField(TEXT("world"))) return;
+	Parsed.World = ReadWorld(Parsed.Json);
+	Parsed.Json->RemoveField(TEXT("world"));
+}
+
 void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport, TOptional<TMap<FIntVector, FName>> PreRead)
 {
 	const bool bCrossed = !bTeleport;
@@ -217,9 +225,12 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	Snapshot.Reset();
 	if (!bKeepWorld) World.Clear();
 	// Read on the worker that parsed the frame; a welcome handed in without it is read here.
+	const double ApplyStart = FPlatformTime::Seconds();
 	TMap<FIntVector, FName> Cells = PreRead.IsSet() ? MoveTemp(PreRead.GetValue()) : ReadWorld(Frame);
+	const int32 Blocks = Cells.Num();
 	if (bKeepWorld) { Snapshot = MoveTemp(Cells); ApplySnapshot(); }
 	else for (const TPair<FIntVector, FName>& C : Cells) World.Set(C.Key.X, C.Key.Y, C.Key.Z, C.Value);
+	Log(FString::Printf(TEXT("welcome: %d blocks applied in %.1f ms"), Blocks, (FPlatformTime::Seconds() - ApplyStart) * 1000));
 	const TSharedPtr<FJsonObject>* InventoryJson;
 	if (Frame->TryGetObjectField(TEXT("inventory"), InventoryJson))
 	{

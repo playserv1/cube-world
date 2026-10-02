@@ -16,6 +16,7 @@
 #include "CubeWorldGameInstance.generated.h"
 
 class FCubeSocket;
+struct FCubeSocketFrame;
 class FJsonObject;
 class ACubeAvatar;
 class ACubeBomb;
@@ -104,6 +105,8 @@ public:
 	void OnWorldChunk(const TArray<FCubeCellRep>& Cells, bool bLast);
 	void ApplyCubes(const TArray<FCubeChangeRep>& Changes, const TArray<FCubeFallRep>& Falls, bool bRemote);
 	void SetInventory(const TArray<FCubeStackRep>& Stacks);
+	/** Reads a socket frame on the worker that parsed it: a welcome's blocks into a cell map, then out of the frame's JSON. */
+	static void DecodeSocketFrame(FCubeSocketFrame& Parsed);
 	void SetPlayers(const TArray<FCubePresenceRep>& InPlayers);
 	void SetRegions(const TArray<FCubeRegionRep>& InRegions);
 	void OnHurtFrame(const FString& PlayerId, double InHealth, double KX, double KY, double Strength);

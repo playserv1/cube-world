@@ -9,6 +9,8 @@
 #include "CubeSocket.h"
 #include "CubeWorldGameInstance.h"
 #include "Misc/AutomationTest.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -336,6 +338,16 @@ bool FCubeWorldSocketFrameOrderTest::RunTest(const FString& Parameters)
 	Socket->Deliver(false);
 	TestTrue(TEXT("every frame goes out, in the order they came"), Order == TArray<FString>({ TEXT("first"), TEXT("welcome"), TEXT("behind") }));
 	TestNotEqual(TEXT("the large one was read on a worker"), WorldReadOn, GameThread);
+
+	// The game's own decoder: the welcome's blocks come out as a cell map, and out of the JSON, so their JSON is freed on
+	// the worker and not by the game thread after the frame.
+	FCubeSocketFrame Parsed;
+	Parsed.Json = MakeShared<FJsonObject>();
+	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(TEXT("{\"type\":\"welcome\",\"world\":[{\"x\":1,\"y\":2,\"z\":3,\"kind\":\"stone\"},{\"x\":4,\"y\":5,\"z\":6,\"kind\":\"Stone\"}]}")), Parsed.Json);
+	UCubeWorldGameInstance::DecodeSocketFrame(Parsed);
+	TestTrue(TEXT("the welcome's blocks are read"), Parsed.World.IsSet() && Parsed.World->Num() == 2 && Parsed.World->FindRef(FIntVector(4, 5, 6)) == TEXT("stone"));
+	TestFalse(TEXT("and dropped from its JSON"), Parsed.Json->HasField(TEXT("world")));
+	TestEqual(TEXT("the rest of the frame stays"), Parsed.Json->GetStringField(TEXT("type")), FString(TEXT("welcome")));
 	return true;
 }
 
