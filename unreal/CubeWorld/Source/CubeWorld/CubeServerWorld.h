@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "CubeSpec.h"
+#include "Dom/JsonObject.h"
 #include "CubeVoxelWorld.h"
 #include "UObject/StrongObjectPtr.h"
 
@@ -180,6 +181,19 @@ struct FCubePlayerFall
 
 /** A player another server saw is the one walking in over the border when it saw them in the last 5 s, alive (World.Arriving on the C# side). */
 inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now - SeenAt < 5000 && Health > 0; }
+
+/**
+ * The rows of a push in the order they were written. A windowed subscription lists the most recently updated row first,
+ * and hits or bombs applied out of order go wrong: of two hits 100 ms apart the weak second one landed, and the full
+ * first one was lost to the victim's immunity.
+ */
+inline TArray<TSharedPtr<FJsonObject>> CubeRowsInWrittenOrder(const TArray<TSharedPtr<FJsonObject>>& Rows)
+{
+	const auto At = [](const TSharedPtr<FJsonObject>& Row) { double V = 0; return Row.IsValid() && Row->TryGetNumberField(TEXT("at"), V) ? V : 0.0; };
+	TArray<TSharedPtr<FJsonObject>> Sorted = Rows;
+	Sorted.StableSort([&At](const TSharedPtr<FJsonObject>& A, const TSharedPtr<FJsonObject>& B) { return At(A) < At(B); });
+	return Sorted;
+}
 
 /** How far outside a region the last server may have seen a player who walked in over its border, in blocks. */
 constexpr double CubeCrossingBand = 4.0;

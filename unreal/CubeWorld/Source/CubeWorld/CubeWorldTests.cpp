@@ -268,4 +268,23 @@ bool FCubeWorldArrivalTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldRowOrderTest,
+	"CubeWorld.Server.HitsAndBombsApplyInTheOrderTheyWereWritten",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A windowed push lists the most recently updated row first: of two hits 100 ms apart from another server the weak
+// second one landed, and the full first one was lost to the victim's immunity.
+bool FCubeWorldRowOrderTest::RunTest(const FString& Parameters)
+{
+	auto Row = [](const TCHAR* Id, double At) { TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>(); R->SetStringField(TEXT("hit_id"), Id); R->SetNumberField(TEXT("at"), At); return R; };
+	const TArray<TSharedPtr<FJsonObject>> Pushed = { Row(TEXT("weak"), 1100), Row(TEXT("full"), 1000), Row(TEXT("old"), 300) };
+	const TArray<TSharedPtr<FJsonObject>> Ordered = CubeRowsInWrittenOrder(Pushed);
+	TestEqual(TEXT("all rows stay"), Ordered.Num(), 3);
+	TestEqual(TEXT("the oldest first"), Ordered[0]->GetStringField(TEXT("hit_id")), FString(TEXT("old")));
+	TestEqual(TEXT("then the full hit"), Ordered[1]->GetStringField(TEXT("hit_id")), FString(TEXT("full")));
+	TestEqual(TEXT("and the weak one last"), Ordered[2]->GetStringField(TEXT("hit_id")), FString(TEXT("weak")));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

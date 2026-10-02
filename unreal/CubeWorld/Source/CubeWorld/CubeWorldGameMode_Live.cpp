@@ -125,7 +125,7 @@ void ACubeWorldGameMode::OnLivePresence(const TArray<TSharedPtr<FJsonObject>>& R
 
 void ACubeWorldGameMode::OnLiveHits(const TArray<TSharedPtr<FJsonObject>>& Rows)
 {
-	for (const TSharedPtr<FJsonObject>& Row : Rows)
+	for (const TSharedPtr<FJsonObject>& Row : CubeRowsInWrittenOrder(Rows))
 	{
 		const FString HitId = Str(Row, TEXT("hit_id"));
 		FCubeServerPlayer* Victim = PlayerById(Str(Row, TEXT("victim")));
@@ -142,9 +142,7 @@ void ACubeWorldGameMode::OnLiveHits(const TArray<TSharedPtr<FJsonObject>>& Rows)
 
 void ACubeWorldGameMode::OnLiveBombs(const TArray<TSharedPtr<FJsonObject>>& Rows)
 {
-	TArray<TSharedPtr<FJsonObject>> Sorted = Rows;
-	Sorted.Sort([](const TSharedPtr<FJsonObject>& A, const TSharedPtr<FJsonObject>& B) { return Num(A, TEXT("at")) < Num(B, TEXT("at")); });
-	for (const TSharedPtr<FJsonObject>& Row : Sorted)
+	for (const TSharedPtr<FJsonObject>& Row : CubeRowsInWrittenOrder(Rows))
 	{
 		FCubeBombRecord R;
 		R.Id = Str(Row, TEXT("bomb_id")); R.State = Str(Row, TEXT("state")); R.Holder = Str(Row, TEXT("holder"));
