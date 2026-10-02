@@ -7,6 +7,8 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "EngineFontServices.h"
+#include "Fonts/FontMeasure.h"
 #include "Camera/CameraComponent.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -25,12 +27,30 @@ namespace
 	}
 }
 
-void ACubeHUD::DrawCentered(const FString& Text, float Y, float Scale, FLinearColor Color)
+// The text is drawn outside the layout scale, at the real screen size: a font scaled up with the rest of the HUD is a
+// small bitmap stretched 2-4 times and comes out blurred. Positions and sizes stay in layout pixels.
+FSlateFontInfo ACubeHUD::UiFont(float Size, bool bBold) const
 {
-	float W, H;
-	GetTextSize(Text, W, H, GEngine->GetLargeFont(), Scale);
-	DrawText(Text, FLinearColor::Black, Canvas->SizeX / UiScale / 2 - W / 2 + 2, Y + 2, GEngine->GetLargeFont(), Scale);
-	DrawText(Text, Color, Canvas->SizeX / UiScale / 2 - W / 2, Y, GEngine->GetLargeFont(), Scale);
+	return FSlateFontInfo(GEngine->GetLargeFont(), FMath::RoundToFloat(Size * UiScale), bBold ? FName(TEXT("Bold")) : FName(TEXT("Regular")));
+}
+
+FVector2D ACubeHUD::TextSize(const FString& Text, float Size, bool bBold) const
+{
+	return FEngineFontServices::Get().GetFontMeasure()->Measure(Text, UiFont(Size, bBold)) / UiScale;
+}
+
+void ACubeHUD::DrawLabel(const FString& Text, float X, float Y, float Size, FLinearColor Color, bool bBold)
+{
+	Canvas->Canvas->PushAbsoluteTransform(FMatrix::Identity);
+	FCanvasTextItem Item(FVector2D(FMath::RoundToFloat(X * UiScale), FMath::RoundToFloat(Y * UiScale)), FText::FromString(Text), UiFont(Size, bBold), Color);
+	Item.EnableShadow(FLinearColor::Black, FVector2D(FMath::Max(1.f, FMath::RoundToFloat(UiScale * 0.5f))));
+	Canvas->Canvas->DrawItem(Item);
+	Canvas->Canvas->PopTransform();
+}
+
+void ACubeHUD::DrawCentered(const FString& Text, float Y, float Size, FLinearColor Color, bool bBold)
+{
+	DrawLabel(Text, Canvas->SizeX / UiScale / 2 - TextSize(Text, Size, bBold).X / 2, Y, Size, Color, bBold);
 }
 
 // The block as a flat icon: its top face above its side face, lit as in the world.
@@ -89,19 +109,18 @@ void ACubeHUD::DrawHUD()
 	if (Game->IsInPlay())
 	{
 		const FString Banner = FString::Printf(TEXT("you are on server %s-%s"), *Game->Color, *Game->Server);
-		float BW, BH; GetTextSize(Banner, BW, BH, GEngine->GetMediumFont(), 1.f);
+		const FVector2D BS = TextSize(Banner, 10); const float BW = BS.X, BH = BS.Y;
 		DrawRect(FLinearColor(0, 0, 0, 0.45f), 12, 12, BW + 24, BH + 10);
 		DrawRect(ServerColor(Game->Color), 12, 12, 6, BH + 10);
-		DrawText(Banner, FLinearColor::White, 26, 17, GEngine->GetMediumFont());
+		DrawLabel(Banner, 26, 17, 10, FLinearColor::White);
 
 		float PY = 12;
 		for (const FCubePresence& P : Game->Players)
 		{
 			const FString Health = P.Health <= 0 ? FString(TEXT("dead")) : FString::Printf(TEXT("%d hp"), FMath::CeilToInt32(P.Health));
 			const FString Line = FString::Printf(TEXT("%s%s  %s  %s"), *P.Name, P.Id == Game->PlayerId ? TEXT(" (you)") : TEXT(""), *Health, *P.Color);
-			float LW, LH; GetTextSize(Line, LW, LH, GEngine->GetMediumFont(), 1.f);
-			DrawText(Line, FLinearColor::Black, W - LW - 11, PY + 1, GEngine->GetMediumFont());
-			DrawText(Line, ServerColor(P.Color), W - LW - 12, PY, GEngine->GetMediumFont());
+			const FVector2D LS = TextSize(Line, 10); const float LW = LS.X, LH = LS.Y;
+			DrawLabel(Line, W - LW - 12, PY, 10, ServerColor(P.Color));
 			PY += LH + 2;
 		}
 	}
@@ -110,14 +129,14 @@ void ACubeHUD::DrawHUD()
 	{
 		const FVector Cam = Pawn->FindComponentByClass<UCameraComponent>() ? Pawn->FindComponentByClass<UCameraComponent>()->GetComponentLocation() : FVector::ZeroVector;
 		const FString Debug = FString::Printf(TEXT("body %.2f %.2f %.2f  actor %s  camera %s  view %s  ground %d"), Pawn->Body.X, Pawn->Body.Y, Pawn->Body.Z, *Pawn->GetActorLocation().ToString(), *Cam.ToString(), *Pawn->GetControlRotation().ToString(), Pawn->Body.bOnGround);
-		DrawText(Debug, FLinearColor::Yellow, 12, 60, GEngine->GetSmallFont());
+		DrawLabel(Debug, 12, 60, 8, FLinearColor::Yellow);
 	}
 
 	// Log, bottom left.
 	float LY = H - 24;
 	for (const FString& Line : Game->LogLines)
 	{
-		DrawText(Line, FLinearColor(0.7f, 0.75f, 0.8f, 0.9f), 12, LY, GEngine->GetSmallFont());
+		DrawLabel(Line, 12, LY, 9, FLinearColor(0.7f, 0.75f, 0.8f, 0.9f));
 		LY -= 14;
 	}
 
@@ -141,29 +160,28 @@ void ACubeHUD::DrawHUD()
 			const int32 Count = Game->Inventory.FindRef(Kind);
 			DrawIcon(Kind, SX + 6, SY + 6, SlotSize - 12, (Count > 0 ? 1.f : 0.3f) * Dim);
 			const FString CountText = FString::FromInt(Count);
-			float CW, CH; GetTextSize(CountText, CW, CH, GEngine->GetSmallFont(), 1.f);
-			DrawText(CountText, FLinearColor::Black, SX + SlotSize - CW - 3, SY + SlotSize - CH - 2, GEngine->GetSmallFont());
-			DrawText(CountText, FLinearColor::White, SX + SlotSize - CW - 4, SY + SlotSize - CH - 3, GEngine->GetSmallFont());
+			const FVector2D CS = TextSize(CountText, 9, true); const float CW = CS.X, CH = CS.Y;
+			DrawLabel(CountText, SX + SlotSize - CW - 4, SY + SlotSize - CH - 2, 9, FLinearColor::White, true);
 		}
-		if (bHolding) DrawCentered(TEXT("bomb - right click throws it"), BarY - 50, 1.f, FLinearColor::White);
-		else if (Game->Hotbar.IsValidIndex(Game->Slot)) DrawCentered(Game->Hotbar[Game->Slot].ToString(), BarY - 50, 1.f, FLinearColor::White);
+		if (bHolding) DrawCentered(TEXT("bomb - right click throws it"), BarY - 44, 11, FLinearColor::White, true);
+		else if (Game->Hotbar.IsValidIndex(Game->Slot)) DrawCentered(Game->Hotbar[Game->Slot].ToString(), BarY - 44, 11, FLinearColor::White, true);
 	}
 
 	// The start screen and the death screen.
 	if (Game->bDead)
 	{
 		DrawRect(FLinearColor(0.47f, 0, 0, 0.55f), 0, 0, W, H);
-		DrawCentered(TEXT("You died!"), H / 2 - 40, 2.f, FLinearColor::White);
-		DrawCentered(TEXT("Press Enter or click to respawn"), H / 2 + 10, 1.f, FLinearColor::White);
+		DrawCentered(TEXT("You died!"), H / 2 - 44, 28, FLinearColor::White, true);
+		DrawCentered(TEXT("Press Enter or click to respawn"), H / 2 + 10, 12, FLinearColor::White);
 	}
 	else if (!Game->IsInPlay() && !Game->bPlaced)
 	{
 		DrawRect(FLinearColor(0, 0, 0, 0.5f), 0, 0, W, H);
-		DrawCentered(TEXT("Cube World"), H / 2 - 80, 2.5f, FLinearColor::White);
-		DrawCentered(FString::Printf(TEXT("Playing as %s  (start with -name=YourName to change it)"), *Game->PlayerName), H / 2 - 20, 1.f, FLinearColor(0.8f, 0.85f, 0.9f));
-		DrawCentered(Game->Status, H / 2 + 10, 1.2f, FLinearColor::White);
-		DrawCentered(TEXT("WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak. Hold left click to break, right click places, 1-9 or the wheel picks a block, Esc opens the menu."), H / 2 + 50, 0.9f, FLinearColor(0.7f, 0.75f, 0.8f));
-		DrawCentered(TEXT("Left click a player to hit them. Bombs come down on parachutes: walk into one to pick it up, right click throws it."), H / 2 + 72, 0.9f, FLinearColor(0.7f, 0.75f, 0.8f));
+		DrawCentered(TEXT("Cube World"), H / 2 - 90, 36, FLinearColor::White, true);
+		DrawCentered(FString::Printf(TEXT("Playing as %s  (start with -name=YourName to change it)"), *Game->PlayerName), H / 2 - 24, 11, FLinearColor(0.8f, 0.85f, 0.9f));
+		DrawCentered(Game->Status, H / 2 + 4, 15, FLinearColor::White, true);
+		DrawCentered(TEXT("WASD move, mouse look, Space jump, Shift sprint, Ctrl sneak. Hold left click to break, right click places, 1-9 or the wheel picks a block, Esc opens the menu."), H / 2 + 50, 9, FLinearColor(0.7f, 0.75f, 0.8f));
+		DrawCentered(TEXT("Left click a player to hit them. Bombs come down on parachutes: walk into one to pick it up, right click throws it."), H / 2 + 64, 9, FLinearColor(0.7f, 0.75f, 0.8f));
 	}
 	else if (Pawn && !Pawn->bMouseCaptured)
 	{
@@ -171,7 +189,7 @@ void ACubeHUD::DrawHUD()
 		FVector2D Mouse(-1, -1);
 		if (APlayerController* PC = GetOwningPlayerController()) { float MX, MY; if (PC->GetMousePosition(MX, MY)) Mouse = FVector2D(MX, MY) / UiScale; }
 		DrawRect(FLinearColor(0, 0, 0, 0.5f), 0, 0, W, H);
-		DrawCentered(TEXT("Game menu"), H / 2 - 80, 1.6f, FLinearColor::White);
+		DrawCentered(TEXT("Game menu"), H / 2 - 80, 20, FLinearColor::White, true);
 		DrawButton(TEXT("Resume"), H / 2 - 30, ResumeRect, Mouse);
 		DrawButton(TEXT("Exit"), H / 2 + 10, ExitRect, Mouse);
 		return;
@@ -185,9 +203,8 @@ void ACubeHUD::DrawButton(const FString& Label, float Y, FBox2D& OutRect, FVecto
 	const bool bHover = Mouse.X >= X && Mouse.X <= X + BW && Mouse.Y >= Y && Mouse.Y <= Y + BH;
 	DrawRect(FLinearColor(0.1f, 0.1f, 0.1f, 0.9f), X - 2, Y - 2, BW + 4, BH + 4);
 	DrawRect(bHover ? FLinearColor(0.45f, 0.5f, 0.75f, 0.95f) : FLinearColor(0.35f, 0.35f, 0.38f, 0.95f), X, Y, BW, BH);
-	float TW, TH;
-	GetTextSize(Label, TW, TH, GEngine->GetLargeFont(), 1.f);
-	DrawCentered(Label, Y + BH / 2 - TH / 2, 1.f, bHover ? FLinearColor(1.f, 1.f, 0.63f) : FLinearColor::White);
+	const float TH = TextSize(Label, 12, true).Y;
+	DrawCentered(Label, Y + BH / 2 - TH / 2, 12, bHover ? FLinearColor(1.f, 1.f, 0.63f) : FLinearColor::White, true);
 	OutRect = FBox2D(FVector2D(X, Y) * UiScale, FVector2D(X + BW, Y + BH) * UiScale);
 }
 
