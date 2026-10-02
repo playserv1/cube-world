@@ -273,6 +273,42 @@ bool FCubeWorldArrivalTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldRemoteHurtTest,
+	"CubeWorld.Presence.AHitOnAnotherServersPlayerFlashesThemHere",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A player another server hosts shows less health than a pose heard a moment ago: this server flashes them for its own
+// players (their server tells only its own, PSV-2981). Rises, deaths, and poses too far apart or out of order are no hit.
+bool FCubeWorldRemoteHurtTest::RunTest(const FString& Parameters)
+{
+	TestTrue(TEXT("19 a fifth of a second after 20 is a hit"), CubeWasHurt(20, 1000, 19, 1200));
+	TestFalse(TEXT("the same health is no hit"), CubeWasHurt(19, 1000, 19, 1200));
+	TestFalse(TEXT("more health is a heal"), CubeWasHurt(18, 1000, 19, 1200));
+	TestFalse(TEXT("a death shows as a tombstone, not a flash"), CubeWasHurt(3, 1000, 0, 1200));
+	TestFalse(TEXT("a pose 5 s older may predate a stay here"), CubeWasHurt(20, 1000, 19, 6000));
+	TestFalse(TEXT("an older pose heard late is no hit"), CubeWasHurt(20, 1200, 19, 1000));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldEditRegionTest,
+	"CubeWorld.Rules.AServerEditsOnlyNearItsRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A bot on red stood in purple without crossing and dug and placed there (PSV-2979): a server edits the world for a
+// player in its region or a crossing's step past its border (InThisRegion, which also lets a region nobody holds through).
+bool FCubeWorldEditRegionTest::RunTest(const FString& Parameters)
+{
+	const int32 Blue = 1;   // x in [24, 48), y in [0, 24)
+	TestTrue(TEXT("in its region"), CubeNear(Blue, 30, 10, CubeSpec::BorderSlack));
+	TestTrue(TEXT("a step past its border, crossing to green"), CubeNear(Blue, 48 + CubeSpec::BorderSlack, 10, CubeSpec::BorderSlack));
+	TestFalse(TEXT("deep in green"), CubeNear(Blue, 60, 10, CubeSpec::BorderSlack));
+	TestFalse(TEXT("in purple, the other row"), CubeNear(Blue, 30, 40, CubeSpec::BorderSlack));
+	TestFalse(TEXT("a server with no region is near none"), CubeNear(-1, 30, 10, CubeSpec::BorderSlack));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCubeWorldRowOrderTest,
 	"CubeWorld.Server.HitsAndBombsApplyInTheOrderTheyWereWritten",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)

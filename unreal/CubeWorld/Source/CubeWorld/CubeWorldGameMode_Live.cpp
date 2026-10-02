@@ -117,7 +117,7 @@ void ACubeWorldGameMode::OnLivePresence(const TArray<TSharedPtr<FJsonObject>>& R
 		const FCubeElsewhere* Known = Fresh.Find(Id);
 		if (!Known || E.SeenAt > Known->SeenAt) Fresh.Add(Id, E);
 	}
-	Elsewhere = Fresh;
+	HearElsewhere(Fresh);
 	PublishPlayers();
 	// The window holds everyone seen since it opened; every half minute, or when it fills, it opens again at now.
 	if (Rows.Num() >= WindowFull || Now() - LivePresenceSince > PresenceWindowRefreshMs) SubscribeLivePresence();

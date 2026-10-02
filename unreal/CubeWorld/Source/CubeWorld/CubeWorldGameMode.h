@@ -208,6 +208,8 @@ private:
 	/** A CubeInventory row came over the uplink: this server's own write, or another writer's to merge in. */
 	void HearInventory(const FString& PlayerId, const FCubeInventory& Theirs);
 	void Hurt(FCubeServerPlayer& Victim, double Damage, bool bDirected, double DX, double DY, double Strength, const FString& By);
+	/** Takes the players other servers host from fresh presence rows, and flashes one whose health dropped (CubeWasHurt). */
+	void HearElsewhere(TMap<FString, FCubeElsewhere>& Fresh);
 	void Publish(const FCubeWorldUpdate& Update);
 	void BroadcastCubes(const TArray<FCubeChange>& Changes, const TArray<FCubeFall>& Falls, bool bRemote);
 	void WebBroadcastCubes(const TArray<FCubeChange>& Changes, const TArray<FCubeFall>& Falls, bool bRemote);

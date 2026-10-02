@@ -1400,8 +1400,25 @@ void ACubeWorldGameMode::PollPresence()
 			const FCubeElsewhere* Known = Fresh.Find(Row->player_id);
 			if (!Known || Row->seen_at > Known->SeenAt) Fresh.Add(Row->player_id, E);
 		}
-		Self->Elsewhere = Fresh;
+		Self->HearElsewhere(Fresh);
 	});
+}
+
+// The players other servers host, as their presence rows say now. A pose older than the one known is not taken back (a
+// poll answered before a push), and one that shows a player hurt since a pose heard within 5 s flashes them for this
+// server's players: their own server tells only its players, and a hit from here reached it as a WorldHit. The health
+// shown stays the victim's server's. HearPresence on the C# side.
+void ACubeWorldGameMode::HearElsewhere(TMap<FString, FCubeElsewhere>& Fresh)
+{
+	for (TPair<FString, FCubeElsewhere>& Pair : Fresh)
+	{
+		const FCubeElsewhere* Known = Elsewhere.Find(Pair.Key);
+		if (!Known) continue;
+		if (Known->SeenAt > Pair.Value.SeenAt) { Pair.Value = *Known; continue; }
+		if (CubeWasHurt(Known->Pose.Health, Known->SeenAt, Pair.Value.Pose.Health, Pair.Value.SeenAt))
+			BroadcastHurt(Pair.Key, Pair.Value.Pose.Health, 0, 0, 0, FString());
+	}
+	Elsewhere = MoveTemp(Fresh);
 }
 
 void ACubeWorldGameMode::PollHits()

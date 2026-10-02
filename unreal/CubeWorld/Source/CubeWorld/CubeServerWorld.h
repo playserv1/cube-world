@@ -253,6 +253,16 @@ inline bool CubeCrossedInto(int32 Region, double& X, double& Y)
 	return true;
 }
 
+/**
+ * The second of two poses heard of a player another server hosts shows them hurt: less health than a pose heard within
+ * the last 5 s, and alive (an older pose may predate a stay on this very server, where they could have healed and been
+ * hurt again). WorldPresence.WasHurt on the C# side.
+ */
+inline bool CubeWasHurt(double HealthBefore, int64 SeenBefore, double HealthNow, int64 SeenNow)
+{
+	return HealthNow < HealthBefore && HealthNow > 0 && SeenNow - SeenBefore >= 0 && SeenNow - SeenBefore < 5000;
+}
+
 /** What a player carries, per block kind. */
 struct FCubeInventory
 {
