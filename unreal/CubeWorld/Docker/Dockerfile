@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-# The Cube World dedicated server as a PlayServ machine-pool image. The build context is the Linux archive UAT
-# produces and nothing else, the entrypoint is written below (RUNBOOK.md, "Part E"): the Server target from a
-# source-built engine, or, from the Launcher's engine (no Server target), the Game target run headless:
+# The Cube World dedicated server as a PlayServ machine-pool image: the Server target, CubeWorldServer, built for Linux
+# with a source-built engine (the Launcher's has no Server target). The build context is the archive UAT produces and
+# nothing else, the entrypoint is written below (RUNBOOK.md, "Part E"):
 #   RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -target=CubeWorldServer -server
 #     -serverplatform=Linux -noclient -serverconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>
 #   playserv image push --slug cubeworld-ue --src <out>\LinuxServer --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag <tag>
@@ -23,22 +23,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && useradd -m -u 1000 server
 COPY --from=archive --chown=server:server /server /server
 
-# Starts the packaged Linux server. It listens on the port the platform allotted (process-per-room hosting) or 7777
-# (one long-lived process per machine), Iris on UDP and the JSON door on TCP, and logs to stdout, which is the only
-# server log the platform keeps. The Launcher's engine has no Server target, so its game build runs headless as a
-# listen server (-cubeserver, see CubeIsServerProcess in CubeWorld.h): no picture, no sound, the local player a
-# spectator.
+# Starts the dedicated server. It listens on the port the platform allotted (process-per-room hosting) or 7777 (one
+# long-lived process per machine), Iris on UDP and the JSON door on TCP, and logs to stdout, which is the only server log
+# the platform keeps.
 COPY --chmod=755 <<'EOF' /server/entrypoint.sh
 #!/bin/sh
 set -eu
 PORT="${PLAYSERV_ROOM_LISTEN_PORT:-7777}"
 BIN=/server/CubeWorld/Binaries/Linux/CubeWorldServer
-[ -x "$BIN" ] || BIN=/server/CubeWorld/Binaries/Linux/CubeWorld
-if [ "$BIN" = /server/CubeWorld/Binaries/Linux/CubeWorldServer ]; then
-    exec "$BIN" CubeWorld /Engine/Maps/Entry -port="$PORT" -log -stdout -FullStdOutLogOutput -unattended "$@"
+if [ ! -x "$BIN" ]; then
+    echo "no dedicated server in this image ($BIN): build the CubeWorldServer target, RUNBOOK.md Part E" >&2
+    exit 1
 fi
-exec "$BIN" CubeWorld "/Engine/Maps/Entry?listen" -cubeserver -nullrhi -nosound -unattended -port="$PORT" -log -stdout -FullStdOutLogOutput "$@"
+exec "$BIN" CubeWorld /Engine/Maps/Entry -port="$PORT" -log -stdout -FullStdOutLogOutput -unattended "$@"
 EOF
+# Only the dedicated server's archive is wanted here: it never runs a game build.
+RUN [ -x /server/CubeWorld/Binaries/Linux/CubeWorldServer ] || { echo "the build context is not the CubeWorldServer archive (<out>/LinuxServer)" >&2; exit 1; }
 # A checkout on Windows may still hand this file over with CRLF line endings (.gitattributes keeps it LF), and a script
 # that starts "#!/bin/sh\r" cannot be run at all.
 RUN sed -i 's/\r$//' /server/entrypoint.sh

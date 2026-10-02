@@ -111,8 +111,6 @@ public:
 	/** Offline, the id the client names itself with (?cubeplayer=) is read from its login options here. */
 	virtual FString InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal = TEXT("")) override;
 	virtual void Logout(AController* Exiting) override;
-	/** The local player of a headless listen server (-cubeserver) gets no pawn: it is not a player of the world. */
-	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
 
 	/** True in a dedicated server that has claimed its region and opened its room. */
 	bool IsServing() const { return bServing; }

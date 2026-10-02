@@ -126,7 +126,6 @@ around it (the largest step of the view and gap between two frames), any map loa
 `-DoorRegions 4` plays region 4 through its server's JSON door, as a C# server is played, so crossings between Iris
 and a socket are tried as well.
 
-Putting the server on the platform's machine pool takes a Linux build. The Launcher's engine has no Server
-target, so the image runs either the Server target from a source-built engine or the Game target headless as a
-listen server (`-cubeserver`, the entrypoint in `Docker/Dockerfile`): no picture, no sound, its own local player a
-spectator that is not a player of the world. `RUNBOOK.md`, "Part E".
+Putting the server on the platform's machine pool takes the Server target, `CubeWorldServer`, built for Linux. The
+Launcher's engine has no Server target, so that build takes an engine built from source (here
+`C:\PlayServ\UnrealEngine`); the clients stay on the Launcher's. `RUNBOOK.md`, "Part E".

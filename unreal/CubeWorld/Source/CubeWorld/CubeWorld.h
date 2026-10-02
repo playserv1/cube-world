@@ -5,9 +5,9 @@
 DECLARE_LOG_CATEGORY_EXTERN(LogCubeWorld, Log, All);
 
 /**
- * True in a process that serves the game: a dedicated server, or a game build run headless as one (-cubeserver
- * with ?listen, for an engine without a Server target: the Launcher's). Such a process has no picture, no local
- * player of its own and no client session.
+ * True in a process that serves the game: a dedicated server, the Server target or the editor run with -server. Such a
+ * process has no picture, no local player and no client session. A game build never serves (it played a headless
+ * listen server once, with -cubeserver: the client's whole engine, ticking as fast as it could).
  */
 CUBEWORLD_API bool CubeIsServerProcess();
 

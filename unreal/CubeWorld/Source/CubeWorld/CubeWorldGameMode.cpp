@@ -69,9 +69,7 @@ FString ACubeWorldGameMode::RoomSlug() const { return UPlayServSettings::GetRoom
 void ACubeWorldGameMode::BeginPlay()
 {
 	Super::BeginPlay();
-	// A dedicated server, or a game build listening headless in its place (-cubeserver): the local player it
-	// cannot help having is a spectator with no pawn and no HUD, and is not a player of the world.
-	bDedicated = GetNetMode() == NM_DedicatedServer || (CubeIsServerProcess() && GetNetMode() == NM_ListenServer);
+	bDedicated = GetNetMode() == NM_DedicatedServer;
 	if (!bDedicated) return;   // the menu map of a client: nothing to serve
 	bOffline = CubeIsOffline();
 	ServerName = bOffline ? FString(TEXT("offline")) : ServerNameOf();
@@ -382,13 +380,6 @@ FString ACubeWorldGameMode::InitNewPlayer(APlayerController* NewPlayerController
 {
 	if (bOffline && NewPlayerController) OfflineIds.Add(NewPlayerController, UGameplayStatics::ParseOption(Options, TEXT("cubeplayer")));
 	return Super::InitNewPlayer(NewPlayerController, UniqueId, Options, Portal);
-}
-
-APawn* ACubeWorldGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
-{
-	// The local player logs in before BeginPlay: the mode is read from the process, not from bDedicated.
-	if (CubeIsServerProcess() && !IsRunningDedicatedServer() && NewPlayer && NewPlayer->IsLocalController()) return nullptr;
-	return Super::SpawnDefaultPawnFor_Implementation(NewPlayer, StartSpot);
 }
 
 void ACubeWorldGameMode::Logout(AController* Exiting)
