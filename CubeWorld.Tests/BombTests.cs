@@ -204,6 +204,45 @@ public class BombTests
     }
 
     [Fact]
+    public void A_bomb_the_table_no_longer_has_goes_out_of_play_once_no_read_for_5_s_found_a_row_of_it()
+    {
+        // On dev on 2026-10-02 the servers kept bombs whose fizzles the platform lost, and whose rows the drop function had
+        // swept by the next read (PSV-2977).
+        const long t = 1_790_955_000_000;
+        var droppedAt = new Dictionary<string, long>
+        {
+            ["ghost"] = t - 42 * 60_000, ["held-ghost"] = t - 20 * 60_000, ["live"] = t - 60_000, ["fresh"] = t - 2_000,
+        };
+        var table = new HashSet<string> { "live", "held-elsewhere" };
+        var missing = new Dictionary<string, long>();
+
+        Assert.Empty(Bomb.GoneFromTable(droppedAt, table, missing, t));
+        Assert.Equal(["ghost", "held-ghost"], missing.Keys.OrderBy(id => id));
+        Assert.Empty(Bomb.GoneFromTable(droppedAt, table, missing, t + 100));
+        Assert.Equal(t, missing["ghost"]);
+        Assert.Equal(["ghost", "held-ghost"], Bomb.GoneFromTable(droppedAt, table, missing, t + Bomb.RecheckMs).OrderBy(id => id));
+        Assert.Empty(missing);
+
+        Bomb.GoneFromTable(droppedAt, table, missing, t + Bomb.NoRowGraceMs + 1000);
+        Assert.Contains("fresh", missing.Keys);
+    }
+
+    [Fact]
+    public void A_bomb_a_later_read_finds_a_row_of_stays_and_a_read_with_no_rows_takes_nothing_out()
+    {
+        const long t = 1_790_955_000_000;
+        var droppedAt = new Dictionary<string, long> { ["ghost"] = t - 42 * 60_000 };
+        var missing = new Dictionary<string, long> { ["ghost"] = t };
+
+        Assert.Empty(Bomb.GoneFromTable(droppedAt, new HashSet<string> { "ghost" }, missing, t + Bomb.RecheckMs));
+        Assert.Empty(missing);
+
+        missing["ghost"] = t;
+        Assert.Empty(Bomb.GoneFromTable(droppedAt, new HashSet<string>(), missing, t + Bomb.RecheckMs));
+        Assert.Empty(missing);
+    }
+
+    [Fact]
     public void A_closed_region_puts_out_the_bombs_over_it_and_leaves_the_others_and_the_spent_ones()
     {
         CubeWorld.Server.WorldBomb At(string id, double x, string state) => new() { bomb_id = id, x = x, y = 5, state = state };

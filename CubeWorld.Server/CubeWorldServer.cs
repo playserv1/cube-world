@@ -30,6 +30,10 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private long _cubesReadAt;
     private int _reconciling;
     private bool _bombsLoaded;
+    private long _bombsReadAt;
+    private int _readingBombs;
+    /// <summary>The bombs in play here that the last read of the bomb table had no row of, and since when (<see cref="Bomb.GoneFromTable"/>).</summary>
+    private readonly Dictionary<string, long> _bombsMissingSince = new();
     private readonly List<Change> _heard = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));

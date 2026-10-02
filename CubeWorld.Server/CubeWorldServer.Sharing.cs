@@ -42,6 +42,7 @@ public sealed partial class CubeWorldServer
         Broadcast(new { type = "regions", regions = _regions });
         Subscribe();
         ReconcileCubesNow();
+        ReadBombsAgainNow();
     }
 
     private static async Task<WorldRegion[]> LiveRegionsAsync()

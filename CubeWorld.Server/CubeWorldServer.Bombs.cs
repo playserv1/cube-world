@@ -25,9 +25,71 @@ public sealed partial class CubeWorldServer
                 }
             }
             _bombsLoaded = true;
+            _bombsReadAt = Now;
         }
         catch (Exception e) { _ = Platform.Log($"bombs not loaded, the world opens without them: {e.Message}"); }
     }
+
+    /// <summary>
+    /// Every 30 s the bomb table is read again, as the blocks are (PSV-2977): the platform's pushes are lost when the
+    /// uplink drops for a moment, nothing replays them, and the C# SDK says nothing of a reconnect. On dev on 2026-10-02
+    /// these servers kept 28 bombs whose fizzles a platform deploy lost. While some bomb in play has no row in the table,
+    /// the table is read every <see cref="Bomb.RecheckMs"/> instead, so that bomb goes or stays soon.
+    /// </summary>
+    private void ReadBombsAgainNow()
+    {
+        long every;
+        lock (_world) every = _bombsMissingSince.Count > 0 ? Bomb.RecheckMs : 30_000;
+        if (Now - _bombsReadAt < every || Interlocked.Exchange(ref _readingBombs, 1) == 1) return;
+        _bombsReadAt = Now;
+        _ = Task.Run(async () =>
+        {
+            try { await ReadBombsAgainAsync(); }
+            catch (Exception e) { _ = Platform.Log($"{RoomName}: bombs not read again, again in 30 s: {e.Message}"); }
+            finally { Interlocked.Exchange(ref _readingBombs, 0); }
+        });
+    }
+
+    /// <summary>
+    /// What the bomb table says now, against what this server has in play. A bomb the table moved on is moved on here. One
+    /// whose end this server missed long ago goes out of play as one that fizzled: its blast was worked out by every server
+    /// that heard it then, and is not again here. One the table has no row of at all goes the same way once no read for
+    /// <see cref="Bomb.RecheckMs"/> found one (<see cref="Bomb.GoneFromTable"/>). Nothing is written: the rows are there or
+    /// gone already. The Unreal servers keep the same rules (ApplyBombTable, EndBombsGoneFromTable).
+    /// </summary>
+    private async Task ReadBombsAgainAsync()
+    {
+        var table = await LoadBombsAsync();
+        lock (_world)
+        {
+            var now = Now;
+            foreach (var bomb in table)
+            {
+                var live = _bombs.GetValueOrDefault(bomb.bomb_id);
+                if (!Bomb.Over(bomb.state))
+                {
+                    if (!(_bombsLoaded && Bomb.IsGhost(bomb, live is not null, now))) OnBomb(bomb, owned: false);
+                }
+                else if (live is not null && now - bomb.at > 5000) OnBomb(Fizzled(live), owned: false);
+                else OnBomb(bomb, owned: false);
+            }
+            var droppedAt = _bombs.ToDictionary(b => b.Key, b => b.Value.Record.dropped_at);
+            var gone = Bomb.GoneFromTable(droppedAt, table.Select(b => b.bomb_id).ToHashSet(), _bombsMissingSince, now);
+            foreach (var id in gone) OnBomb(Fizzled(_bombs[id]), owned: false);
+            _bombsLoaded = true;
+            if (gone.Count > 0)
+                _ = Platform.Log($"{RoomName}: bombs read again: {gone.Count} the table no longer has went out of play, their ends missed ({string.Join(", ", gone)})");
+            if (_bombsMissingSince.Count > 0)
+                _ = Platform.Log($"{RoomName}: bombs read again: {_bombsMissingSince.Count} in play have no row in the table, reading it again in {Bomb.RecheckMs / 1000} s");
+        }
+    }
+
+    /// <summary>A bomb in play here, gone up in smoke where it is. Its time stays, so a client that never had it shows no puff.</summary>
+    private static WorldBomb Fizzled(LiveBomb live) => new()
+    {
+        bomb_id = live.Record.bomb_id, state = Bomb.Fizzled, holder = live.Record.holder,
+        x = live.Record.x, y = live.Record.y, z = live.Z, dropped_at = live.Record.dropped_at, at = live.Record.at,
+    };
 
     /// <summary>Every tick: free bombs come down and are picked up, thrown ones fly and go off.</summary>
     private void MoveBombs()
