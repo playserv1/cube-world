@@ -7,6 +7,8 @@
 #include "SocketSubsystem.h"
 #include "SslModule.h"
 #include "Interfaces/ISslCertificateManager.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 // OpenSSL names a type UI, which collides with the engine namespace of that name.
 #define UI UI_ST
@@ -22,6 +24,20 @@ static bool CubeSocketVerbose() { static const bool bVerbose = FParse::Param(FCo
 
 namespace
 {
+	/** A text frame this large is parsed on a worker (a C# welcome on dev was 2.4 MB on 2026-10-02). */
+	constexpr int32 ParseOnWorkerBytes = 32 * 1024;
+
+	void ParseText(const TArray<uint8>& Payload, const TFunction<void(FCubeSocketFrame&)>& Decode, FCubeSocketFrame& Out)
+	{
+		// The converter does not null-terminate: take exactly the converted length.
+		const FUTF8ToTCHAR Converted((const ANSICHAR*)Payload.GetData(), Payload.Num());
+		const FString Text(Converted.Length(), Converted.Get());
+		TSharedPtr<FJsonObject> Json;
+		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Json) || !Json.IsValid()) return;
+		Out.Json = Json;
+		if (Decode) Decode(Out);
+	}
+
 	FString LastOpenSslError()
 	{
 		char Buffer[256] = { 0 };
@@ -203,6 +219,7 @@ bool FCubeSocket::Tick(float)
 		}
 		if (BIO_should_retry((BIO*)Bio)) break;
 		ReadFrames();
+		Deliver(true);   // what came before the end goes out first
 		if (State == EState::Open)
 		{
 			State = EState::Closed;
@@ -211,6 +228,7 @@ bool FCubeSocket::Tick(float)
 		return false;
 	}
 	ReadFrames();
+	Deliver(false);
 	return State == EState::Open;
 }
 
@@ -236,11 +254,7 @@ void FCubeSocket::ReadFrames()
 
 		if (Opcode == 0x1 || Opcode == 0x0)
 		{
-			// The converter does not null-terminate: take exactly the converted length.
-			const FUTF8ToTCHAR Converted((const ANSICHAR*)Payload.GetData(), Payload.Num());
-			const FString Text(Converted.Length(), Converted.Get());
-			if (CubeSocketVerbose()) UE_LOG(LogCubeWorld, Log, TEXT("socket: text %s"), *Text.Left(600));
-			OnMessage.Broadcast(Text);
+			ReceiveText(MoveTemp(Payload));
 			if (State != EState::Open) return;
 		}
 		else if (Opcode == 0x9) SendFrame(0xA, Payload);
@@ -248,10 +262,48 @@ void FCubeSocket::ReadFrames()
 		{
 			FString Reason;
 			if (Payload.Num() > 2) { const FUTF8ToTCHAR ReasonConverted((const ANSICHAR*)Payload.GetData() + 2, Payload.Num() - 2); Reason = FString(ReasonConverted.Length(), ReasonConverted.Get()); }
+			Deliver(true);   // what came before the close goes out first
+			if (State != EState::Open) return;
 			State = EState::Closed;
 			OnClosed.Broadcast(Reason);
 			return;
 		}
+	}
+}
+
+void FCubeSocket::ReceiveText(TArray<uint8> Payload)
+{
+	if (CubeSocketVerbose())
+	{
+		const FUTF8ToTCHAR Head((const ANSICHAR*)Payload.GetData(), FMath::Min(Payload.Num(), 600));
+		UE_LOG(LogCubeWorld, Log, TEXT("socket: text %s"), *FString(Head.Length(), Head.Get()));
+	}
+	if (Pending.Num() == 0 && Payload.Num() < ParseOnWorkerBytes)
+	{
+		FCubeSocketFrame Frame;
+		ParseText(Payload, Decode, Frame);
+		if (Frame.Json.IsValid()) OnFrame.Broadcast(Frame);
+		return;
+	}
+	// A large frame, or any frame behind one, waits for its parse on a worker and goes out in turn.
+	FPending Item;
+	Item.Frame = MakeShared<FCubeSocketFrame, ESPMode::ThreadSafe>();
+	Item.Parse = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Frame = Item.Frame, Payload = MoveTemp(Payload), Decode = Decode]() { ParseText(Payload, Decode, *Frame); });
+	Pending.Add(MoveTemp(Item));
+}
+
+void FCubeSocket::Deliver(bool bWait)
+{
+	while (Pending.Num() > 0 && State == EState::Open)
+	{
+		if (!Pending[0].Parse.IsCompleted())
+		{
+			if (!bWait) return;
+			Pending[0].Parse.Wait();
+		}
+		const TSharedPtr<FCubeSocketFrame, ESPMode::ThreadSafe> Frame = Pending[0].Frame;
+		Pending.RemoveAt(0);
+		if (Frame->Json.IsValid()) OnFrame.Broadcast(*Frame);
 	}
 }
 

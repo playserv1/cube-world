@@ -41,6 +41,22 @@ namespace
 		return V;
 	}
 
+	/** A welcome's changed blocks, cell to kind. */
+	TMap<FIntVector, FName> ReadWorld(const TSharedPtr<FJsonObject>& Frame)
+	{
+		TMap<FIntVector, FName> Cells;
+		const TArray<TSharedPtr<FJsonValue>>* WorldJson;
+		if (!Frame.IsValid() || !Frame->TryGetArrayField(TEXT("world"), WorldJson)) return Cells;
+		Cells.Reserve(WorldJson->Num());
+		for (const TSharedPtr<FJsonValue>& V : *WorldJson)
+		{
+			const TSharedPtr<FJsonObject> C = V.IsValid() ? V->AsObject() : nullptr;
+			if (!C.IsValid()) continue;
+			Cells.Add(FIntVector((int32)Num(C, TEXT("x")), (int32)Num(C, TEXT("y")), (int32)Num(C, TEXT("z"))), FName(*Str(C, TEXT("kind"))));
+		}
+		return Cells;
+	}
+
 	FCubePresenceRep ReadPresence(const TSharedPtr<FJsonObject>& P)
 	{
 		FCubePresenceRep R;
@@ -159,11 +175,13 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 		}
 		else Weak->bSwitching = false;
 	});
-	NewSocket->OnMessage.AddLambda([Weak, WeakSocket, RoomName, bTeleport](const FString& Text)
+	// A C# server's welcome carries every changed block of the world: the worker that parses it reads the blocks too, so
+	// the game thread only swaps them in (PSV-3004).
+	NewSocket->Decode = [](FCubeSocketFrame& Parsed) { if (Parsed.Json->HasField(TEXT("world"))) Parsed.World = ReadWorld(Parsed.Json); };
+	NewSocket->OnFrame.AddLambda([Weak, WeakSocket, RoomName, bTeleport](FCubeSocketFrame& Parsed)
 	{
 		if (!Weak.IsValid() || !WeakSocket.IsValid()) return;
-		TSharedPtr<FJsonObject> Frame;
-		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Frame) || !Frame.IsValid()) return;
+		const TSharedPtr<FJsonObject> Frame = Parsed.Json;
 		const TSharedPtr<FCubeSocket> This = WeakSocket.Pin();
 		if (Str(Frame, TEXT("type")) == TEXT("welcome") && Weak->Socket != This)
 		{
@@ -173,7 +191,7 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 			Weak->Socket = This;
 			Weak->PendingSocket.Reset();
 			if (Previous.IsValid()) Previous->Close();
-			Weak->OnSocketWelcome(Frame, RoomName, bTeleport || !Weak->bPlaced);
+			Weak->OnSocketWelcome(Frame, RoomName, bTeleport || !Weak->bPlaced, MoveTemp(Parsed.World));
 			return;
 		}
 		if (Weak->Socket == This) Weak->OnSocketFrame(Frame, RoomName, false);
@@ -181,7 +199,7 @@ void UCubeWorldGameInstance::ConnectSocket(const FString& RoomName, const FStrin
 	NewSocket->Connect();
 }
 
-void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport)
+void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport, TOptional<TMap<FIntVector, FName>> PreRead)
 {
 	const bool bCrossed = !bTeleport;
 	bViaSocket = true;
@@ -198,16 +216,10 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	const bool bKeepWorld = bCrossed && bPlaced;
 	Snapshot.Reset();
 	if (!bKeepWorld) World.Clear();
-	const TArray<TSharedPtr<FJsonValue>>* WorldJson;
-	if (Frame->TryGetArrayField(TEXT("world"), WorldJson))
-		for (const auto& V : *WorldJson)
-		{
-			const TSharedPtr<FJsonObject> C = V->AsObject();
-			const FIntVector At((int32)Num(C, TEXT("x")), (int32)Num(C, TEXT("y")), (int32)Num(C, TEXT("z")));
-			const FName Kind(*Str(C, TEXT("kind")));
-			if (bKeepWorld) Snapshot.Add(At, Kind); else World.Set(At.X, At.Y, At.Z, Kind);
-		}
-	if (bKeepWorld) ApplySnapshot();
+	// Read on the worker that parsed the frame; a welcome handed in without it is read here.
+	TMap<FIntVector, FName> Cells = PreRead.IsSet() ? MoveTemp(PreRead.GetValue()) : ReadWorld(Frame);
+	if (bKeepWorld) { Snapshot = MoveTemp(Cells); ApplySnapshot(); }
+	else for (const TPair<FIntVector, FName>& C : Cells) World.Set(C.Key.X, C.Key.Y, C.Key.Z, C.Value);
 	const TSharedPtr<FJsonObject>* InventoryJson;
 	if (Frame->TryGetObjectField(TEXT("inventory"), InventoryJson))
 	{

@@ -770,9 +770,10 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 
 void UCubeWorldGameInstance::ApplySnapshot()
 {
-	TMap<FIntVector, FName> Next;
-	for (const auto& P : Snapshot) if (P.Value != NAME_None) Next.Add(P.Key, P.Value);
-	const TArray<FIntVector> Changed = World.ReplaceOverrides(Next);
+	// Moved, not copied: a C# welcome's snapshot holds every changed block of the world.
+	TMap<FIntVector, FName> Next = MoveTemp(Snapshot);
+	for (auto It = Next.CreateIterator(); It; ++It) if (It.Value() == NAME_None) It.RemoveCurrent();
+	const TArray<FIntVector> Changed = World.ReplaceOverrides(MoveTemp(Next));
 	Snapshot.Reset();
 	bSnapshotDiff = false;
 	if (Changed.Num() > 0) OnCubes.Broadcast(Changed);

@@ -6,6 +6,7 @@
 #include "CubeSpec.h"
 #include "CubeVoxelWorld.h"
 #include "CubeWebSocketServer.h"
+#include "CubeSocket.h"
 #include "CubeWorldGameInstance.h"
 #include "Misc/AutomationTest.h"
 
@@ -298,6 +299,43 @@ bool FCubeWorldDoorCloseTest::RunTest(const FString& Parameters)
 {
 	TestTrue(TEXT("a bare close is answered with 1000"), FCubeWebSocketServer::CloseAnswer({}) == TArray<uint8>({ 0x03, 0xE8 }));
 	TestTrue(TEXT("a close with a code is answered with that code"), FCubeWebSocketServer::CloseAnswer({ 0x0F, 0xA1, 'b', 'y', 'e' }) == TArray<uint8>({ 0x0F, 0xA1 }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldSocketFrameOrderTest,
+	"CubeWorld.Wire.ALargeFrameIsParsedOffTheGameThreadInTurn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A C# server's welcome carries the whole world (2.4 MB on dev), and parsing it on the game thread took a frame of
+// 115 ms at every crossing into a C# room: it is parsed on a worker, and the frames behind it wait for it, so the game
+// still reads every frame in the order the server sent them.
+bool FCubeWorldSocketFrameOrderTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FCubeSocket> Socket = MakeShared<FCubeSocket>(TEXT("localhost"), 1, false);
+	Socket->State = FCubeSocket::EState::Open;
+	const uint32 GameThread = FPlatformTLS::GetCurrentThreadId();
+	uint32 WorldReadOn = GameThread;
+	Socket->Decode = [&WorldReadOn](FCubeSocketFrame& F) { if (F.Json->HasField(TEXT("world"))) WorldReadOn = FPlatformTLS::GetCurrentThreadId(); };
+	TArray<FString> Order;
+	Socket->OnFrame.AddLambda([&Order](FCubeSocketFrame& F) { Order.Add(F.Json->GetStringField(TEXT("type"))); });
+	const auto Utf8 = [](const FString& S) { const FTCHARToUTF8 U(*S); return TArray<uint8>((const uint8*)U.Get(), U.Length()); };
+	FString Welcome = TEXT("{\"type\":\"welcome\",\"world\":[");
+	for (int32 I = 0; I < 5000; I++) Welcome += FString::Printf(TEXT("%s{\"x\":%d,\"y\":1,\"z\":0,\"kind\":\"stone\"}"), I ? TEXT(",") : TEXT(""), I);
+	Welcome += TEXT("]}");
+
+	Socket->ReceiveText(Utf8(TEXT("{\"type\":\"first\"}")));
+	TestEqual(TEXT("a small frame with nothing ahead of it goes out at once"), Order.Num(), 1);
+	Socket->ReceiveText(Utf8(Welcome));
+	Socket->ReceiveText(Utf8(TEXT("{\"type\":\"behind\"}")));
+	TestEqual(TEXT("the frames behind a large one wait for it"), Order.Num(), 1);
+	// Polled, not waited for: a wait may run a task that has not started on the waiting thread.
+	const double Deadline = FPlatformTime::Seconds() + 10;
+	auto AllParsed = [&Socket]() { for (const FCubeSocket::FPending& P : Socket->Pending) if (!P.Parse.IsCompleted()) return false; return true; };
+	while (!AllParsed() && FPlatformTime::Seconds() < Deadline) FPlatformProcess::Sleep(0.001f);
+	Socket->Deliver(false);
+	TestTrue(TEXT("every frame goes out, in the order they came"), Order == TArray<FString>({ TEXT("first"), TEXT("welcome"), TEXT("behind") }));
+	TestNotEqual(TEXT("the large one was read on a worker"), WorldReadOn, GameThread);
 	return true;
 }
 

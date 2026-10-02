@@ -187,7 +187,8 @@ private:
 	void TravelToUnrealServer(const FString& RoomName, const FString& Url, bool bTeleport);
 	void ConnectSocket(const FString& RoomName, const FString& Host, int32 Port, bool bSecure, const FString& ReservationToken, bool bTeleport);
 	void OnSocketFrame(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport);
-	void OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport);
+	/** PreRead: the welcome's blocks, read where the frame was parsed (FCubeSocket::Decode). */
+	void OnSocketWelcome(const TSharedPtr<FJsonObject>& Frame, const FString& RoomName, bool bTeleport, TOptional<TMap<FIntVector, FName>> PreRead = {});
 	void CloseSockets();
 	bool IsInNetworkedWorld() const;
 	void HandleNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
