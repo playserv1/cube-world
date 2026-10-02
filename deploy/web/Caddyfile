@@ -1,0 +1,23 @@
+# Caddy inside the web client image (deploy/web/Dockerfile). It serves plain HTTP: on the Vultr VM the edge Caddy
+# terminates TLS in front of it, on Cloud Run Google's front end does. The headers and compression are set here too,
+# because on Cloud Run nothing else sets them; on the VM the edge's own values win.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+# Cloud Run sets PORT (8080 unless the service says otherwise); on the VM nothing does.
+:{$PORT:8080} {
+	root * /srv
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# No file name carries a content hash, so the browser revalidates every file (ETag) instead of caching it blind.
+		Cache-Control "no-cache"
+		-Server
+	}
+	file_server
+}

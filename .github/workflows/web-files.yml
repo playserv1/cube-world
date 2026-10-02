@@ -1,0 +1,75 @@
+# Publishes the browser client (web/) to the web VM on Vultr (infra/vultr) as files: uploads web/ with rsync as a
+# release of its own, then has the VM serve that release. No image, no registry. main deploys the prod site, dev the dev site.
+#
+# Off until the repository variable WEB_DEPLOY_MODE is `files`; otherwise web-image.yml does the deploy. Each deploy
+# tells the VM how to serve its environment, so switching the variable and deploying again is the whole switch.
+# Setup and the variables and secrets below: infra/vultr/README.md.
+#
+# Repository: variables WEB_VM_HOST, WEB_DEPLOY_KNOWN_HOSTS, WEB_DEPLOY_MODE; secret WEB_DEPLOY_SSH_KEY.
+# Environments web-prod and web-dev: variable WEB_HOST, optional WEB_CONFIG_JS (replaces web/config.js).
+name: Web client → VM (files)
+
+# PAUSED: the VM gets no deploys on push; GitHub Pages (pages.yml) and Cloud Run (web-cloudrun.yml) do.
+# Run workflow (workflow_dispatch) still deploys by hand. To resume, uncomment `push:` and its two lines.
+on:
+  # push:
+  #   branches: [main, dev]
+  #   paths: ['web/**', 'deploy/web/**', '.github/workflows/web-files.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Shared with web-image.yml: one deploy per environment at a time, whichever workflow it comes from.
+concurrency:
+  group: web-deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: vars.WEB_DEPLOY_MODE == 'files' && (github.ref_name == 'main' || github.ref_name == 'dev')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name == 'main' && 'web-prod' || 'web-dev' }}
+      url: https://${{ vars.WEB_HOST }}
+    env:
+      SITE: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the environment's config.js
+        if: vars.WEB_CONFIG_JS != ''
+        env:
+          WEB_CONFIG_JS: ${{ vars.WEB_CONFIG_JS }}
+        run: printf '%s\n' "$WEB_CONFIG_JS" > web/config.js
+
+      - name: Check config.js
+        run: |
+          test -s web/config.js || {
+            echo "::error::web/config.js is missing: commit it, or set WEB_CONFIG_JS on the ${{ github.ref_name == 'main' && 'web-prod' || 'web-dev' }} environment"
+            exit 1
+          }
+
+      - name: Upload the release and serve it
+        env:
+          VM: ${{ vars.WEB_VM_HOST }}
+          KNOWN_HOSTS: ${{ vars.WEB_DEPLOY_KNOWN_HOSTS }}
+          SSH_KEY: ${{ secrets.WEB_DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          ssh=(ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          release=${GITHUB_SHA::12}
+          # On the VM the path is inside /srv/cube-world/releases: the deploy key's rsync can write nowhere else.
+          rsync -rlt --delete --chmod=D755,F644 --exclude-from=deploy/web/exclude.txt -e "${ssh[*]}" \
+            web/ "deploy@$VM:$SITE/$release/"
+          "${ssh[@]}" "deploy@$VM" files "$SITE" "$release"
+
+      - name: Check the site
+        env:
+          HOST: ${{ vars.WEB_HOST }}
+        run: |
+          curl -fsS --retry 6 --retry-delay 5 --retry-all-errors "https://$HOST/" | grep -q '<title>Cube World</title>'
+          curl -fsS "https://$HOST/config.js" | grep -q 'window.CUBEWORLD'
+          echo "::notice::https://$HOST serves release ${GITHUB_SHA::12} from disk"

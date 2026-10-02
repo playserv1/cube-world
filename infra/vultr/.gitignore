@@ -1,0 +1,7 @@
+# Local state holds the VM's SSH host key and the CI deploy key: keep it, back it up, never commit it.
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+!*.tfvars.example
+crash.log
