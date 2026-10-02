@@ -203,4 +203,46 @@ bool FCubeWorldInventorySyncTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldKindNamesTest,
+	"CubeWorld.Wire.KindsGoOutInTheRegistrysSpelling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// An FName keeps the casing of its first spelling in the process, and the engine names "Stone" before the registry runs:
+// what goes out to the tables and to the JSON clients is the registry's own lowercase name, whatever the FName says.
+bool FCubeWorldKindNamesTest::RunTest(const FString& Parameters)
+{
+	for (const FBlockDef& B : CubeSpec::Blocks())
+	{
+		TestEqual(FString::Printf(TEXT("%s goes out as its registry name"), *B.Name), CubeSpec::KindName(B.Kind), B.Name);
+		TestEqual(FString::Printf(TEXT("%s is lowercase"), *B.Name), B.Name, B.Name.ToLower());
+	}
+	TestEqual(TEXT("an FName spelled STONE goes out as stone"), CubeSpec::KindName(FName(TEXT("STONE"))), FString(TEXT("stone")));
+	TestEqual(TEXT("so does Stone"), CubeSpec::KindName(FName(TEXT("Stone"))), FString(TEXT("stone")));
+	const FString Row = FCubeInventory::Starting().ToJson();
+	TestTrue(TEXT("an inventory row goes out with stone"), Row.Contains(TEXT("\"stone\":64"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("and without Stone"), Row.Contains(TEXT("\"Stone\""), ESearchCase::CaseSensitive));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldInventoryCaseTest,
+	"CubeWorld.Inventory.OneKindUnderTwoSpellingsAddsUp",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// Unreal servers wrote "Stone" until 2026-10-02, and the refill function topped such rows up as "stone": a row lists one
+// kind twice, and both counts are the player's, within a stack. Taking the last key left a player 1 stone of 64.
+bool FCubeWorldInventoryCaseTest::RunTest(const FString& Parameters)
+{
+	const FCubeInventory Topped = FCubeInventory::Parse(TEXT("{\"grass\":64,\"Stone\":30,\"stone\":3}"));
+	TestEqual(TEXT("the server adds the two keys up"), Topped.Count(TEXT("stone")), 33);
+	TestEqual(TEXT("within a stack"), FCubeInventory::Parse(TEXT("{\"Stone\":64,\"stone\":1}")).Count(TEXT("stone")), CubeSpec::StackSize);
+	const FString Row = Topped.ToJson();
+	TestTrue(TEXT("and writes the row back with one key"), Row.Contains(TEXT("\"stone\":33"), ESearchCase::CaseSensitive) && !Row.Contains(TEXT("Stone"), ESearchCase::CaseSensitive));
+	TestEqual(TEXT("a row that is not an object is a first-timer's"), FCubeInventory::Parse(TEXT("[1,2]")).Count(TEXT("dirt")), CubeSpec::StartingStack);
+	TestEqual(TEXT("so is a broken one"), FCubeInventory::Parse(TEXT("{\"dirt\":")).Count(TEXT("dirt")), CubeSpec::StartingStack);
+	TestEqual(TEXT("an empty object is an empty inventory"), FCubeInventory::Parse(TEXT("{}")).Total(), 0);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

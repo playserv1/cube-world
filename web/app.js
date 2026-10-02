@@ -10,6 +10,7 @@ import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tic
 import { buildTombstone } from "./tombstone.js";
 import { refusal, roomOf, downRegions } from "./rooms.js";
 import { createFollower, hear, follow } from "./follow.js";
+import { withKinds } from "./kinds.js";
 
 // The server keeps x, y on the ground and z up; the client keeps y up.
 const toClient = p => ({ x: p.x, y: p.z, z: p.y });
@@ -229,6 +230,8 @@ function downNow() { return OFFLINE ? new Set() : downRegions(state.regions, sta
 // ── frames from the server ───────────────────────────────────────────────────────────────────────
 
 function onFrame(frame, teleport) {
+  // Rows an Unreal server wrote before 2026-10-02 spell stone "Stone": every kind is taken in this client's spelling.
+  withKinds(frame);
   switch (frame.type) {
     case "welcome": {
       Object.assign(state, { server: frame.server, color: frame.color, region: frame.region ?? -1, regions: frame.regions ?? [],
@@ -448,8 +451,9 @@ function renderHotbar() {
     slot.className = `slot${i === state.slot ? " selected" : ""}`;
     slot.title = kind ?? "";
     if (kind) {
+      // A kind this client cannot draw gets a slot without an icon, rather than stopping the hotbar at it.
       icons[kind] ??= blockIcon(atlas, kind);
-      slot.innerHTML = `<img src="${icons[kind]}" alt="${kind}"><b>${count}</b>`;
+      slot.innerHTML = `${icons[kind] ? `<img src="${icons[kind]}" alt="${kind}">` : ""}<b>${count}</b>`;
       if (count === 0) slot.classList.add("empty");
     }
     slot.onclick = () => { state.slot = i; renderHotbar(); };

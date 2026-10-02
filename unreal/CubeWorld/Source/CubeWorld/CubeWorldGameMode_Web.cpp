@@ -83,14 +83,14 @@ namespace
 		TSharedRef<FJsonObject> C = MakeShared<FJsonObject>();
 		C->SetStringField(TEXT("key"), FCubeServerWorld::Key(At.X, At.Y, At.Z));
 		C->SetNumberField(TEXT("x"), At.X); C->SetNumberField(TEXT("y"), At.Y); C->SetNumberField(TEXT("z"), At.Z);
-		C->SetStringField(TEXT("kind"), Kind.ToString()); C->SetStringField(TEXT("placed_by"), By); C->SetStringField(TEXT("placed_on"), On);
+		C->SetStringField(TEXT("kind"), CubeSpec::KindName(Kind)); C->SetStringField(TEXT("placed_by"), By); C->SetStringField(TEXT("placed_on"), On);
 		return C;
 	}
 
 	TSharedRef<FJsonObject> InventoryJson(const FCubeInventory& Inventory)
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		for (const auto& Pair : Inventory.Stacks) J->SetNumberField(Pair.Key.ToString(), Pair.Value);
+		for (const auto& Pair : Inventory.Stacks) J->SetNumberField(CubeSpec::KindName(Pair.Key), Pair.Value);
 		return J;
 	}
 }
@@ -262,7 +262,7 @@ void ACubeWorldGameMode::WebWelcome(FCubeServerPlayer& P)
 	W->SetNumberField(TEXT("width"), CubeSpec::Width_); W->SetNumberField(TEXT("depth"), CubeSpec::Depth); W->SetNumberField(TEXT("regionSize"), CubeSpec::RegionSize);
 	W->SetNumberField(TEXT("minZ"), CubeSpec::MinZ); W->SetNumberField(TEXT("maxZ"), CubeSpec::MaxZ);
 	TArray<TSharedPtr<FJsonValue>> LayersJson;
-	for (const auto& Pair : CubeSpec::Layers()) { TSharedRef<FJsonObject> L = MakeShared<FJsonObject>(); L->SetNumberField(TEXT("z"), Pair.Key); L->SetStringField(TEXT("kind"), Pair.Value.ToString()); LayersJson.Add(MakeShared<FJsonValueObject>(L)); }
+	for (const auto& Pair : CubeSpec::Layers()) { TSharedRef<FJsonObject> L = MakeShared<FJsonObject>(); L->SetNumberField(TEXT("z"), Pair.Key); L->SetStringField(TEXT("kind"), CubeSpec::KindName(Pair.Value)); LayersJson.Add(MakeShared<FJsonValueObject>(L)); }
 	W->SetArrayField(TEXT("layers"), LayersJson);
 	TArray<TSharedPtr<FJsonValue>> Trees;
 	for (const FIntPoint& T : CubeTreeSpots()) { TSharedRef<FJsonObject> J = MakeShared<FJsonObject>(); J->SetNumberField(TEXT("x"), T.X); J->SetNumberField(TEXT("y"), T.Y); Trees.Add(MakeShared<FJsonValueObject>(J)); }
@@ -271,15 +271,15 @@ void ACubeWorldGameMode::WebWelcome(FCubeServerPlayer& P)
 	for (const FBlockDef& B : CubeSpec::Blocks())
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("kind"), B.Kind.ToString()); J->SetNumberField(TEXT("Hardness"), B.Hardness); J->SetBoolField(TEXT("NeedsTool"), B.bNeedsTool);
+		J->SetStringField(TEXT("kind"), B.Name); J->SetNumberField(TEXT("Hardness"), B.Hardness); J->SetBoolField(TEXT("NeedsTool"), B.bNeedsTool);
 		J->SetBoolField(TEXT("Transparent"), B.bTransparent); J->SetBoolField(TEXT("Gravity"), B.bGravity);
-		if (B.Drop != NAME_None) J->SetStringField(TEXT("Drop"), B.Drop.ToString()); else J->SetField(TEXT("Drop"), MakeShared<FJsonValueNull>());
+		if (B.Drop != NAME_None) J->SetStringField(TEXT("Drop"), CubeSpec::KindName(B.Drop)); else J->SetField(TEXT("Drop"), MakeShared<FJsonValueNull>());
 		J->SetNumberField(TEXT("breakTicks"), B.BreakTicks);
 		Blocks.Add(MakeShared<FJsonValueObject>(J));
 	}
 	W->SetArrayField(TEXT("blocks"), Blocks);
 	TArray<TSharedPtr<FJsonValue>> Hotbar;
-	for (const FName& K : CubeSpec::Hotbar()) Hotbar.Add(MakeShared<FJsonValueString>(K.ToString()));
+	for (const FName& K : CubeSpec::Hotbar()) Hotbar.Add(MakeShared<FJsonValueString>(CubeSpec::KindName(K)));
 	W->SetArrayField(TEXT("hotbar"), Hotbar);
 	TArray<TSharedPtr<FJsonValue>> WorldJson;
 	for (const auto& Pair : World.Overrides) WorldJson.Add(MakeShared<FJsonValueObject>(CubeJson(Pair.Key, Pair.Value.Kind, Pair.Value.By, Pair.Value.On)));
@@ -375,7 +375,7 @@ void ACubeWorldGameMode::WebBroadcastCubes(const TArray<FCubeChange>& Changes, c
 	for (const FCubeFall& Fall : Falls)
 	{
 		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("kind"), Fall.Kind.ToString()); J->SetNumberField(TEXT("x"), Fall.X); J->SetNumberField(TEXT("y"), Fall.Y); J->SetNumberField(TEXT("fromZ"), Fall.FromZ); J->SetNumberField(TEXT("toZ"), Fall.ToZ);
+		J->SetStringField(TEXT("kind"), CubeSpec::KindName(Fall.Kind)); J->SetNumberField(TEXT("x"), Fall.X); J->SetNumberField(TEXT("y"), Fall.Y); J->SetNumberField(TEXT("fromZ"), Fall.FromZ); J->SetNumberField(TEXT("toZ"), Fall.ToZ);
 		FallsJson.Add(MakeShared<FJsonValueObject>(J));
 	}
 	F->SetArrayField(TEXT("falls"), FallsJson);

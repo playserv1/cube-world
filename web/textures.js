@@ -160,6 +160,7 @@ export function buildAtlas() {
 // The hotbar icon: the block drawn as Minecraft draws items, an isometric cube lit from the top.
 export function blockIcon(atlas, kind, size = 40) {
   const faces = FACES[kind];
+  if (!faces) return null;
   const c = document.createElement("canvas"); c.width = size; c.height = size;
   const g = c.getContext("2d");
   g.imageSmoothingEnabled = false;

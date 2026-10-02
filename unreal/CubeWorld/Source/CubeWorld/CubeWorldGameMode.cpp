@@ -1108,7 +1108,7 @@ void ACubeWorldGameMode::WriteCube(const FIntVector& At, int32 Attempt)
 		Row->x = At.X; Row->y = At.Y; Row->z = At.Z;
 		O->Row.Reset(Row);
 	}
-	Row->kind = O->Kind.ToString();
+	Row->kind = CubeSpec::KindName(O->Kind);
 	Row->placed_by = O->By;
 	Row->placed_on = O->On;
 	Row->at = O->At = Now();

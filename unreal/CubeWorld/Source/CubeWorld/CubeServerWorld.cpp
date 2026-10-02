@@ -239,17 +239,40 @@ FCubeInventory FCubeInventory::Starting()
 
 FCubeInventory FCubeInventory::Parse(const FString& StacksJson)
 {
-	TSharedPtr<FJsonObject> Object;
-	if (StacksJson.IsEmpty() || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(StacksJson), Object) || !Object.IsValid()) return Starting();
+	// Read token by token. A row an Unreal server wrote as "Stone" and the refill then topped up as "stone" lists one kind
+	// twice, and both counts are the player's, within a stack; FJsonObject keeps its fields in a case-insensitive map and
+	// kept only the last of the two, which left a player 1 stone of 64.
+	if (StacksJson.IsEmpty()) return Starting();
 	FCubeInventory I;
-	for (const auto& Pair : Object->Values) I.Stacks.Add(FName(*Pair.Key), (int32)Pair.Value->AsNumber());
-	return I;
+	const TSharedRef<TJsonReader<TCHAR>> Reader = TJsonReaderFactory<TCHAR>::Create(StacksJson);
+	EJsonNotation Notation;
+	int32 Depth = 0;
+	bool bObject = false;
+	while (Reader->ReadNext(Notation))
+	{
+		switch (Notation)
+		{
+		case EJsonNotation::ObjectStart: bObject |= Depth == 0; Depth++; break;
+		case EJsonNotation::ArrayStart: Depth++; break;
+		case EJsonNotation::ObjectEnd: case EJsonNotation::ArrayEnd: Depth--; break;
+		case EJsonNotation::Number:
+			if (Depth == 1)
+			{
+				int32& Count = I.Stacks.FindOrAdd(FName(*Reader->GetIdentifier()));
+				Count = FMath::Min(Count + (int32)Reader->GetValueAsNumber(), CubeSpec::StackSize);
+			}
+			break;
+		case EJsonNotation::Error: return Starting();
+		default: break;
+		}
+	}
+	return bObject && Reader->GetErrorMessage().IsEmpty() ? I : Starting();
 }
 
 FString FCubeInventory::ToJson() const
 {
 	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
-	for (const auto& Pair : Stacks) Object->SetNumberField(Pair.Key.ToString(), Pair.Value);
+	for (const auto& Pair : Stacks) Object->SetNumberField(CubeSpec::KindName(Pair.Key), Pair.Value);
 	FString Out;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
 	FJsonSerializer::Serialize(Object, Writer);

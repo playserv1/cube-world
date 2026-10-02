@@ -896,7 +896,7 @@ void ACubePlayerPawn::CmdPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, in
 	const TSharedRef<FJsonObject> F = Op(TEXT("place"));
 	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
 	F->SetNumberField(TEXT("nx"), NX); F->SetNumberField(TEXT("ny"), NY); F->SetNumberField(TEXT("nz"), NZ);
-	F->SetStringField(TEXT("kind"), Kind.ToString());
+	F->SetStringField(TEXT("kind"), CubeSpec::KindName(Kind));
 	Game->Send(F);
 }
 

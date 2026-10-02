@@ -84,6 +84,12 @@ namespace CubeSpec
 struct FBlockDef
 {
 	FName Kind;
+	/**
+	 * The kind as the platform's tables and the JSON clients spell it: the registry's own lowercase name. Never
+	 * Kind.ToString(): an FName keeps the casing its first spelling in the process had, and the engine names "Stone"
+	 * before this registry runs.
+	 */
+	FString Name;
 	double Hardness = 0;
 	bool bNeedsTool = false;
 	bool bTransparent = true;
@@ -123,7 +129,7 @@ namespace CubeSpec
 			for (const FRow& R : Rows)
 			{
 				FBlockDef B;
-				B.Kind = FName(R.Kind); B.Hardness = R.Hardness; B.bNeedsTool = R.bNeedsTool; B.bTransparent = R.bTransparent; B.bGravity = R.bGravity;
+				B.Kind = FName(R.Kind); B.Name = R.Kind; B.Hardness = R.Hardness; B.bNeedsTool = R.bNeedsTool; B.bTransparent = R.bTransparent; B.bGravity = R.bGravity;
 				B.Drop = R.Drop ? FName(R.Drop) : NAME_None; B.BlastResistance = R.Blast;
 				B.BreakTicks = B.IsBreakable() ? FMath::CeilToInt32(R.Hardness * (R.bNeedsTool ? 100 : 30) - 1e-9) : -1;
 				Out.Add(B);
@@ -152,6 +158,18 @@ namespace CubeSpec
 	}
 
 	inline FName KindOf(uint8 Index) { return Index == GeneratedIndex ? FName(NAME_None) : Blocks().IsValidIndex(Index) ? Blocks()[Index].Kind : Blocks()[0].Kind; }
+
+	/**
+	 * A kind as it goes out to the platform's tables and to the JSON clients: the registry's lowercase spelling, whatever
+	 * casing the FName carries. Until 2026-10-02 the Unreal side wrote FName::ToString(), which gave "Stone": the C#
+	 * servers read it as air and the web client could not draw it.
+	 */
+	inline FString KindName(FName Kind)
+	{
+		if (Kind.IsNone()) return Kind.ToString();
+		for (const FBlockDef& B : Blocks()) if (B.Kind == Kind) return B.Name;
+		return Kind.ToString().ToLower();
+	}
 
 	/** Hotbar order: every placeable kind. */
 	inline const TArray<FName>& Hotbar()
