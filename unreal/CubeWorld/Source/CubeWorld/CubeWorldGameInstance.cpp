@@ -756,6 +756,7 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 	bWelcomed = true;
 	Health = You.Health;
 	bDead = false;
+	MoveSeq = 0;
 	Status.Empty();
 	// A fresh join starts from the generated terrain; a crossing keeps the world on screen and applies only what differs.
 	bSnapshotDiff = bCrossed;
@@ -874,6 +875,12 @@ void UCubeWorldGameInstance::OnRespawnFrame(const FCubePose& You)
 	bDead = false;
 	Health = You.Health;
 	OnRespawn.Broadcast(You);
+}
+
+void UCubeWorldGameInstance::OnCorrectFrame(const FCubePose& At, int32 Seq)
+{
+	MoveSeq = Seq;
+	OnCorrect.Broadcast(At);
 }
 
 void UCubeWorldGameInstance::OnBombListFrame(const TArray<FCubeBombRep>& List)

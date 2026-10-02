@@ -344,6 +344,11 @@ void UCubeWorldGameInstance::OnSocketFrame(const TSharedPtr<FJsonObject>& Frame,
 	}
 	if (Type == TEXT("hurt")) { OnHurtFrame(Str(Frame, TEXT("player")), Num(Frame, TEXT("health")), Num(Frame, TEXT("kx")), Num(Frame, TEXT("ky")), Num(Frame, TEXT("strength"))); return; }
 	if (Type == TEXT("death")) { OnDeathFrame(Str(Frame, TEXT("player")), Str(Frame, TEXT("by"))); return; }
+	if (Type == TEXT("correct"))
+	{
+		OnCorrectFrame(FCubePose{ Num(Frame, TEXT("x")), Num(Frame, TEXT("y")), Num(Frame, TEXT("z")), Health }, (int32)Num(Frame, TEXT("seq")));
+		return;
+	}
 	if (Type == TEXT("respawn"))
 	{
 		const TSharedPtr<FJsonObject>* You;

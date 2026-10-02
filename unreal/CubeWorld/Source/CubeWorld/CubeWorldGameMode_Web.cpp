@@ -210,7 +210,9 @@ void ACubeWorldGameMode::OnWebText(int32 Client, const FString& Text)
 	{
 		double Peak;
 		const TOptional<double> SaidPeak = Json->TryGetNumberField(TEXT("peak"), Peak) ? TOptional<double>(Peak) : TOptional<double>();
-		OnMove(P, Num(Json, TEXT("x")), Num(Json, TEXT("y")), Num(Json, TEXT("z")), Num(Json, TEXT("yaw")), Num(Json, TEXT("pitch")), Flag(Json, TEXT("onGround")), Flag(Json, TEXT("sneaking")), Flag(Json, TEXT("sprinting")), SaidPeak);
+		int32 Seq;
+		const TOptional<int32> SaidSeq = Json->TryGetNumberField(TEXT("seq"), Seq) ? TOptional<int32>(Seq) : TOptional<int32>();
+		OnMove(P, Num(Json, TEXT("x")), Num(Json, TEXT("y")), Num(Json, TEXT("z")), Num(Json, TEXT("yaw")), Num(Json, TEXT("pitch")), Flag(Json, TEXT("onGround")), Flag(Json, TEXT("sneaking")), Flag(Json, TEXT("sprinting")), SaidPeak, SaidSeq);
 	}
 	else if (Op == TEXT("dig")) OnDig(P, FMath::FloorToInt32(Num(Json, TEXT("x"))), FMath::FloorToInt32(Num(Json, TEXT("y"))), FMath::FloorToInt32(Num(Json, TEXT("z"))), Str(Json, TEXT("state")) == TEXT("start"));
 	else if (Op == TEXT("place")) OnPlace(P, FMath::FloorToInt32(Num(Json, TEXT("x"))), FMath::FloorToInt32(Num(Json, TEXT("y"))), FMath::FloorToInt32(Num(Json, TEXT("z"))), (int32)Num(Json, TEXT("nx")), (int32)Num(Json, TEXT("ny")), (int32)Num(Json, TEXT("nz")), FName(*Str(Json, TEXT("kind"))));
@@ -325,6 +327,23 @@ void ACubeWorldGameMode::SendRespawn(FCubeServerPlayer& P)
 		return;
 	}
 	if (ACubePlayerPawn* Pawn = P.Pawn.Get()) Pawn->ClientRespawn(P.X, P.Y, P.Z);
+}
+
+void ACubeWorldGameMode::Correct(FCubeServerPlayer& P, double X, double Y, double Z)
+{
+	const FCubeMoveCheck& Moves = P.Moves;
+	if (P.WebClient)
+	{
+		TSharedRef<FJsonObject> F = Frame(TEXT("correct"));
+		F->SetNumberField(TEXT("seq"), Moves.Seq);
+		F->SetNumberField(TEXT("x"), Moves.X); F->SetNumberField(TEXT("y"), Moves.Y); F->SetNumberField(TEXT("z"), Moves.Z);
+		WebSend(P, F);
+	}
+	else if (ACubePlayerPawn* Pawn = P.Pawn.Get()) Pawn->ClientCorrect(Moves.X, Moves.Y, Moves.Z, Moves.Seq);
+	if (Now() - P.CorrectionLoggedAt < 5000) return;
+	P.CorrectionLoggedAt = Now();
+	const double Distance = FMath::Sqrt((X - Moves.X) * (X - Moves.X) + (Y - Moves.Y) * (Y - Moves.Y)) + FMath::Max(0.0, Z - Moves.Z);
+	ServerLog(FString::Printf(TEXT("%s moved %.1f blocks too fast, put back (correction %d)"), *P.Name, Distance, Moves.Seq));
 }
 
 // ── what everyone gets ───────────────────────────────────────────────────────────────────────────

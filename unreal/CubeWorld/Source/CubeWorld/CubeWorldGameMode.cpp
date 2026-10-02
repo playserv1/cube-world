@@ -437,6 +437,7 @@ void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 		P.Z = FMath::Clamp(HelloPos->Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
 	}
 	if (bHeard || HelloPos) P.LastAttackTick = TickCount;
+	P.Moves.Reset(P.X, P.Y, P.Z, Now());
 }
 
 void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, bool bCross, double X, double Y, double Z)
@@ -681,7 +682,7 @@ void ACubeWorldGameMode::TickDig(FCubeServerPlayer& P)
 	if (!P.Dig.IsSet()) return;
 	FCubeDig& Dig = P.Dig.GetValue();
 	const double Ex = P.X, Ey = P.Y, Ez = P.Z + EyeHeightOf(P.bSneaking);
-	if (FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, Dig.X, Dig.Y, Dig.Z) > CubeSpec::BlockReach + CubeSpec::ReachTolerance || P.bDead)
+	if (FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, Dig.X, Dig.Y, Dig.Z) > CubeSpec::BlockReach + CubeSpec::ReachTolerance || P.bDead || !InThisRegion(P))
 	{
 		StopDig(P);
 		return;
@@ -715,12 +716,19 @@ void ACubeWorldGameMode::StopDig(FCubeServerPlayer& P)
 
 // ── what the players ask ─────────────────────────────────────────────────────────────────────────
 
-void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, TOptional<double> SaidPeak)
+void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, TOptional<double> SaidPeak, TOptional<int32> SaidSeq)
 {
 	if (!P || P->bDead) return;
-	P->X = FMath::Clamp(X, 0.0, (double)CubeSpec::Width_);
-	P->Y = FMath::Clamp(Y, 0.0, (double)CubeSpec::Depth);
-	P->Z = FMath::Clamp(Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
+	X = FMath::Clamp(X, 0.0, (double)CubeSpec::Width_);
+	Y = FMath::Clamp(Y, 0.0, (double)CubeSpec::Depth);
+	Z = FMath::Clamp(Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
+	switch (P->Moves.Check(X, Y, Z, SaidSeq, Now()))
+	{
+	case ECubeMoveVerdict::Stale: return;
+	case ECubeMoveVerdict::Refused: Correct(*P, X, Y, Z); return;
+	default: break;
+	}
+	P->X = X; P->Y = Y; P->Z = Z;
 	P->Yaw = Yaw; P->Pitch = Pitch;
 	P->bSneaking = bSneaking; P->bSprinting = bSprinting;
 	P->bMoved = true;
@@ -738,7 +746,7 @@ void ACubeWorldGameMode::OnDig(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, 
 	if (!bStart || P->bDead) return;
 	const FBlockDef& Block = World.BlockAt(X, Y, Z);
 	const double Ex = P->X, Ey = P->Y, Ez = P->Z + EyeHeightOf(P->bSneaking);
-	if (!FCubeServerWorld::Inside(X, Y, Z) || !Block.IsSolid() || !Block.IsBreakable()
+	if (!FCubeServerWorld::Inside(X, Y, Z) || !Block.IsSolid() || !Block.IsBreakable() || !InThisRegion(*P)
 		|| FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) > CubeSpec::BlockReach + CubeSpec::ReachTolerance) return;
 	P->Dig = FCubeDig{ X, Y, Z, TickCount, Block.BreakTicks, 0 };
 	BroadcastDig(P->Id, X, Y, Z, 0);
@@ -748,13 +756,22 @@ void ACubeWorldGameMode::OnPlace(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z
 {
 	if (!P || P->bDead) return;
 	const double Ex = P->X, Ey = P->Y, Ez = P->Z + EyeHeightOf(P->bSneaking);
-	const bool bReachable = FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) <= CubeSpec::BlockReach + CubeSpec::ReachTolerance;
+	const bool bReachable = FCubeServerWorld::DistanceToBlock(Ex, Ey, Ez, X, Y, Z) <= CubeSpec::BlockReach + CubeSpec::ReachTolerance && InThisRegion(*P);
 	FCubeWorldUpdate Update;
 	const bool bPlaced = bReachable && P->Inventory.Count(Kind) > 0 && World.Place(X, Y, Z, NX, NY, NZ, Kind, P->Id, ServerName, Hitboxes(), Update);
 	if (!bPlaced) { SendInventory(*P, true); return; }
 	P->Inventory.Take(Kind);
 	ShareInventory(*P);
 	Publish(Update);
+}
+
+// A server digs and places only for the players in its region: one standing anywhere else edits through that region's
+// server. The C# servers' InThisRegion.
+bool ACubeWorldGameMode::InThisRegion(const FCubeServerPlayer& P) const
+{
+	if (CubeNear(Region, P.X, P.Y, CubeSpec::BorderSlack)) return true;
+	const int32 There = CubeSpec::RegionOf(P.X, P.Y);
+	return !Regions.ContainsByPredicate([&](const FCubeRegionRep& R) { return R.Region == There && R.Server != ServerName; });
 }
 
 /** A hit on whoever is within reach: a player on this server, or one another server hosts. */
@@ -790,6 +807,7 @@ void ACubeWorldGameMode::Hurt(FCubeServerPlayer& Victim, double Damage, bool bDi
 {
 	if (Victim.bDead || TickCount - Victim.LastHurtTick < CubeSpec::InvulnerabilityTicks) return;
 	Victim.LastHurtTick = TickCount;
+	if (bDirected) Victim.Moves.Knocked(Strength);
 	Victim.Health = FMath::Max(0.0, Victim.Health - Damage);
 	Victim.bMoved = true;
 	BroadcastHurt(Victim.Id, Victim.Health, bDirected ? DX * Strength : 0, bDirected ? DY * Strength : 0, bDirected ? Strength : 0, By);
@@ -805,6 +823,7 @@ void ACubeWorldGameMode::OnRespawn(FCubeServerPlayer* P)
 	Spawn(*P);
 	P->bDead = false;
 	P->Fall = FCubePlayerFall();
+	P->Moves.Reset(P->X, P->Y, P->Z, Now());
 	P->bMoved = true;
 	SendRespawn(*P);
 }

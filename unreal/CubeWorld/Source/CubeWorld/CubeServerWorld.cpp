@@ -214,6 +214,37 @@ void FCubeServerWorld::Settle(int32 X, int32 Y, int32 Z, FCubeWorldUpdate& Out)
 	}
 }
 
+// ── moves ────────────────────────────────────────────────────────────────────────────────────────
+
+void FCubeMoveCheck::Reset(double InX, double InY, double InZ, int64 Now)
+{
+	X = InX; Y = InY; Z = InZ; At = Now; Allowance = CubeSpec::MoveBurst; RefusedSince = -1;
+}
+
+ECubeMoveVerdict FCubeMoveCheck::Check(double InX, double InY, double InZ, TOptional<int32> SaidSeq, int64 Now)
+{
+	if (SaidSeq.IsSet() && SaidSeq.GetValue() < Seq) return ECubeMoveVerdict::Stale;
+
+	// The allowance fills with time up to the burst; a knockback's extra stays until it is spent.
+	Allowance = FMath::Min(Allowance + CubeSpec::MoveSpeed * FMath::Max<int64>(0, Now - At) / 1000.0, FMath::Max(Allowance, CubeSpec::MoveBurst));
+	At = Now;
+	const double Distance = FMath::Sqrt((InX - X) * (InX - X) + (InY - Y) * (InY - Y)) + FMath::Max(0.0, InZ - Z);
+	if (Distance > Allowance + CubeSpec::MoveSlack)
+	{
+		if (!SaidSeq.IsSet() && RefusedSince >= 0 && Now - RefusedSince >= UnnumberedGiveUpMs)
+		{
+			Reset(InX, InY, InZ, Now);
+			return ECubeMoveVerdict::Accepted;
+		}
+		if (RefusedSince < 0) RefusedSince = Now;
+		Seq++;
+		return ECubeMoveVerdict::Refused;
+	}
+	Allowance = FMath::Max(0.0, Allowance - Distance);
+	X = InX; Y = InY; Z = InZ; RefusedSince = -1;
+	return ECubeMoveVerdict::Accepted;
+}
+
 // ── the inventory ────────────────────────────────────────────────────────────────────────────────
 
 double FCubePlayerFall::Step(double Z, bool bOnGround, TOptional<double> SaidPeak)

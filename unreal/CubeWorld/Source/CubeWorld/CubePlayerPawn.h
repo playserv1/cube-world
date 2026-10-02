@@ -75,7 +75,8 @@ public:
 	// ---- to the server ----------------------------------------------------------------------
 	/** Who this is, and where they were when they crossed a border (bCross), else the server's spawn. */
 	UFUNCTION(Server, Reliable) void ServerHello(const FString& Name, bool bCross, float X, float Y, float Z);
-	UFUNCTION(Server, Unreliable) void ServerMove(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak);
+	/** Seq: the last correction this client took (ClientCorrect), so the server drops the moves sent before it. */
+	UFUNCTION(Server, Unreliable) void ServerMove(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak, int32 Seq);
 	UFUNCTION(Server, Reliable) void ServerDig(int32 X, int32 Y, int32 Z, bool bStart);
 	UFUNCTION(Server, Reliable) void ServerPlace(int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, uint8 Kind);
 	UFUNCTION(Server, Reliable) void ServerAttack(const FString& Target);
@@ -97,6 +98,8 @@ public:
 	UFUNCTION(Client, Reliable) void ClientBombs(const TArray<FCubeBombRep>& InBombs);
 	UFUNCTION(Client, Reliable) void ClientInventory(const TArray<FCubeStackRep>& Stacks);
 	UFUNCTION(Client, Reliable) void ClientRespawn(float X, float Y, float Z);
+	/** A move too far for the time it took: back to where the last good one left the player (FCubeMoveCheck). */
+	UFUNCTION(Client, Reliable) void ClientCorrect(float X, float Y, float Z, int32 Seq);
 	/** An operator closed the room or removed this player; the connection closes right after. */
 	UFUNCTION(Client, Reliable) void ClientTurnedAway(const FString& Reason);
 
@@ -109,6 +112,7 @@ private:
 	void SendMove(double Yaw, double Pitch);
 	void HandleWelcome(const FCubePose& You, bool bTeleport);
 	void HandleRespawn(const FCubePose& You);
+	void HandleCorrect(const FCubePose& At);
 	void HandleHurt(const FString& PlayerId, double Health, double KX, double KY, double Strength);
 	void HandleDeath(const FString& PlayerId, const FString& By);
 	void HandlePlayers(const TArray<FCubePresence>& Players);

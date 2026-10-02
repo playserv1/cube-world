@@ -351,4 +351,66 @@ bool FCubeWorldSocketFrameOrderTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldMoveCheckTest,
+	"CubeWorld.Moves.NoFasterThanASprintJump",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// The move check both servers apply (World.cs MoveCheck on the C# side), against the client's own physics.
+bool FCubeWorldMoveCheckTest::RunTest(const FString& Parameters)
+{
+	const FCubeSolidQuery Flat = [](int32, int32, int32 Z) { return Z < 0; };
+	FCubeBody Body;
+	Body.Teleport(2, 10, 0);
+	FCubeMoveCheck Check;
+	Check.Reset(Body.X, Body.Y, Body.Z, 0);
+	FCubeInput Run;
+	Run.Forward = 1; Run.bSprint = true; Run.bJump = true; Run.Yaw = -UE_DOUBLE_HALF_PI;
+	bool bAllAccepted = true;
+	int64 T = 0;
+	for (int32 I = 0; I < 180 && Body.X < 68; I++)
+	{
+		CubePhysics::Tick(Body, Run, Flat);
+		T += 50;
+		bAllAccepted &= Check.Check(Body.X, Body.Y, Body.Z, TOptional<int32>(), T) == ECubeMoveVerdict::Accepted;
+	}
+	TestTrue(TEXT("a sprint-jump along the world is accepted all the way"), bAllAccepted && Body.X > 30);
+
+	// Knocked away in the air by a full blast, then falling: the push and the fall are allowed.
+	CubePhysics::Knockback(Body, -1, 0, 1);
+	Check.Knocked(1);
+	FCubeInput Idle;
+	bAllAccepted = true;
+	for (int32 I = 0; I < 40; I++)
+	{
+		CubePhysics::Tick(Body, Idle, Flat);
+		T += 50;
+		bAllAccepted &= Check.Check(Body.X, Body.Y, Body.Z, TOptional<int32>(), T) == ECubeMoveVerdict::Accepted;
+	}
+	TestTrue(TEXT("a knockback is accepted"), bAllAccepted);
+
+	FCubeMoveCheck Jump;
+	Jump.Reset(10, 10, 0, 0);
+	TestTrue(TEXT("forty blocks in one move is refused"), Jump.Check(50, 10, 0, TOptional<int32>(0), 1000) == ECubeMoveVerdict::Refused);
+	TestTrue(TEXT("and the player stays put"), Jump.X == 10 && Jump.Seq == 1);
+	TestTrue(TEXT("a move sent before the correction was taken is dropped"), Jump.Check(51, 10, 0, TOptional<int32>(0), 1050) == ECubeMoveVerdict::Stale);
+	TestTrue(TEXT("the next one is checked again"), Jump.Check(10.3, 10, 0, TOptional<int32>(1), 1100) == ECubeMoveVerdict::Accepted);
+
+	FCubeMoveCheck Old;
+	Old.Reset(10, 10, 0, 0);
+	Old.Check(40, 10, 0, TOptional<int32>(), 3000);
+	TestTrue(TEXT("a client that cannot take a correction is taken where it says after a second"), Old.Check(40.4, 10, 0, TOptional<int32>(), 4000) == ECubeMoveVerdict::Accepted && Old.X == 40.4);
+
+	FCubeMoveCheck Climb;
+	Climb.Reset(10, 10, 0, 0);
+	TestTrue(TEXT("a climb of twenty blocks in one move is refused"), Climb.Check(10, 10, 20, TOptional<int32>(), 50) == ECubeMoveVerdict::Refused);
+	FCubeMoveCheck Fall;
+	Fall.Reset(10, 10, 40, 0);
+	TestTrue(TEXT("a fall of forty is free"), Fall.Check(10, 10, 0, TOptional<int32>(), 50) == ECubeMoveVerdict::Accepted);
+
+	TestTrue(TEXT("yellow is near its border"), CubeNear(3, 26.5, 36, CubeSpec::BorderSlack));
+	TestFalse(TEXT("green is not near yellow"), CubeNear(3, 60.5, 5.5, CubeSpec::BorderSlack));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

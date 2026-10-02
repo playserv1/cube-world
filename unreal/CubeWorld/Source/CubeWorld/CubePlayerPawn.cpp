@@ -94,6 +94,7 @@ void ACubePlayerPawn::Bind()
 
 	Game->OnWelcome.AddUObject(this, &ACubePlayerPawn::HandleWelcome);
 	Game->OnRespawn.AddUObject(this, &ACubePlayerPawn::HandleRespawn);
+	Game->OnCorrect.AddUObject(this, &ACubePlayerPawn::HandleCorrect);
 	Game->OnHurt.AddUObject(this, &ACubePlayerPawn::HandleHurt);
 	Game->OnDeath.AddUObject(this, &ACubePlayerPawn::HandleDeath);
 	Game->OnPlayers.AddUObject(this, &ACubePlayerPawn::HandlePlayers);
@@ -448,6 +449,13 @@ void ACubePlayerPawn::HandleRespawn(const FCubePose& You)
 	CaptureMouse(true);
 }
 
+void ACubePlayerPawn::HandleCorrect(const FCubePose& At)
+{
+	Body.Teleport(At.X, At.Y, At.Z);
+	// The server hears where the player stands now with the next tick's move, even if they stand still.
+	LastPose.Empty();
+}
+
 void ACubePlayerPawn::HandleHurt(const FString& InPlayerId, double, double KX, double KY, double Strength)
 {
 	if (InPlayerId == Game->PlayerId)
@@ -665,9 +673,9 @@ void ACubePlayerPawn::ServerHello_Implementation(const FString& Name, bool bCros
 	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnHello(this, Name, bCross, X, Y, Z);
 }
 
-void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak)
+void ACubePlayerPawn::ServerMove_Implementation(float X, float Y, float Z, float Yaw, float Pitch, bool bOnGround, bool bSneaking, bool bSprinting, float Peak, int32 Seq)
 {
-	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(S->PlayerOf(this), X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, bOnGround ? TOptional<double>() : TOptional<double>(Peak));
+	if (ACubeWorldGameMode* S = ServerOf(this)) S->OnMove(S->PlayerOf(this), X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, bOnGround ? TOptional<double>() : TOptional<double>(Peak), Seq);
 }
 
 void ACubePlayerPawn::ServerDig_Implementation(int32 X, int32 Y, int32 Z, bool bStart)
@@ -721,6 +729,11 @@ void ACubePlayerPawn::ClientInventory_Implementation(const TArray<FCubeStackRep>
 void ACubePlayerPawn::ClientRespawn_Implementation(float X, float Y, float Z)
 {
 	if (Game) Game->OnRespawnFrame(FCubePose{ X, Y, Z, CubeSpec::MaxHealth });
+}
+
+void ACubePlayerPawn::ClientCorrect_Implementation(float X, float Y, float Z, int32 Seq)
+{
+	if (Game) Game->OnCorrectFrame(FCubePose{ X, Y, Z, Game->Health }, Seq);
 }
 
 void ACubePlayerPawn::ClientTurnedAway_Implementation(const FString& Reason)
@@ -885,12 +898,13 @@ namespace
 
 void ACubePlayerPawn::CmdMove(double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, double Peak)
 {
-	if (!Game->IsViaSocket()) { ServerMove(X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, Peak); return; }
+	if (!Game->IsViaSocket()) { ServerMove(X, Y, Z, Yaw, Pitch, bOnGround, bSneaking, bSprinting, Peak, Game->MoveSeq); return; }
 	const TSharedRef<FJsonObject> F = Op(TEXT("move"));
 	F->SetNumberField(TEXT("x"), X); F->SetNumberField(TEXT("y"), Y); F->SetNumberField(TEXT("z"), Z);
 	F->SetNumberField(TEXT("yaw"), Yaw); F->SetNumberField(TEXT("pitch"), Pitch);
 	F->SetBoolField(TEXT("onGround"), bOnGround); F->SetBoolField(TEXT("sneaking"), bSneaking); F->SetBoolField(TEXT("sprinting"), bSprinting);
 	if (!bOnGround) F->SetNumberField(TEXT("peak"), Peak);
+	F->SetNumberField(TEXT("seq"), Game->MoveSeq);
 	Game->Send(F);
 }
 

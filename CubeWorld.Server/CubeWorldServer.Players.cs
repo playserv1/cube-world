@@ -60,10 +60,14 @@ public sealed partial class CubeWorldServer
     private void Move(Player player, Command command)
     {
         if (player.Dead) return;
+        double x = Math.Clamp(command.x, 0, World.Width), y = Math.Clamp(command.y, 0, World.Depth), z = Math.Clamp(command.z, World.MinZ, World.MaxZ + 8);
+        switch (player.Moves.Check(x, y, z, command.seq, Now))
+        {
+            case MoveVerdict.Stale: return;
+            case MoveVerdict.Refused: Correct(player, x, y, z); return;
+        }
         var pose = player.Pose;
-        pose.x = Math.Clamp(command.x, 0, World.Width);
-        pose.y = Math.Clamp(command.y, 0, World.Depth);
-        pose.z = Math.Clamp(command.z, World.MinZ, World.MaxZ + 8);
+        (pose.x, pose.y, pose.z) = (x, y, z);
         pose.yaw = command.yaw;
         pose.pitch = command.pitch;
         pose.sneaking = command.sneaking ? 1 : 0;
@@ -74,6 +78,17 @@ public sealed partial class CubeWorldServer
         // border, the one before: the client says its own peak).
         var damage = player.Fall.Step(pose.z, command.onGround, command.peak);
         if (damage > 0) Hurt(player, damage, null, 0, null);
+    }
+
+    /// <summary>A move too far for the time it took: the player is put back where their last good move left them.</summary>
+    private void Correct(Player player, double x, double y, double z)
+    {
+        var moves = player.Moves;
+        Send(player.Session, new { type = "correct", seq = moves.Seq, x = moves.X, y = moves.Y, z = moves.Z });
+        if (Now - player.CorrectionLoggedAt < 5000) return;
+        player.CorrectionLoggedAt = Now;
+        var distance = Math.Sqrt((x - moves.X) * (x - moves.X) + (y - moves.Y) * (y - moves.Y)) + Math.Max(0, z - moves.Z);
+        _ = Platform.Log($"{RoomName}: {player.Pose.name} moved {distance:0.0} blocks too fast, put back (correction {moves.Seq})");
     }
 
     // ── digging ─────────────────────────────────────────────────────────────────────────────────────
@@ -238,6 +253,7 @@ public sealed partial class CubeWorldServer
     {
         if (victim.Dead || _tick - victim.LastHurtTick < Spec.InvulnerabilityTicks) return;
         victim.LastHurtTick = _tick;
+        if (direction is not null) victim.Moves.Knocked(strength);
         victim.Pose.health = Math.Max(0, victim.Pose.health - damage);
         victim.Moved = true;
         Broadcast(new
@@ -267,6 +283,7 @@ public sealed partial class CubeWorldServer
         player.Pose.health = Spec.MaxHealth;
         player.Dead = false;
         player.Fall = new PlayerFall();
+        player.Moves.Reset(spawn.x, spawn.y, spawn.z, Now);
         player.Moved = true;
         Send(player.Session, new { type = "respawn", you = player.Pose });
     }
@@ -324,6 +341,8 @@ public sealed partial class CubeWorldServer
         public bool Moved { get; set; }
         public bool Dead { get; set; }
         public PlayerFall Fall { get; set; } = new();
+        public MoveCheck Moves { get; } = new();
+        public long CorrectionLoggedAt { get; set; }
         public long LastAttackTick { get; set; } = long.MinValue / 2;
         public long LastHurtTick { get; set; } = long.MinValue / 2;
         public DigState? Dig { get; set; }

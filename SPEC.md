@@ -87,6 +87,15 @@ the server clamps positions to the world, works out fall damage from them, check
 face a block is placed against, times every dig on its own 20 Hz tick, and deals damage, knockback
 and death. Every world change goes through platform data so the other servers see it.
 
+A move may take the player no faster than 10 blocks a second, horizontally plus upward (a sprint-jump averages
+7.1; a fall is free). An unspent allowance of up to 12 blocks covers the network's jitter and a crossing's first
+move, and a hit's knockback adds 12 blocks per unit of strength. A move past that is refused: the server sends
+`correct` (`seq`, `x`, `y`, `z`, where the last good move left the player), the client goes there, and every
+later `move` carries that `seq`, so the server drops the moves sent before the client heard of it. A client
+that sends no `seq` cannot take a correction, and after a second of refusals it is taken where it says. A
+server digs and places only for a player in its region or within 6 blocks of its border, or in a region no
+other server holds.
+
 ## Where this world differs, on purpose
 
 - The keys for sprinting and sneaking are swapped on request: Shift sprints, Ctrl sneaks (Minecraft: Ctrl sprints, Shift sneaks).

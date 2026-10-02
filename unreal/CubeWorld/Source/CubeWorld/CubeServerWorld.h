@@ -179,6 +179,46 @@ struct FCubePlayerFall
 	double Step(double Z, bool bOnGround, TOptional<double> SaidPeak = TOptional<double>());
 };
 
+enum class ECubeMoveVerdict : uint8 { Accepted, Stale, Refused };
+
+/**
+ * How far a player's moves may take them (CubeSpec::MoveSpeed). MoveCheck on the C# side. A move past the allowance is
+ * refused, and the player is put back where the last accepted move left them: the server sends a correction numbered
+ * Seq, and a client that took it says so in its moves, so the moves it sent before it heard of it are dropped rather
+ * than refused again. A client that never numbers its moves cannot take a correction (a browser or Windows build from
+ * before 2026-10-02): refused for UnnumberedGiveUpMs on end, it is taken where it says, so a player is never held in one
+ * place for good. Drop that once every client numbers its moves.
+ */
+struct FCubeMoveCheck
+{
+	static constexpr int64 UnnumberedGiveUpMs = 1000;
+	double X = 0, Y = 0, Z = 0;
+	int32 Seq = 0;
+
+	/** The server put the player here: they joined, walked in over a border or came back from the dead. */
+	void Reset(double InX, double InY, double InZ, int64 Now);
+	/** A hit threw the player: they may fly further than they walk. */
+	void Knocked(double Strength) { Allowance += FMath::Max(0.0, Strength) * CubeSpec::KnockbackReach; }
+	ECubeMoveVerdict Check(double InX, double InY, double InZ, TOptional<int32> SaidSeq, int64 Now);
+
+private:
+	int64 At = 0, RefusedSince = -1;
+	double Allowance = 0;
+};
+
+/**
+ * Whether (X, Y) is in Region or within Slack of its border: a server digs and places only for players who stand in its
+ * region, and one who walks over a border plays on with the old server for the moment the crossing takes. World.Near on
+ * the C# side.
+ */
+inline bool CubeNear(int32 Region, double X, double Y, double Slack)
+{
+	if (Region < 0) return false;
+	int32 X0, X1, Y0, Y1;
+	CubeSpec::RegionBounds(Region, X0, X1, Y0, Y1);
+	return X >= X0 - Slack && X <= X1 + Slack && Y >= Y0 - Slack && Y <= Y1 + Slack;
+}
+
 /** A player another server saw is the one walking in over the border when it saw them in the last 5 s, alive (World.Arriving on the C# side). */
 inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now - SeenAt < 5000 && Health > 0; }
 

@@ -113,6 +113,62 @@ public sealed class PlayerFall
     }
 }
 
+public enum MoveVerdict { Accepted, Stale, Refused }
+
+/// <summary>
+/// How far a player's moves may take them (Spec.MoveSpeed). FCubeMoveCheck on the Unreal side. A move past the
+/// allowance is refused, and the player is put back where the last accepted move left them: the server sends a
+/// correction numbered <see cref="Seq"/>, and a client that took it says so in its moves, so the moves it sent before
+/// it heard of it are dropped rather than refused again. A client that never numbers its moves cannot take a correction
+/// (a Windows build from before 2026-10-02): refused for <see cref="UnnumberedGiveUpMs"/> on end, it is taken where it
+/// says, so a player is never held in one place for good. Drop that once every client numbers its moves.
+/// </summary>
+public sealed class MoveCheck
+{
+    public const long UnnumberedGiveUpMs = 1000;
+
+    private long _at, _refusedSince = -1;
+    private double _allowance;
+
+    public double X { get; private set; }
+    public double Y { get; private set; }
+    public double Z { get; private set; }
+    public int Seq { get; private set; }
+
+    /// <summary>The server put the player here: they joined, walked in over a border or came back from the dead.</summary>
+    public void Reset(double x, double y, double z, long now)
+    {
+        (X, Y, Z, _at, _allowance, _refusedSince) = (x, y, z, now, Spec.MoveBurst, -1);
+    }
+
+    /// <summary>A hit threw the player: they may fly further than they walk.</summary>
+    public void Knocked(double strength) => _allowance += Math.Max(0, strength) * Spec.KnockbackReach;
+
+    public MoveVerdict Check(double x, double y, double z, int? seq, long now)
+    {
+        if (seq is { } said && said < Seq) return MoveVerdict.Stale;
+
+        // The allowance fills with time up to the burst; a knockback's extra stays until it is spent.
+        _allowance = Math.Min(_allowance + Spec.MoveSpeed * Math.Max(0, now - _at) / 1000.0, Math.Max(_allowance, Spec.MoveBurst));
+        _at = now;
+        var distance = Math.Sqrt((x - X) * (x - X) + (y - Y) * (y - Y)) + Math.Max(0, z - Z);
+        if (distance > _allowance + Spec.MoveSlack)
+        {
+            if (seq is null && _refusedSince >= 0 && now - _refusedSince >= UnnumberedGiveUpMs)
+            {
+                Reset(x, y, z, now);
+                return MoveVerdict.Accepted;
+            }
+            if (_refusedSince < 0) _refusedSince = now;
+            Seq++;
+            return MoveVerdict.Refused;
+        }
+        _allowance = Math.Max(0, _allowance - distance);
+        (X, Y, Z, _refusedSince) = (x, y, z, -1);
+        return MoveVerdict.Accepted;
+    }
+}
+
 /// <summary>A hit on a player another server hosts: written by the attacker's server, applied by the victim's.</summary>
 [EntityName("WorldHit")]
 public sealed class WorldHit

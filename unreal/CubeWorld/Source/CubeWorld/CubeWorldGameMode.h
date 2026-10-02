@@ -65,6 +65,8 @@ struct FCubeServerPlayer
 	bool bSneaking = false, bSprinting = false;
 	bool bMoved = false, bDead = false, bWelcomed = false;
 	FCubePlayerFall Fall;
+	FCubeMoveCheck Moves;
+	int64 CorrectionLoggedAt = 0;
 	int64 LastAttackTick = -1000000, LastHurtTick = -1000000;
 	TOptional<FCubeDig> Dig;
 	/** The bomb in the player's hand. A player holds one at a time and can only throw it. */
@@ -117,8 +119,9 @@ public:
 
 	// ---- what the players ask (from the pawn's server RPCs) ---------------------------------
 	void OnHello(ACubePlayerPawn* Pawn, const FString& Name, bool bCross, double X, double Y, double Z);
-	/** SaidPeak: the client's highest point since it last stood on the ground (FCubePlayerFall::Step); unset when it said none. */
-	void OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, TOptional<double> SaidPeak = TOptional<double>());
+	/** SaidPeak: the client's highest point since it last stood on the ground (FCubePlayerFall::Step); unset when it said none.
+	 *  SaidSeq: the last correction the client took (FCubeMoveCheck), from a client that numbers its moves. */
+	void OnMove(FCubeServerPlayer* P, double X, double Y, double Z, double Yaw, double Pitch, bool bOnGround, bool bSneaking, bool bSprinting, TOptional<double> SaidPeak = TOptional<double>(), TOptional<int32> SaidSeq = TOptional<int32>());
 	void OnDig(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, bool bStart);
 	void OnPlace(FCubeServerPlayer* P, int32 X, int32 Y, int32 Z, int32 NX, int32 NY, int32 NZ, FName Kind);
 	void OnAttack(FCubeServerPlayer* P, const FString& Target);
@@ -211,6 +214,10 @@ private:
 	void ShareInventory(FCubeServerPlayer& Player);
 	void SendInventory(FCubeServerPlayer& Player, bool bRefused = false);
 	void SendRespawn(FCubeServerPlayer& Player);
+	/** A move too far for the time it took: the player is put back where their last good move left them. */
+	void Correct(FCubeServerPlayer& Player, double X, double Y, double Z);
+	/** The player stands in this server's region or just past its border, or in a region no other server holds. */
+	bool InThisRegion(const FCubeServerPlayer& Player) const;
 	void RemovePlayer(const FString& Id);
 	void BroadcastDig(const FString& PlayerId, int32 X, int32 Y, int32 Z, int32 Stage);
 	void BroadcastHurt(const FString& PlayerId, double Health, double KX, double KY, double Strength, const FString& By);

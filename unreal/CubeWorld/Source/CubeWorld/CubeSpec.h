@@ -20,6 +20,11 @@ namespace CubeSpec
 	constexpr double Width = 0.6, Height = 1.8, SneakHeight = 1.5, EyeHeight = 1.62, SneakEyeHeight = 1.27, StepHeight = 0.6;
 	// Reach: 4.5 blocks for blocks, 3 for entities; the server allows a little extra for latency.
 	constexpr double BlockReach = 4.5, EntityReach = 3.0, ReachTolerance = 1.0;
+	// A client walks itself, but no faster than MoveSpeed blocks a second, counted horizontally plus upward (a fall is
+	// free, it reaches 78 m/s): a sprint-jump averages 7.1. Unspent, the allowance holds up to MoveBurst, for the
+	// network's jitter and a crossing's first move; a hit's knockback adds KnockbackReach per unit of strength
+	// (FCubeMoveCheck, Spec.cs). A server digs and places only for a player within BorderSlack of its region.
+	constexpr double MoveSpeed = 10, MoveBurst = 12, MoveSlack = 1, KnockbackReach = 12, BorderSlack = 6.0;
 	constexpr double MaxHealth = 20, KnockbackLift = 0.4, Push = 0.05;
 	constexpr int32 HurtTicks = 10, DigCooldownTicks = 5;
 	// Field of view 70° is Minecraft's VERTICAL angle (Options); Unreal's camera takes the horizontal one, so

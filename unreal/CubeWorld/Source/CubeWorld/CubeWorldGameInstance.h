@@ -62,6 +62,8 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnPlayers, const TArray<FCubePresence>&
 DECLARE_MULTICAST_DELEGATE_FiveParams(FCubeOnHurt, const FString& /*PlayerId*/, double /*Health*/, double /*KX*/, double /*KY*/, double /*Strength*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnDeath, const FString& /*PlayerId*/, const FString& /*By*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnRespawn, const FCubePose&);
+/** The server refused a move too far for the time it took: the player goes back to where its last good one left them. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnCorrect, const FCubePose&);
 DECLARE_MULTICAST_DELEGATE(FCubeOnInventory);
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnBomb, const FCubeBombFrame&);
 /** A server handed its whole list of bombs (its welcome): the ids it knows, every other bomb on this client is gone. */
@@ -116,6 +118,7 @@ public:
 	void OnHurtFrame(const FString& PlayerId, double InHealth, double KX, double KY, double Strength);
 	void OnDeathFrame(const FString& PlayerId, const FString& By);
 	void OnRespawnFrame(const FCubePose& You);
+	void OnCorrectFrame(const FCubePose& At, int32 Seq);
 	void OnBombFrame(const FCubeBombRep& Bomb);
 	/** A server's whole list of bombs, as its welcome hands it: the bombs it does not list are taken away, as the web client does. */
 	void OnBombListFrame(const TArray<FCubeBombRep>& Bombs);
@@ -133,6 +136,8 @@ public:
 	double Health = 20;
 	bool bDead = false;
 	bool bPlaced = false;
+	/** The last correction the server sent (OnCorrectFrame); every move says it. Each server numbers its own from 0. */
+	int32 MoveSeq = 0;
 	/** From Play, or a jump from the server list, until the player stands where the server put them the view is curtained:
 	 *  the world is never shown from the wrong place first (the web client draws the same curtain). */
 	bool bEntering = false;
@@ -186,6 +191,7 @@ public:
 	FCubeOnHurt OnHurt;
 	FCubeOnDeath OnDeath;
 	FCubeOnRespawn OnRespawn;
+	FCubeOnCorrect OnCorrect;
 	FCubeOnInventory OnInventory;
 	FCubeOnCubes OnCubes;
 	FCubeOnBomb OnBomb;

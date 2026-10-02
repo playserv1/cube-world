@@ -28,6 +28,14 @@ public static class Spec
     /// </summary>
     public const double BorderSlack = 6.0;
 
+    /// <summary>
+    /// A client walks itself (SPEC "Server authority"), but no faster than MoveSpeed blocks a second, counted
+    /// horizontally plus upward (a fall is free, it reaches 78 m/s): a sprint-jump averages 7.1. Unspent, the allowance
+    /// holds up to MoveBurst, for the network's jitter and a crossing's first move; a hit's knockback adds
+    /// KnockbackReach per unit of strength (a body knocked through the air slides some 11 times its push). MoveCheck.
+    /// </summary>
+    public const double MoveSpeed = 10, MoveBurst = 12, MoveSlack = 1, KnockbackReach = 12;
+
     // Player hitbox 0.6 wide, 1.8 tall (1.5 sneaking); eyes at 1.62 (1.27 sneaking).
     public const double PlayerWidth = 0.6, PlayerHeight = 1.8, SneakHeight = 1.5, EyeHeight = 1.62, SneakEyeHeight = 1.27;
 

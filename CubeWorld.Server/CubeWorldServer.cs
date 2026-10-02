@@ -154,6 +154,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
         var player = new Player(session, inventory, WorldPresence.Arriving(spawn, _elsewhere.GetValueOrDefault(session.Id), Now));
         // A crossing takes the hand's charge with it, so a player cannot cross for a full-strength hit.
         if (!ReferenceEquals(player.Pose, spawn)) player.LastAttackTick = _tick;
+        player.Moves.Reset(player.Pose.x, player.Pose.y, player.Pose.z, Now);
 
         _players[session.Id] = player;
         // A row heard while the read was out is newer than what the read returned; one heard from now on finds the player.
@@ -246,8 +247,9 @@ public sealed partial class CubeWorldServer : PlatformGameServer
         string.IsNullOrEmpty(machineId) ? "local" : machineId[^5..].ToLowerInvariant();
 
     /// <param name="peak">In the air, the client's highest point since it last stood on the ground (PlayerFall.Step).</param>
+    /// <param name="seq">The last correction the client took (MoveCheck), from a client that numbers its moves.</param>
     private sealed record Command(string op, double x, double y, double z, double yaw, double pitch, int nx, int ny, int nz,
-        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting, double? peak = null)
+        string? kind, string? state, string? target, bool onGround, bool sneaking, bool sprinting, double? peak = null, int? seq = null)
     {
         /// <summary>The block the command points at.</summary>
         public (int x, int y, int z) Block => ((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z));

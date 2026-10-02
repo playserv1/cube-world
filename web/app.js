@@ -237,7 +237,9 @@ function onFrame(frame, teleport) {
   switch (frame.type) {
     case "welcome": {
       Object.assign(state, { server: frame.server, color: frame.color, region: frame.region ?? -1, regions: frame.regions ?? [],
-        regionSize: frame.regionSize, hotbar: [...frame.hotbar], inventory: frame.inventory, health: frame.you.health, dead: false });
+        regionSize: frame.regionSize, hotbar: [...frame.hotbar], inventory: frame.inventory, health: frame.you.health, dead: false,
+        // Each server numbers its own corrections from 0.
+        moveSeq: 0 });
       loadLayout(frame.hotbar);
       const before = chunks.size > 0 ? world.snapshot() : null;
       world.configure({ width: frame.width, depth: frame.depth, minY: frame.minZ, maxY: frame.maxZ, layers: frame.layers, blocks: frame.blocks,
@@ -306,6 +308,11 @@ function onFrame(frame, teleport) {
     case "bomb":
       onBomb(frame);
       break;
+    case "correct":
+      // A move too far for the time it took (the server's move check): back to where the last good move left us.
+      state.moveSeq = frame.seq;
+      snapTo(frame);
+      break;
     case "respawn":
       state.dead = false;
       state.health = frame.you.health;
@@ -346,6 +353,12 @@ function spawn(at) {
   state.placed = true;
   curtain(false);
   unstick();
+}
+
+function snapTo(at) {
+  const p = toClient(at);
+  Object.assign(me, { x: p.x, y: p.y, z: p.z, px: p.x, py: p.y, pz: p.z, vx: 0, vy: 0, vz: 0 });
+  lastPose = "";
 }
 
 function unstick() {
@@ -822,7 +835,7 @@ function gameTick() {
     if (pose !== lastPose) {
       // In the air the move says the fall's highest point too: a fall that began on the old server counts on the next.
       send({ op: "move", x: me.x, y: me.z, z: me.y, yaw, pitch, onGround: me.onGround, sneaking: me.sneaking, sprinting: me.sprinting,
-        ...(me.onGround ? {} : { peak: me.peak }) });
+        seq: state.moveSeq ?? 0, ...(me.onGround ? {} : { peak: me.peak }) });
       lastPose = pose;
     }
   }
