@@ -236,6 +236,31 @@ public:
 	/** A data subscription went out on the uplink: at SubscribeData on a ready uplink, and on every new uplink socket. */
 	FPlayServOnDataSubscribed OnDataSubscribed;
 
+	// ---- Hosting: logs ----------------------------------------------------------------------
+
+	/**
+	 * A line in this game server's logs on the platform: the function logs of its game server, where the C# SDK's
+	 * Platform.Log lines go (list_function_logs). It goes over the uplink as the C# SDK's `log` frame. A line logged
+	 * while the uplink is not ready waits for it, as the C# SDK keeps them on a pool server: the last
+	 * MaxPendingLogLines, sent oldest first once it is, after a line counting any dropped. A message longer than
+	 * MaxLogMessageChars is cut there. Call on the game thread.
+	 */
+	void Log(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data = nullptr);
+
+	/**
+	 * Send this process's own UE_LOG lines to the platform's logs as well, by the given rules: which categories, from
+	 * which verbosity, and how many lines at most. Lines may be logged on any thread; they go out on the game thread a
+	 * moment later, through Log. A second call replaces the rules. The pool launcher does not forward a server's own
+	 * output, so on a pool machine this is how UE_LOG reaches the platform at all.
+	 */
+	void ForwardLogs(const FPlayServLogForwarding& Rules);
+
+	/** Stop ForwardLogs, sending what it had caught. */
+	void StopForwardingLogs();
+
+	static constexpr int32 MaxPendingLogLines = 200;
+	static constexpr int32 MaxLogMessageChars = 16 * 1024;
+
 	// ---- Joining: client --------------------------------------------------------------------
 
 	/** List a room type's joinable rooms. Needs a client session. Filters and the page cursor are in FPlayServRoomFilters. */
@@ -338,6 +363,9 @@ private:
 	void HandleDataUpdate(const TSharedPtr<FJsonObject>& Frame);
 	/** Sends one data subscription on the ready uplink and reports it through OnDataSubscribed. */
 	bool SendDataSubscription(const FString& Entity, const FString& KeyPath);
+	/** Sends the log lines waiting for the uplink, oldest first, while it is ready. */
+	void FlushPendingLogs();
+	bool TickLogForwarding(float DeltaTime);
 	void ApplyRoomConfig(const FPlayServRoomConfig& Config, const TCHAR* Source);
 
 	bool TickMaintenance(float DeltaTime);
@@ -424,6 +452,13 @@ private:
 	TSet<FString> DataHeard;
 	/** The uplink frame types this module does not serve that have arrived, so the first of each is logged. */
 	TSet<FString> UnknownFrames;
+
+	/** Log frames waiting for the uplink to be ready, oldest first, and how many were dropped from the front. */
+	TArray<TSharedPtr<FJsonObject>> PendingLogs;
+	int32 DroppedLogLines = 0;
+	/** The device that catches UE_LOG lines for ForwardLogs, and the ticker that sends what it caught. */
+	TSharedPtr<class FPlayServLogForwarder> LogForwarder;
+	FTSTicker::FDelegateHandle LogForwardingTickerHandle;
 
 	TMap<int32, TSharedPtr<FPlayServJoinRound>> Joins;
 	int32 NextJoinId = 1;

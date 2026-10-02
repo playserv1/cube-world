@@ -390,6 +390,30 @@ void PlayServ::Rooms::UnsubscribeData(const FString& Entity)
 	}
 }
 
+void PlayServ::Rooms::Log(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->Log(Message, Level, Data);
+	}
+}
+
+void PlayServ::Rooms::ForwardLogs(const FPlayServLogForwarding& Rules)
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->ForwardLogs(Rules);
+	}
+}
+
+void PlayServ::Rooms::StopForwardingLogs()
+{
+	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())
+	{
+		PS->GetRooms()->StopForwardingLogs();
+	}
+}
+
 void PlayServ::Rooms::Browse(const FString& Slug, const FPlayServRoomFilters& Filters, FPlayServBrowseCallback Callback)
 {
 	UPlayServSubsystem* PS = UPlayServSubsystem::Get();

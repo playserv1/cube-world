@@ -75,6 +75,14 @@ void ACubeWorldGameMode::BeginPlay()
 	ServerName = bOffline ? FString(TEXT("offline")) : ServerNameOf();
 	State = GetWorld()->SpawnActor<ACubeWorldState>();
 	if (bOffline) { StartOffline(); return; }
+	// The pool's launcher does not pass a server's own output on, so its lines reach the platform's function logs only
+	// through the SDK, as the C# servers' Platform.Log lines do (PSV-2980): the game's own lines, the SDK's notices and
+	// every error. Not LogNet's own lines: they print each login URL, ticket and all (the SDK's Rooms.md). What comes
+	// before the uplink is up goes out once it is.
+	FPlayServLogForwarding Rules;
+	Rules.Categories.Add(LogCubeWorld.GetCategoryName(), ELogVerbosity::Log);
+	Rules.Categories.Add(TEXT("LogPlayServ"), ELogVerbosity::Display);
+	PlayServ::Rooms::ForwardLogs(Rules);
 	StartServer();
 }
 
@@ -339,7 +347,8 @@ void ACubeWorldGameMode::EndPlay(const EEndPlayReason::Type Reason)
 	}
 	if (LiveTables.IsValid()) { LiveTables->Shutdown(); LiveTables.Reset(); }
 	if (Web.IsValid()) { Web->Shutdown(); Web.Reset(); }
-	if (bDedicated && Reason != EEndPlayReason::LevelTransition) PlayServ::Rooms::StopHosting();
+	// StopHosting sends what was logged up to it while the uplink still carries it.
+	if (bDedicated && Reason != EEndPlayReason::LevelTransition) { PlayServ::Rooms::StopHosting(); PlayServ::Rooms::StopForwardingLogs(); }
 	Super::EndPlay(Reason);
 }
 

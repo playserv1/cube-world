@@ -397,6 +397,17 @@ namespace PlayServ::Rooms
 	/** Stop hearing an entity's changes. */
 	PLAYSERVRUNTIME_API void UnsubscribeData(const FString& Entity);
 
+	// ---- Logs ------------------------------------------------------------------------------
+
+	/** A line in this game server's logs on the platform (list_function_logs), sent over the uplink as the C# SDK's Platform.Log; a line logged before the uplink is ready waits for it (the last 200). Game thread. */
+	PLAYSERVRUNTIME_API void Log(const FString& Message, EPlayServLogLevel Level = EPlayServLogLevel::Info, const TSharedPtr<FJsonObject>& Data = nullptr);
+
+	/** Send this process's own UE_LOG lines to the platform's logs as well, by category and verbosity, at most a set number of lines in ten seconds. Lines may be logged on any thread. */
+	PLAYSERVRUNTIME_API void ForwardLogs(const FPlayServLogForwarding& Rules);
+
+	/** Stop ForwardLogs, sending what it had caught. */
+	PLAYSERVRUNTIME_API void StopForwardingLogs();
+
 	// ---- Joining ---------------------------------------------------------------------------
 
 	/** List this room type's joinable rooms for the signed-in player. */

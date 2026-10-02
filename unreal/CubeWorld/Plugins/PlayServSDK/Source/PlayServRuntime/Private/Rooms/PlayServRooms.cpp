@@ -6,6 +6,7 @@
 #include "Core/PlayServSettings.h"
 #include "Core/PlayServSubsystem.h"
 #include "Rooms/PlayServAdmissionTable.h"
+#include "Rooms/PlayServLogForwarder.h"
 #include "Rooms/PlayServRoomRuntime.h"
 #include "Rooms/PlayServRoomsPaths.h"
 #include "Rooms/PlayServRoomsValidation.h"
@@ -77,6 +78,7 @@ void UPlayServRooms::Init(TSharedPtr<FPlayServHttp> InHttp)
 
 void UPlayServRooms::Shutdown()
 {
+	StopForwardingLogs();
 	Joins.Reset();
 	if (MaintenanceTickerHandle.IsValid())
 	{
@@ -310,6 +312,12 @@ void UPlayServRooms::StopHosting()
 		CloseRoom(RoomName, FPlayServSimpleCallback());
 	}
 
+	// The last lines (the room closing, why the process ends) go out while there is still an uplink to carry them.
+	if (LogForwarder.IsValid())
+	{
+		TickLogForwarding(0.f);
+	}
+	FlushPendingLogs();
 	if (Uplink.IsValid())
 	{
 		Uplink->Stop();
@@ -439,6 +447,8 @@ void UPlayServRooms::HandleUplinkReady(const FPlayServUplinkAck& Ack, int32 Gene
 			SendDataSubscription(Subscription.Key, Subscription.Value);
 		}
 	}
+	// What was logged while there was no uplink: from the start of the process, or a reconnect.
+	FlushPendingLogs();
 
 	if (bHasRoomConfig)
 	{
@@ -631,6 +641,115 @@ bool UPlayServRooms::SendDataSubscription(const FString& Entity, const FString& 
 	}
 	UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: subscribed to %s changes over the uplink (%s)"), *Entity, *KeyPath);
 	OnDataSubscribed.Broadcast(Entity);
+	return true;
+}
+
+namespace
+{
+	/** The C# SDK's names for the levels (HttpPlatformClient.WireLevel). */
+	const TCHAR* WireLogLevel(EPlayServLogLevel Level)
+	{
+		switch (Level)
+		{
+		case EPlayServLogLevel::Debug: return TEXT("debug");
+		case EPlayServLogLevel::Warn: return TEXT("warn");
+		case EPlayServLogLevel::Error: return TEXT("error");
+		default: return TEXT("info");
+		}
+	}
+
+	TSharedPtr<FJsonObject> LogFrame(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data)
+	{
+		TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+		Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeLog);
+		Frame->SetStringField(PlayServRoomsWire::FieldMessage, Message.Len() > UPlayServRooms::MaxLogMessageChars
+			? Message.Left(UPlayServRooms::MaxLogMessageChars) + TEXT("...") : Message);
+		Frame->SetStringField(PlayServRoomsWire::FieldLevel, WireLogLevel(Level));
+		if (Data.IsValid())
+		{
+			Frame->SetObjectField(PlayServRoomsWire::FieldData, Data);
+		}
+		return Frame;
+	}
+}
+
+void UPlayServRooms::Log(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data)
+{
+	PendingLogs.Add(LogFrame(Message, Level, Data));
+	if (PendingLogs.Num() > MaxPendingLogLines)
+	{
+		const int32 Over = PendingLogs.Num() - MaxPendingLogLines;
+		PendingLogs.RemoveAt(0, Over);
+		DroppedLogLines += Over;
+	}
+	FlushPendingLogs();
+}
+
+void UPlayServRooms::FlushPendingLogs()
+{
+	if (!Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready || (PendingLogs.Num() == 0 && DroppedLogLines == 0))
+	{
+		return;
+	}
+	if (DroppedLogLines > 0)
+	{
+		const FString Notice = FString::Printf(TEXT("PlayServ: %d log line(s) not sent: more than %d waited for the uplink"), DroppedLogLines, MaxPendingLogLines);
+		if (!Uplink->SendFrame(LogFrame(Notice, EPlayServLogLevel::Warn, nullptr)))
+		{
+			return;
+		}
+		DroppedLogLines = 0;
+	}
+	int32 Sent = 0;
+	while (Sent < PendingLogs.Num() && Uplink->SendFrame(PendingLogs[Sent]))
+	{
+		Sent++;
+	}
+	PendingLogs.RemoveAt(0, Sent);
+}
+
+void UPlayServRooms::ForwardLogs(const FPlayServLogForwarding& Rules)
+{
+	if (LogForwarder.IsValid())
+	{
+		LogForwarder->SetRules(Rules);
+		return;
+	}
+	if (!GLog)
+	{
+		return;
+	}
+	LogForwarder = MakeShared<FPlayServLogForwarder>(Rules, []() { return FPlatformTime::Seconds(); });
+	GLog->AddOutputDevice(LogForwarder.Get());
+	LogForwardingTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UPlayServRooms::TickLogForwarding), 0.25f);
+}
+
+void UPlayServRooms::StopForwardingLogs()
+{
+	if (LogForwardingTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(LogForwardingTickerHandle);
+		LogForwardingTickerHandle.Reset();
+	}
+	if (!LogForwarder.IsValid())
+	{
+		return;
+	}
+	if (GLog)
+	{
+		GLog->RemoveOutputDevice(LogForwarder.Get());
+	}
+	TickLogForwarding(0.f);
+	LogForwarder.Reset();
+}
+
+bool UPlayServRooms::TickLogForwarding(float)
+{
+	if (LogForwarder.IsValid())
+	{
+		LogForwarder->Drain([this](const FString& Text, EPlayServLogLevel Level) { Log(Text, Level); });
+	}
 	return true;
 }
 

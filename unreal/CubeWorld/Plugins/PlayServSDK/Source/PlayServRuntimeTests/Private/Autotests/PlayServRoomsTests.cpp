@@ -5,6 +5,7 @@
 #include "Core/PlayServSettings.h"
 #include "Core/PlayServSubsystem.h"
 #include "Rooms/PlayServAdmissionTable.h"
+#include "Rooms/PlayServLogForwarder.h"
 #include "Rooms/PlayServRoomRuntime.h"
 #include "Core/PlayServHttp.h"
 #include "Rooms/PlayServRoomsClientWire.h"
@@ -2115,6 +2116,154 @@ bool FPlayServRoomsDataSubscriptionTest::RunTest(const FString& Parameters)
 	Server->OnDataSubscribed.Remove(SubscribedHandle);
 	Server->OnDataUpdate.Remove(UpdateHandle);
 	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Logs.LinesWaitForTheUplinkAndGoOutAsLogFrames
+//
+// Log speaks the C# SDK's Platform.Log over the uplink: a `log` frame with message, level and optional data. On a
+// pool server a line logged before the uplink is ready waits for it (the C# SDK's dial-in buffer of 200): the platform
+// files it under the game server's function either way.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	TArray<TSharedPtr<FJsonObject>> SentLogs(const FPlayServFakeUplinkTransport& Transport)
+	{
+		TArray<TSharedPtr<FJsonObject>> Logs;
+		for (int32 I = 0; I < Transport.Sent.Num(); ++I)
+		{
+			const TSharedPtr<FJsonObject> Frame = Transport.SentJson(I);
+			FString Type;
+			if (Frame.IsValid() && Frame->TryGetStringField(TEXT("type"), Type) && Type == TEXT("log")) Logs.Add(Frame);
+		}
+		return Logs;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsLogTest,
+	"PlayServ.Rooms.Logs.LinesWaitForTheUplinkAndGoOutAsLogFrames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsLogTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+
+	TSharedPtr<FPlayServFakeUplinkTransport> First = Factory.Current();
+	First->SimulateConnected();
+	Server->Log(TEXT("world loaded"), EPlayServLogLevel::Info);
+	Server->Log(TEXT("region 3 is held"), EPlayServLogLevel::Warn);
+	TestEqual(TEXT("nothing goes out before the hello ack"), SentLogs(*First).Num(), 0);
+
+	First->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	TArray<TSharedPtr<FJsonObject>> Logs = SentLogs(*First);
+	if (TestEqual(TEXT("the waiting lines go out once the uplink is ready"), Logs.Num(), 2))
+	{
+		TestEqual(TEXT("oldest first"), Logs[0]->GetStringField(TEXT("message")), FString(TEXT("world loaded")));
+		TestEqual(TEXT("info is the C# SDK's info"), Logs[0]->GetStringField(TEXT("level")), FString(TEXT("info")));
+		TestEqual(TEXT("then the warning"), Logs[1]->GetStringField(TEXT("message")), FString(TEXT("region 3 is held")));
+		TestEqual(TEXT("as warn"), Logs[1]->GetStringField(TEXT("level")), FString(TEXT("warn")));
+		TestFalse(TEXT("a line without data carries none"), Logs[0]->HasField(TEXT("data")));
+	}
+
+	// On a ready uplink a line goes at once, with its data.
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetNumberField(TEXT("players"), 3);
+	Server->Log(TEXT("room closed"), EPlayServLogLevel::Error, Data);
+	Logs = SentLogs(*First);
+	if (TestEqual(TEXT("at once on a ready uplink"), Logs.Num(), 3))
+	{
+		TestEqual(TEXT("error"), Logs[2]->GetStringField(TEXT("level")), FString(TEXT("error")));
+		const TSharedPtr<FJsonObject>* Carried = nullptr;
+		TestTrue(TEXT("with its data"), Logs[2]->TryGetObjectField(TEXT("data"), Carried) && (*Carried)->GetNumberField(TEXT("players")) == 3.0);
+	}
+	Server->Log(FString::ChrN(UPlayServRooms::MaxLogMessageChars + 500, TEXT('x')), EPlayServLogLevel::Debug);
+	TestEqual(TEXT("a very long line is cut"), SentLogs(*First).Last()->GetStringField(TEXT("message")).Len(), UPlayServRooms::MaxLogMessageChars + 3);
+
+	// While the uplink is down the last 200 wait, after a line that counts the dropped ones.
+	First->SimulateClosed(1012, TEXT("Service Restart"));
+	for (int32 I = 0; I < UPlayServRooms::MaxPendingLogLines + 5; ++I) Server->Log(FString::Printf(TEXT("line %d"), I), EPlayServLogLevel::Info);
+	Clock.Now += 2.0;
+	FPlayServRoomsTestAccess::Tick(Server, Clock.Now);
+	TSharedPtr<FPlayServFakeUplinkTransport> Second = Factory.Current();
+	Second->SimulateConnected();
+	Second->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	Logs = SentLogs(*Second);
+	if (TestEqual(TEXT("the notice and the last 200 go out on the next socket"), Logs.Num(), UPlayServRooms::MaxPendingLogLines + 1))
+	{
+		TestTrue(TEXT("the notice counts the 5 dropped"), Logs[0]->GetStringField(TEXT("message")).Contains(TEXT("5 log line(s) not sent")));
+		TestEqual(TEXT("then the oldest kept"), Logs[1]->GetStringField(TEXT("message")), FString(TEXT("line 5")));
+		TestEqual(TEXT("and the newest last"), Logs.Last()->GetStringField(TEXT("message")), FString::Printf(TEXT("line %d"), UPlayServRooms::MaxPendingLogLines + 4));
+	}
+
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// PlayServ.Rooms.Logs.ForwardingPicksLinesByCategoryVerbosityAndRate
+//
+// ForwardLogs catches the process's own UE_LOG lines: a named category from its own verbosity, every other one from the
+// rules' Everything, at most so many lines in ten seconds. A line the sending itself logs is not caught again.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServLogForwardingTest,
+	"PlayServ.Rooms.Logs.ForwardingPicksLinesByCategoryVerbosityAndRate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServLogForwardingTest::RunTest(const FString& Parameters)
+{
+	FPlayServLogForwarding Rules;
+	Rules.Categories.Add(TEXT("LogGame"), ELogVerbosity::Log);
+	Rules.MaxLinesPerTenSeconds = 3;
+	EPlayServLogLevel Level;
+	TestTrue(TEXT("the game's own line goes"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogGame"), ELogVerbosity::Log, Level) && Level == EPlayServLogLevel::Info);
+	TestTrue(TEXT("as does its warning, as warn"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogGame"), ELogVerbosity::Warning, Level) && Level == EPlayServLogLevel::Warn);
+	TestFalse(TEXT("not its verbose line"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogGame"), ELogVerbosity::Verbose, Level));
+	TestFalse(TEXT("another category's warning stays"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogOther"), ELogVerbosity::Warning, Level));
+	TestTrue(TEXT("every category's error goes"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogOther"), ELogVerbosity::Error, Level) && Level == EPlayServLogLevel::Error);
+	TestTrue(TEXT("and a fatal one, as error"), FPlayServLogForwarder::Wanted(Rules, TEXT("LogOther"), ELogVerbosity::Fatal, Level) && Level == EPlayServLogLevel::Error);
+	TestEqual(TEXT("a room ticket in a travel URL is blanked out"),
+		FPlayServLogForwarder::Redacted(TEXT("Join request: /Engine/Maps/Entry?rsv=rsv_0a1b2c?game=/Script/X")), FString(TEXT("Join request: /Engine/Maps/Entry?rsv=<redacted>?game=/Script/X")));
+	TestEqual(TEXT("every one, in any case"), FPlayServLogForwarder::Redacted(TEXT("a rsv=one b RSV=two")), FString(TEXT("a rsv=<redacted> b RSV=<redacted>")));
+	TestEqual(TEXT("a line without one is left as it is"), FPlayServLogForwarder::Redacted(TEXT("world ready")), FString(TEXT("world ready")));
+
+	double Now = 100.0;
+	FPlayServLogForwarder Forwarder(Rules, [&Now]() { return Now; });
+	for (int32 I = 0; I < 5; ++I) Forwarder.Serialize(*FString::Printf(TEXT("joined %d"), I), ELogVerbosity::Log, TEXT("LogGame"));
+	Forwarder.Serialize(TEXT("ignored"), ELogVerbosity::Log, TEXT("LogOther"));
+	TArray<TPair<FString, EPlayServLogLevel>> Out;
+	Forwarder.Drain([&Out, &Forwarder](const FString& Text, EPlayServLogLevel L)
+	{
+		Out.Add({ Text, L });
+		// The sending logs about itself: that line is not caught again.
+		Forwarder.Serialize(TEXT("sent a line"), ELogVerbosity::Log, TEXT("LogGame"));
+	});
+	if (TestEqual(TEXT("three lines in ten seconds, and the count of the rest"), Out.Num(), 4))
+	{
+		TestEqual(TEXT("with the category in front"), Out[0].Key, FString(TEXT("LogGame: joined 0")));
+		TestEqual(TEXT("in order"), Out[2].Key, FString(TEXT("LogGame: joined 2")));
+		TestTrue(TEXT("the count of the two left out, as a warning"), Out[3].Key.Contains(TEXT("2 log line(s) not sent")) && Out[3].Value == EPlayServLogLevel::Warn);
+	}
+	Out.Reset();
+	Forwarder.Drain([&Out](const FString& Text, EPlayServLogLevel L) { Out.Add({ Text, L }); });
+	TestEqual(TEXT("the sending's own line was not caught"), Out.Num(), 0);
+
+	Now += 10.0;
+	Forwarder.Serialize(TEXT("ten seconds on"), ELogVerbosity::Display, TEXT("LogGame"));
+	Forwarder.Drain([&Out](const FString& Text, EPlayServLogLevel L) { Out.Add({ Text, L }); });
+	TestTrue(TEXT("a new ten seconds lets lines through again"), Out.Num() == 1 && Out[0].Key == TEXT("LogGame: ten seconds on"));
 	return true;
 }
 

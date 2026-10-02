@@ -52,6 +52,12 @@ namespace PlayServRoomsWire
 	static const TCHAR* FieldOp = TEXT("op");
 	static const TCHAR* FieldData = TEXT("data");
 
+	// A line in the game server's function logs, as the C# SDK's Platform.Log sends it (UplinkLog): message, level
+	// (debug, info, warn, error) and optional data.
+	static const TCHAR* TypeLog = TEXT("log");
+	static const TCHAR* FieldMessage = TEXT("message");
+	static const TCHAR* FieldLevel = TEXT("level");
+
 	static const TCHAR* FieldCapacity = TEXT("capacity");
 	static const TCHAR* FieldReservationTtlSeconds = TEXT("reservation_ttl_seconds");
 	static const TCHAR* FieldRoomLifetimeSeconds = TEXT("room_lifetime_seconds");

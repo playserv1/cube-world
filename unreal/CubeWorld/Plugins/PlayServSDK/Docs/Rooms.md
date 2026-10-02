@@ -331,6 +331,25 @@ void AMyGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
 
 The subscription goes out as soon as the uplink is ready and again on every new uplink socket, and `OnDataSubscribed(Entity)` fires each time it goes out. The platform does not send again what changed while no subscription was in place (before the first one, or while the uplink reconnected), so a server that must not miss a change reads the records again from `OnDataSubscribed`. `UnsubscribeData(Entity)` stops it. `Display` logs each subscription and the first change of each entity with the fields it carried.
 
+## Logs on the platform
+
+A server on a PlayServ machine pool has no other way to show its own lines to the platform: the pool's launcher does not pass the process's output on, so `UE_LOG` alone never leaves the machine. The SDK sends lines over the uplink, as the C# SDK's `Platform.Log` does, and the platform files them in the function logs of the server's room type, beside the launcher's (`list_function_logs`, the admin's function logs):
+
+```cpp
+PlayServ::Rooms::Log(TEXT("world ready"));                                    // info
+PlayServ::Rooms::Log(TEXT("every region is held"), EPlayServLogLevel::Warn);  // debug, info, warn, error
+
+// Or send the process's own UE_LOG lines as well: the game's category from Log on, the SDK's notices, every error.
+FPlayServLogForwarding Rules;                                                 // Everything = Error by default
+Rules.Categories.Add(LogMyGame.GetCategoryName(), ELogVerbosity::Log);
+Rules.Categories.Add(TEXT("LogPlayServ"), ELogVerbosity::Display);
+PlayServ::Rooms::ForwardLogs(Rules);
+```
+
+- **Before the uplink is up.** A line logged before the uplink is ready (the start of the process, a reconnect) waits for it: the last 200, sent oldest first once it is, after a line that counts any dropped. A line the process logs before it ever signs in waits for good, so a server that cannot sign in shows nothing on the platform.
+- **ForwardLogs** catches lines on any thread and sends them from the game thread a quarter of a second later, each as `<Category>: <message>`, at most `MaxLinesPerTenSeconds` (200) in ten seconds, then a line counting the rest. A room ticket in a line (`rsv=<token>`) is blanked out. Even so, do not forward `LogNet` (see "Logging" below): it prints every login URL. `StopForwardingLogs` sends what it had caught; `StopHosting` sends what was logged up to it before it closes the uplink.
+- A line is cut at 16 KB. `Log` is for the game thread.
+
 ## Events
 
 `OnUplinkStateChanged`, `OnRoomConfigChanged`, `OnRoomPlacementChanged`, `OnRoomEnded(RoomName, Reason)` and `OnPlayerRemoved(RoomName, PlayerId, Reason)` are Blueprint-assignable on `UPlayServRooms`, alongside the state queries (`IsHosting`, `GetRoomNames`, `GetRoom`, `GetRoomPlayerCount`, …); `OnDataUpdate` and `OnDataSubscribed` ("Hearing data changes") are C++ delegates. Operations are C++ only. `Reason` values are the platform's vocabulary: `lifetime`, `idle`, `room_owned_by_other_instance`, `room_type_not_found`, `reconnect_grace_lapsed`, `removed_by_game`, `room_closed`, `reservation_expired`, and so on.
