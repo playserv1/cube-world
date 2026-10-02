@@ -1343,9 +1343,9 @@ TSharedRef<FJsonObject> ACubeWorldGameMode::PresenceJson(const FCubePresenceRep&
 	return J;
 }
 
-bool ACubeWorldGameMode::TakenOver(const FCubeElsewhere* Heard, const FCubeElsewhere& Ours)
+bool ACubeWorldGameMode::TakenOver(const FCubeElsewhere* Latest, const FCubeElsewhere& Ours)
 {
-	return Heard && Heard->Pose.Server != Ours.Pose.Server && Heard->SeenAt >= Ours.SeenAt;
+	return Latest && Latest->Pose.Server != Ours.Pose.Server && Latest->SeenAt >= Ours.SeenAt;
 }
 
 /**
@@ -1361,9 +1361,9 @@ void ACubeWorldGameMode::DeletePresence(const FString& PlayerId, const FCubeElse
 	FTimerHandle Later;
 	GetWorldTimerManager().SetTimer(Later, FTimerDelegate::CreateWeakLambda(this, [this, PlayerId, Last]()
 	{
-		const FCubeElsewhere* Heard = Elsewhere.Find(PlayerId);
-		if (Players.Contains(PlayerId) || TakenOver(Heard, Last)) return;
-		if (Heard && Heard->Pose.Server == ServerName) Elsewhere.Remove(PlayerId);
+		const FCubeElsewhere* Latest = Elsewhere.Find(PlayerId);
+		if (Players.Contains(PlayerId) || TakenOver(Latest, Last)) return;
+		if (Latest && Latest->Pose.Server == ServerName) Elsewhere.Remove(PlayerId);
 		if (PlayServ::Rooms::DeleteData(TEXT("WorldPresence"), PlayerId)) return;
 		// No uplink at the moment: the row is deleted through the REST API instead, as long as it is still this server's.
 		TWeakObjectPtr<ACubeWorldGameMode> Weak(this);

@@ -174,7 +174,7 @@ public:
 	static TSharedRef<FJsonObject> PresenceJson(const FCubePresenceRep& Pose, int64 SeenAt);
 	/** The newest pose heard of a player who left this server is another server's, written after this server's last one:
 	 *  they crossed, and that server holds them and their row now. WorldPresence.TakenOver on the C# side. */
-	static bool TakenOver(const FCubeElsewhere* Heard, const FCubeElsewhere& Ours);
+	static bool TakenOver(const FCubeElsewhere* Latest, const FCubeElsewhere& Ours);
 	/**
 	 * Takes a pose into what is known of the players elsewhere, unless the pose known is newer: the platform sends each
 	 * change on its own, so two writes of a row a moment apart can arrive the other way round.
