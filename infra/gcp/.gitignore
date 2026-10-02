@@ -1,0 +1,7 @@
+# Local state: it holds no keys here, but it is the only record of what Terraform manages. Back it up; never commit it.
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+!*.tfvars.example
+crash.log

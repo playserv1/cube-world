@@ -1,0 +1,4 @@
+# What the rsync deploy (.github/workflows/web-files.yml) leaves out of web/; keep it in step with Dockerfile.dockerignore.
+*.test.js
+/bundle.mjs
+/config.example.js

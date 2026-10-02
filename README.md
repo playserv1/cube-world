@@ -38,6 +38,9 @@ room's region once a minute, which a player picks up, throws, and blows a crater
 | `CubeWorld.Reset/` | The reset function: every changed block deleted, the three regions in parallel, so the world is the generated terrain again. |
 | `CubeWorld.Drop/` | The bomb drop function: two bombs a minute over every room's region, at most five free in a region, the oldest fizzles out for a new one; finished bombs are swept after two minutes. |
 | `CubeWorld.Tests/` | The world's rules. |
+| `deploy/web/` | The client's image for the web VM: Caddy serving `web/`. |
+| `infra/vultr/` | Terraform for the web VM (Vultr, Caddy in Docker), and its guide. |
+| `infra/gcp/` | Terraform for the client on Cloud Run (prod only, from `main`), and its guide. |
 | `web/` | The browser client, a static page; `bombs.js` flies bombs as the server does, `bombfx.js` draws them as creeper heads, `rooms.js` decides what to tell the player and when to try again after an operator's close or removal. |
 
 ## Build and test
@@ -64,6 +67,11 @@ then open `http://localhost:5173` in several tabs and pick a different server in
 one other player, for looking at blocks, physics and the model.
 
 Deploying the servers and the function is in `RUNBOOK.md`.
+
+A push publishes the client to GitHub Pages (`.github/workflows/pages.yml`, from `dev` and `main`) and, from
+`main`, to Cloud Run (`.github/workflows/web-cloudrun.yml`; Terraform and guide in `infra/gcp`). A Vultr VM behind
+Caddy (`web-image.yml` / `web-files.yml`; Terraform and guide in `infra/vultr`) is set up but paused: it deploys
+only by hand until its `push:` triggers are uncommented.
 
 ## The Unreal dedicated server and client
 
