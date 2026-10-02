@@ -96,7 +96,7 @@ from 2026-09-29, remains for Unreal-only tests):
 | Step | How |
 |---|---|
 | The room type | `create_function(slug="cubeworld-ue", kind="game_server", hosting_mode="multi-room")`; `set_room_configuration(capacity=16, reservation_ttl=20, room_lifetime=2592000, max_rooms=10)`, no idle close. A server with an `sk_` key registers rooms under it by itself (`RoomDefaultSlug` in `Config/DefaultGame.ini`, or `PLAYSERV_EXECUTOR_SLUG` from the platform) |
-| The schema | `WorldRegion` got `slug` (string): the room type of the room the claim names, so the clients join a neighbour under the right type. `WorldCube` got `at` (integer, indexed), the time of the last change, which the servers' live subscriptions and fallback polls window by |
+| The schema | `WorldRegion` got `slug` (string): the room type of the room the claim names, so the clients join a neighbour under the right type. `WorldCube` got `at` (integer, indexed), the time of the last change: the C# servers read back the blocks changed lately by it, and a late row no newer than its block's delete is dropped by it |
 | The keys | a client key for `Config/DefaultGame.ini` and a server key for each developer's `Config/DedicatedServerGame.ini` (dashboard → API keys → environment `dev`; never in git) |
 | Local servers | `set_env_local_development(env_id=<dev>, true)`, so a server on a developer's machine may register a private address |
 

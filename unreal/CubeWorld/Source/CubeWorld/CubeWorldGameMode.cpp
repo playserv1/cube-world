@@ -4,7 +4,6 @@
 #include "CubeHUD.h"
 #include "CubeEntities.h"
 #include "CubeBombs.h"
-#include "CubeLiveTables.h"
 #include "CubeWebSocketServer.h"
 #include "PlayServ.h"
 #include "Core/PlayServSettings.h"
@@ -24,7 +23,7 @@
 namespace
 {
 	constexpr int32 ChunkSize = 400;
-	constexpr int64 PresenceTtlMs = 5000, RegionTtlMs = 30000, TombstoneTtlMs = 60000;
+	constexpr int64 PresenceTtlMs = CubePresenceTtlMs, RegionTtlMs = 30000, TombstoneTtlMs = 60000;
 
 	FString ServerNameOf()
 	{
@@ -136,7 +135,6 @@ void ACubeWorldGameMode::RetryStartup(const FString& Why)
 void ACubeWorldGameMode::LoadWorld()
 {
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	LastCubeAt = Now();
 	PlayServ::Data::LoadAll<UWorldCube>(FPlayServFilter::None(), [Weak](bool bOk, TArray<UWorldCube*> Rows, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
@@ -149,7 +147,6 @@ void ACubeWorldGameMode::LoadWorld()
 void ACubeWorldGameMode::LoadBombs()
 {
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	LastBombAt = Now();
 	PlayServ::Data::LoadAll<UWorldBomb>(FPlayServFilter::None(), [Weak](bool bOk, TArray<UWorldBomb*> Rows, const FPlayServError& Error)
 	{
 		if (!Weak.IsValid()) return;
@@ -326,15 +323,10 @@ void ACubeWorldGameMode::Serve()
 	State->Region = Region;
 	ServerLog(TEXT("world ready"));
 	if (bOffline) { GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, 0.1f, true); return; }
-	// Every write and delete of a block comes over the uplink; the other servers' writes also arrive over the live
-	// tables, and the polls behind them are the fallback while that socket is down.
-	SubscribeUplinkCubes();
-	OpenLiveTables();
+	// Every write and delete of the shared tables comes over the uplink, as on the C# servers
+	// (CubeWorldGameMode_Live.cpp); the regions are read in the heartbeat.
+	SubscribeUplink();
 	GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, 0.1f, true);
-	GetWorldTimerManager().SetTimer(CubeTimer, this, &ACubeWorldGameMode::PollCubes, 5.f, true, 1.2f);
-	GetWorldTimerManager().SetTimer(PresenceTimer, this, &ACubeWorldGameMode::PollPresence, 2.f, true, 1.1f);
-	GetWorldTimerManager().SetTimer(HitTimer, this, &ACubeWorldGameMode::PollHits, 5.f, true, 1.3f);
-	GetWorldTimerManager().SetTimer(BombTimer, this, &ACubeWorldGameMode::PollBombs, 5.f, true, 1.4f);
 	GetWorldTimerManager().SetTimer(RegionTimer, this, &ACubeWorldGameMode::Heartbeat, 5.f, true, 0.f);
 }
 
@@ -345,7 +337,6 @@ void ACubeWorldGameMode::EndPlay(const EEndPlayReason::Type Reason)
 		Rooms->OnDataUpdate.RemoveAll(this);
 		Rooms->OnDataSubscribed.RemoveAll(this);
 	}
-	if (LiveTables.IsValid()) { LiveTables->Shutdown(); LiveTables.Reset(); }
 	if (Web.IsValid()) { Web->Shutdown(); Web.Reset(); }
 	// StopHosting sends what was logged up to it while the uplink still carries it.
 	if (bDedicated && Reason != EEndPlayReason::LevelTransition) { PlayServ::Rooms::StopHosting(); PlayServ::Rooms::StopForwardingLogs(); }
@@ -679,9 +670,21 @@ void ACubeWorldGameMode::PublishPlayers()
 void ACubeWorldGameMode::Heartbeat()
 {
 	WebBroadcastRegions();
+	const int64 T = Now();
+	// A late row is at most a few seconds behind its delete; a minute on, the delete has no older row left to stop.
+	for (auto It = Tombstones.CreateIterator(); It; ++It) if (T - It->Value.HeardAt > TombstoneTtlMs) It.RemoveCurrent();
+	// A player whose server stopped writing them, and never deleted their row, is let go of.
+	for (auto It = Elsewhere.CreateIterator(); It; ++It) if (T - It->Value.SeenAt > RegionTtlMs) It.RemoveCurrent();
+	// This server's own writes come back over the uplink like anyone's: one that landed a minute ago with nothing come
+	// back says the platform sends this uplink no changes, and then this server hears nothing the others write.
+	if (!bCubeUpdatesHeard && !bCubeUpdatesWarned && CubeWriteLandedAt > 0 && T - CubeWriteLandedAt > 60000)
+	{
+		bCubeUpdatesWarned = true;
+		UE_LOG(LogCubeWorld, Warning, TEXT("%s: nothing has come over the uplink's WorldCube subscription in the minute since this server's own write landed; if the platform sends this uplink no data_update, this server hears none of the other servers' blocks, players, hits or bombs"), *RoomName());
+	}
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	if (RegionRow.IsValid()) WriteRegionClaim([Weak](bool) { if (Weak.IsValid()) Weak->PollRegions(); });
-	else PollRegions();
+	if (RegionRow.IsValid()) WriteRegionClaim([Weak](bool) { if (Weak.IsValid()) Weak->ReadRegions(); });
+	else ReadRegions();
 }
 
 // ── digging ──────────────────────────────────────────────────────────────────────────────────────
@@ -911,7 +914,6 @@ void ACubeWorldGameMode::ApplyBombTable(const TArray<UWorldBomb*>& Rows)
 	}
 	for (const auto& Pair : Furthest)
 	{
-		LastBombAt = FMath::Max(LastBombAt, Pair.Value.At);
 		if (Pair.Value.IsOver() && !Bombs.Contains(Pair.Key)) BombsOver.Add(Pair.Key, Pair.Value.At);
 		else if (Pair.Value.IsOver() && Now() - Pair.Value.At > 5000)
 		{
@@ -1343,131 +1345,9 @@ void ACubeWorldGameMode::WriteHit(const FString& HitId, const FString& Victim, c
 	}));
 }
 
-// ── platform data: what the other servers wrote ──────────────────────────────────────────────────
+// ── platform data: the regions ───────────────────────────────────────────────────────────────────
 
-void ACubeWorldGameMode::PollCubes()
-{
-	const int64 T = Now();
-	// A late row is at most a few seconds behind its delete; a minute on, the delete has no older row left to stop.
-	for (auto It = Tombstones.CreateIterator(); It; ++It) if (T - It->Value.HeardAt > TombstoneTtlMs) It.RemoveCurrent();
-	// This server's own writes come back over the uplink like anyone's: one that landed a minute ago with nothing come
-	// back says the platform sends this uplink no changes, and then a delete (the world's reset) is heard only at the
-	// next restart.
-	if (!bCubeUpdatesHeard && !bCubeUpdatesWarned && CubeWriteLandedAt > 0 && T - CubeWriteLandedAt > 60000)
-	{
-		bCubeUpdatesWarned = true;
-		UE_LOG(LogCubeWorld, Warning, TEXT("%s: nothing has come over the uplink's WorldCube subscription in the minute since this server's own write landed; if the platform sends this uplink no data_update, deleted blocks (the world's reset) are heard only when the server restarts"), *RoomName());
-	}
-	if (bCubesBusy) return;
-	bCubesBusy = true;
-	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::LoadAll<UWorldCube>(FPlayServFilter::Where(TEXT("at")).GreaterThan((double)(LastCubeAt - 1)), [Weak](bool bOk, TArray<UWorldCube*> Rows, const FPlayServError& Error)
-	{
-		if (!Weak.IsValid()) return;
-		ACubeWorldGameMode* Self = Weak.Get();
-		Self->bCubesBusy = false;
-		if (!bOk) { Self->ServerLog(FString::Printf(TEXT("cubes not read: %s"), *Error.Message)); return; }
-		for (UWorldCube* Row : Rows)
-		{
-			Self->LastCubeAt = FMath::Max(Self->LastCubeAt, Row->at);
-			const FIntVector At(Row->x, Row->y, Row->z);
-			// A poll answered before a delete can come back after the uplink brought the delete.
-			if (Self->IsBuried(At, Row->at)) continue;
-			const bool bChanged = Self->World.Apply(At, FName(*Row->kind), Row->placed_by, Row->placed_on, Row->at, Row);
-			if (bChanged && Row->placed_on != Self->ServerName) Self->Heard.Add({ At, FName(*Row->kind), Row->placed_by, Row->placed_on });
-		}
-	});
-}
-
-void ACubeWorldGameMode::PollPresence()
-{
-	if (bPresenceBusy) return;
-	bPresenceBusy = true;
-	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::LoadAll<UWorldPresence>(FPlayServFilter::Where(TEXT("seen_at")).GreaterThan((double)(Now() - PresenceTtlMs)), [Weak](bool bOk, TArray<UWorldPresence*> Rows, const FPlayServError& Error)
-	{
-		if (!Weak.IsValid()) return;
-		ACubeWorldGameMode* Self = Weak.Get();
-		Self->bPresenceBusy = false;
-		if (!bOk) { Self->ServerLog(FString::Printf(TEXT("presence not read: %s"), *Error.Message)); return; }
-		TMap<FString, FCubeElsewhere> Fresh;
-		for (const UWorldPresence* Row : Rows)
-		{
-			if (Row->server == Self->ServerName || Self->Players.Contains(Row->player_id)) continue;
-			FCubeElsewhere E;
-			E.Pose.Id = Row->player_id; E.Pose.Name = Row->name; E.Pose.Server = Row->server; E.Pose.Color = Row->color;
-			E.Pose.X = Row->x; E.Pose.Y = Row->y; E.Pose.Z = Row->z; E.Pose.Yaw = Row->yaw; E.Pose.Pitch = Row->pitch; E.Pose.Health = Row->health;
-			E.Pose.bSneaking = Row->sneaking == 1; E.Pose.bSprinting = Row->sprinting == 1;
-			E.SeenAt = Row->seen_at;
-			const FCubeElsewhere* Known = Fresh.Find(Row->player_id);
-			if (!Known || Row->seen_at > Known->SeenAt) Fresh.Add(Row->player_id, E);
-		}
-		Self->HearElsewhere(Fresh);
-	});
-}
-
-// The players other servers host, as their presence rows say now. A pose older than the one known is not taken back (a
-// poll answered before a push), and one that shows a player hurt since a pose heard within 5 s flashes them for this
-// server's players: their own server tells only its players, and a hit from here reached it as a WorldHit. The health
-// shown stays the victim's server's. HearPresence on the C# side.
-void ACubeWorldGameMode::HearElsewhere(TMap<FString, FCubeElsewhere>& Fresh)
-{
-	for (TPair<FString, FCubeElsewhere>& Pair : Fresh)
-	{
-		const FCubeElsewhere* Known = Elsewhere.Find(Pair.Key);
-		if (!Known) continue;
-		if (Known->SeenAt > Pair.Value.SeenAt) { Pair.Value = *Known; continue; }
-		if (CubeWasHurt(Known->Pose.Health, Known->SeenAt, Pair.Value.Pose.Health, Pair.Value.SeenAt))
-			BroadcastHurt(Pair.Key, Pair.Value.Pose.Health, 0, 0, 0, FString());
-	}
-	Elsewhere = MoveTemp(Fresh);
-}
-
-void ACubeWorldGameMode::PollHits()
-{
-	if (bHitsBusy || Players.Num() == 0) return;
-	bHitsBusy = true;
-	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::LoadAll<UWorldHit>(FPlayServFilter::Where(TEXT("at")).GreaterThan((double)(Now() - 5000)), [Weak](bool bOk, TArray<UWorldHit*> Rows, const FPlayServError& Error)
-	{
-		if (!Weak.IsValid()) return;
-		ACubeWorldGameMode* Self = Weak.Get();
-		Self->bHitsBusy = false;
-		if (!bOk) { Self->ServerLog(FString::Printf(TEXT("hits not read: %s"), *Error.Message)); return; }
-		for (UWorldHit* Row : Rows)
-		{
-			FCubeServerPlayer* Victim = Self->PlayerById(Row->victim);
-			if (!Victim || Self->HitsApplied.Contains(Row->hit_id)) continue;
-			Self->HitsApplied.Add(Row->hit_id);
-			Self->Hurt(*Victim, Row->damage, true, Row->kx, Row->ky, Row->strength, Row->attacker);
-			TStrongObjectPtr<UWorldHit> Keep(Row);
-			PlayServ::Data::Delete(Row, FPlayServSimpleCallback::CreateLambda([Keep](bool, const FPlayServError&) {}));
-		}
-		if (Self->HitsApplied.Num() > 1000) Self->HitsApplied.Empty();
-	});
-}
-
-void ACubeWorldGameMode::PollBombs()
-{
-	if (bBombsBusy) return;
-	bBombsBusy = true;
-	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::LoadAll<UWorldBomb>(FPlayServFilter::Where(TEXT("at")).GreaterThan((double)(LastBombAt - 1)), [Weak](bool bOk, TArray<UWorldBomb*> Rows, const FPlayServError& Error)
-	{
-		if (!Weak.IsValid()) return;
-		ACubeWorldGameMode* Self = Weak.Get();
-		Self->bBombsBusy = false;
-		if (!bOk) { Self->ServerLog(FString::Printf(TEXT("bombs not read: %s"), *Error.Message)); return; }
-		Rows.Sort([](const UWorldBomb& A, const UWorldBomb& B) { return A.at < B.at; });
-		for (const UWorldBomb* Row : Rows)
-		{
-			Self->LastBombAt = FMath::Max(Self->LastBombAt, Row->at);
-			Self->OnBomb(RecordOf(Row), false);
-		}
-	});
-}
-
-void ACubeWorldGameMode::PollRegions()
+void ACubeWorldGameMode::ReadRegions()
 {
 	if (bRegionsBusy) return;
 	bRegionsBusy = true;

@@ -17,7 +17,6 @@
 #include "CubeWorldGameMode.generated.h"
 
 class ACubePlayerPawn;
-class FCubeLiveTables;
 struct FPlayServError;
 struct FPlayServDataUpdate;
 
@@ -30,6 +29,14 @@ struct FCubeBombRecord
 
 	static int32 Rank(const FString& State) { return State == TEXT("free") ? 0 : State == TEXT("held") ? 1 : State == TEXT("flying") ? 2 : 3; }
 	bool IsOver() const { return Rank(State) == 3; }
+};
+
+/** A WorldHit row: a hit on a player this server hosts, from another server. */
+struct FCubeHitRecord
+{
+	FString Id, Victim, Attacker;
+	double Damage = 0, KX = 0, KY = 0, Strength = 0;
+	int64 At = 0;
 };
 
 struct FCubeLiveBomb
@@ -91,6 +98,16 @@ struct FCubeElsewhere
 	int64 SeenAt = 0;
 };
 
+/** What became of a pose heard of a player elsewhere (ACubeWorldGameMode::MergePose). */
+enum class ECubePoseHeard : uint8
+{
+	/** Older than the pose already known: a push the platform sent late. */
+	Older,
+	Taken,
+	/** Taken, and it shows the player hurt since the pose before (CubeWasHurt). */
+	Hurt,
+};
+
 /** A block whose row was deleted: the `at` of the row that went, and when the delete was heard. */
 struct FCubeTombstone
 {
@@ -142,6 +159,18 @@ public:
 	int32 WebPort() const;
 	FString WebAddress() const;
 
+	// ---- what the other servers write, as the uplink or a read of the table brings it (public for the tests) ----------
+	/** A player another server hosts, from their WorldPresence row. */
+	static FCubeElsewhere ElsewhereOf(const TSharedPtr<FJsonObject>& Row);
+	static FCubeElsewhere ElsewhereOf(const UWorldPresence* Row);
+	/**
+	 * Takes a pose into what is known of the players elsewhere, unless the pose known is newer: the platform sends each
+	 * change on its own, so two writes of a row a moment apart can arrive the other way round.
+	 */
+	static ECubePoseHeard MergePose(TMap<FString, FCubeElsewhere>& Poses, const FCubeElsewhere& Pose);
+	static FCubeHitRecord HitOf(const TSharedPtr<FJsonObject>& Row);
+	static FCubeHitRecord HitOf(const UWorldHit* Row);
+
 private:
 	// ---- startup ----------------------------------------------------------------------------
 	void StartServer();
@@ -151,6 +180,10 @@ private:
 	void ApplyBombTable(const TArray<UWorldBomb*>& Rows);
 	/** Reads the bomb table again: the uplink's subscription is new and heard nothing written before it. */
 	void ReloadBombs();
+	/** Reads the poses of the last 5 s again, for the same reason. */
+	void ReloadPresence();
+	/** Reads the hits of the last 5 s again, for the same reason. */
+	void ReloadHits();
 	void ClaimRegion(int32 Region);
 	void OpenRoom();
 	void Serve();
@@ -167,35 +200,25 @@ private:
 	void TickDig(FCubeServerPlayer& Player);
 	void StopDig(FCubeServerPlayer& Player);
 	void TickBombs();
-	void PollCubes();
-	void PollPresence();
-	void PollHits();
-	void PollBombs();
-	void PollRegions();
+	/** Which server holds which region, read every 5 s as the C# servers read it (LiveRegionsAsync). */
+	void ReadRegions();
 	void Heartbeat();
 
-	// ---- the live tables: what the other servers write, the moment they write it ------------------
-	void OpenLiveTables();
-	void SubscribeLiveCubes();
-	void SubscribeLivePresence();
-	void SubscribeLiveHits();
-	void SubscribeLiveBombs();
-	void SubscribeLiveRegions();
-	void OnLiveCubes(const TArray<TSharedPtr<FJsonObject>>& Rows);
-	void OnLivePresence(const TArray<TSharedPtr<FJsonObject>>& Rows);
-	void OnLiveHits(const TArray<TSharedPtr<FJsonObject>>& Rows);
-	void OnLiveBombs(const TArray<TSharedPtr<FJsonObject>>& Rows);
-	void OnLiveRegions(const TArray<TSharedPtr<FJsonObject>>& Rows);
-
-	// ---- the uplink's data subscription: every write and delete of WorldCube, whoever made it ------------------
-	void SubscribeUplinkCubes();
+	// ---- the uplink's data subscriptions: every write and delete of the shared tables, whoever made it ---------
+	void SubscribeUplink();
 	void HandleDataSubscribed(const FString& Entity);
 	void HandleDataUpdate(const FPlayServDataUpdate& Update);
+	/** A pose of a player another server hosts: taken unless older than the one known, and a drop in health flashes them here. */
+	void HearPose(const FCubeElsewhere& Pose);
+	/** A hit on a player another server hosts: applied here if the victim is ours and it is fresh, then deleted. Row is set when it was read from the table. */
+	void HearHit(const FCubeHitRecord& Hit, UWorldHit* Row);
+	/** Deletes an applied hit heard over the uplink, by its hit id. */
+	void DeleteHit(const FString& HitId, int32 Attempt = 0);
 	/** Reads the whole table and takes what it says for every block that has not changed here since the read began. */
 	void ReconcileCubes();
 	/** A block's row is gone: the block goes back to the terrain, here and on the clients, and a row as old heard late is not applied. */
 	void Bury(const FIntVector& At, int64 RowAt, const FString& By, const FString& On);
-	/** A row no newer than the delete of its block, heard late through a live table, a poll or a read. */
+	/** A row no newer than the delete of its block, heard late over the uplink or through a read. */
 	bool IsBuried(const FIntVector& At, int64 RowAt) const;
 	/** A write of WriteCube ended, landed or given up. */
 	void WriteDone(const FIntVector& At, bool bLanded);
@@ -208,8 +231,6 @@ private:
 	/** A CubeInventory row came over the uplink: this server's own write, or another writer's to merge in. */
 	void HearInventory(const FString& PlayerId, const FCubeInventory& Theirs);
 	void Hurt(FCubeServerPlayer& Victim, double Damage, bool bDirected, double DX, double DY, double Strength, const FString& By);
-	/** Takes the players other servers host from fresh presence rows, and flashes one whose health dropped (CubeWasHurt). */
-	void HearElsewhere(TMap<FString, FCubeElsewhere>& Fresh);
 	void Publish(const FCubeWorldUpdate& Update);
 	void BroadcastCubes(const TArray<FCubeChange>& Changes, const TArray<FCubeFall>& Falls, bool bRemote);
 	void WebBroadcastCubes(const TArray<FCubeChange>& Changes, const TArray<FCubeFall>& Falls, bool bRemote);
@@ -278,7 +299,7 @@ private:
 	TMap<FString, int64> BombsOver;
 	/** Set once the bombs were read at start-up: a live bomb is known from its drop on after that. */
 	bool bBombsLoaded = false;
-	bool bBombsReloading = false;
+	bool bBombsReloading = false, bPresenceReloading = false, bHitsReloading = false;
 	static constexpr int64 BombsOverKeepMs = 15 * 60000;
 	TArray<FCubeRegionRep> Regions;
 	TStrongObjectPtr<UWorldRegion> RegionRow;
@@ -286,17 +307,13 @@ private:
 	FString ServerName;
 	int32 Region = -1;
 	int64 TickCount = 0;
-	int64 LastCubeAt = 0, LastBombAt = 0;
 	int32 LocalIds = 0;
 	bool bDedicated = false, bServing = false, bClosing = false;
 	/** -cubeoffline: no platform at all (CubeIsOffline). */
 	bool bOffline = false;
 	TMap<TWeakObjectPtr<AController>, FString> OfflineIds;
-	bool bCubesBusy = false, bPresenceBusy = false, bHitsBusy = false, bBombsBusy = false, bRegionsBusy = false;
-	TSharedPtr<FCubeLiveTables> LiveTables;
+	bool bRegionsBusy = false;
 	TSharedPtr<class FCubeWebSocketServer> Web;
-	int32 LiveCubes = 0, LivePresence = 0, LiveHits = 0, LiveBombs = 0, LiveRegions = 0;
-	int64 LivePresenceSince = 0, LiveHitsSince = 0;
 	TMap<FIntVector, FCubeTombstone> Tombstones;
 	/** This server's writes of each block still on their way to the table. */
 	TMap<FIntVector, int32> WritesInFlight;
@@ -306,5 +323,5 @@ private:
 	bool bCubeUpdatesHeard = false, bCubeUpdatesWarned = false;
 	int32 RegionTry = 0;
 	float Accumulator = 0;
-	FTimerHandle MoveTimer, CubeTimer, PresenceTimer, HitTimer, BombTimer, RegionTimer;
+	FTimerHandle MoveTimer, RegionTimer;
 };

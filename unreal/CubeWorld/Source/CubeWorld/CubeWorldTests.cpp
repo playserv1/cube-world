@@ -8,6 +8,7 @@
 #include "CubeWebSocketServer.h"
 #include "CubeSocket.h"
 #include "CubeWorldGameInstance.h"
+#include "CubeWorldGameMode.h"
 #include "Misc/AutomationTest.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -309,21 +310,63 @@ bool FCubeWorldEditRegionTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCubeWorldRowOrderTest,
-	"CubeWorld.Server.HitsAndBombsApplyInTheOrderTheyWereWritten",
+	FCubeWorldHitFreshTest,
+	"CubeWorld.Server.AHitLandsOnlyWithinFiveSecondsOfBeingWritten",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
 
-// A windowed push lists the most recently updated row first: of two hits 100 ms apart from another server the weak
-// second one landed, and the full first one was lost to the victim's immunity.
-bool FCubeWorldRowOrderTest::RunTest(const FString& Parameters)
+// The table keeps every hit whose victim had moved on (116 rows on dev on 2026-10-02): heard again when the victim is
+// back, or read again on a new subscription, such a hit must not land then. HearHit on the C# side.
+bool FCubeWorldHitFreshTest::RunTest(const FString& Parameters)
 {
-	auto Row = [](const TCHAR* Id, double At) { TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>(); R->SetStringField(TEXT("hit_id"), Id); R->SetNumberField(TEXT("at"), At); return R; };
-	const TArray<TSharedPtr<FJsonObject>> Pushed = { Row(TEXT("weak"), 1100), Row(TEXT("full"), 1000), Row(TEXT("old"), 300) };
-	const TArray<TSharedPtr<FJsonObject>> Ordered = CubeRowsInWrittenOrder(Pushed);
-	TestEqual(TEXT("all rows stay"), Ordered.Num(), 3);
-	TestEqual(TEXT("the oldest first"), Ordered[0]->GetStringField(TEXT("hit_id")), FString(TEXT("old")));
-	TestEqual(TEXT("then the full hit"), Ordered[1]->GetStringField(TEXT("hit_id")), FString(TEXT("full")));
-	TestEqual(TEXT("and the weak one last"), Ordered[2]->GetStringField(TEXT("hit_id")), FString(TEXT("weak")));
+	const int64 Written = 1790943259592;
+	TestTrue(TEXT("a hit heard as it is written lands"), CubeHitIsFresh(Written, Written + 20));
+	TestTrue(TEXT("so does one 4.9 s old"), CubeHitIsFresh(Written, Written + 4900));
+	TestFalse(TEXT("one 5 s old does not, as on the C# servers"), CubeHitIsFresh(Written, Written + 5000));
+	TestFalse(TEXT("nor one left in the table an hour ago"), CubeHitIsFresh(Written, Written + 3600000));
+	TestFalse(TEXT("nor one with no time"), CubeHitIsFresh(0, Written));
+
+	// A C# server's hit as the uplink brings it: its fields, with `at` a number of milliseconds.
+	TSharedPtr<FJsonObject> Row;
+	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(TEXT("{\"hit_id\":\"plr_A:21054:a12b\",\"victim\":\"plr_B\",\"attacker\":\"plr_A\",\"damage\":1,\"kx\":1,\"ky\":0,\"strength\":0.4,\"at\":1790937352580}")), Row);
+	const FCubeHitRecord Hit = ACubeWorldGameMode::HitOf(Row);
+	TestEqual(TEXT("its id"), Hit.Id, FString(TEXT("plr_A:21054:a12b")));
+	TestEqual(TEXT("its victim"), Hit.Victim, FString(TEXT("plr_B")));
+	TestEqual(TEXT("its strength"), Hit.Strength, 0.4);
+	TestEqual(TEXT("its time, to the millisecond"), Hit.At, (int64)1790937352580);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldPoseOrderTest,
+	"CubeWorld.Server.APoseHeardLateDoesNotTakeThePlayerBack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// The platform sends each change of a row on its own, so two poses a moment apart can arrive the other way round.
+bool FCubeWorldPoseOrderTest::RunTest(const FString& Parameters)
+{
+	// A C# server's pose as the uplink brings it: sneaking and sprinting are 0 or 1, seen_at milliseconds.
+	TSharedPtr<FJsonObject> Row;
+	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(TEXT("{\"player_id\":\"plr_H\",\"name\":\"Artem\",\"server\":\"xcbtb\",\"color\":\"pink\",\"x\":60,\"y\":36,\"z\":-0.77,\"yaw\":1.46,\"pitch\":0.04,\"health\":17,\"sneaking\":1,\"sprinting\":0,\"seen_at\":1790947383745}")), Row);
+	const FCubeElsewhere Heard = ACubeWorldGameMode::ElsewhereOf(Row);
+	TestEqual(TEXT("the player"), Heard.Pose.Id, FString(TEXT("plr_H")));
+	TestEqual(TEXT("their server"), Heard.Pose.Server, FString(TEXT("xcbtb")));
+	TestEqual(TEXT("their health"), (double)Heard.Pose.Health, 17.0);
+	TestTrue(TEXT("sneaking"), Heard.Pose.bSneaking);
+	TestFalse(TEXT("not sprinting"), Heard.Pose.bSprinting);
+	TestEqual(TEXT("seen at"), Heard.SeenAt, (int64)1790947383745);
+
+	TSharedPtr<FJsonObject> Old;
+	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(TEXT("{\"player_id\":\"plr_T\",\"seen_at\":1790310020905}")), Old);
+	TestEqual(TEXT("a row written before health was (dev has one) reads as whole"), (double)ACubeWorldGameMode::ElsewhereOf(Old).Pose.Health, 20.0);
+
+	TMap<FString, FCubeElsewhere> Elsewhere;
+	auto Pose = [](double X, double Health, int64 SeenAt) { FCubeElsewhere E; E.Pose.Id = TEXT("plr_H"); E.Pose.X = X; E.Pose.Health = Health; E.SeenAt = SeenAt; return E; };
+	TestTrue(TEXT("a first pose is taken"), ACubeWorldGameMode::MergePose(Elsewhere, Pose(10, 20, 1000)) == ECubePoseHeard::Taken);
+	TestTrue(TEXT("a newer one too"), ACubeWorldGameMode::MergePose(Elsewhere, Pose(11, 20, 1200)) == ECubePoseHeard::Taken);
+	TestTrue(TEXT("an older one heard late is not"), ACubeWorldGameMode::MergePose(Elsewhere, Pose(10, 20, 1000)) == ECubePoseHeard::Older);
+	TestEqual(TEXT("and the player stays where the newer one put them"), (double)Elsewhere.FindChecked(TEXT("plr_H")).Pose.X, 11.0);
+	TestTrue(TEXT("less health a moment later is a hurt to flash"), ACubeWorldGameMode::MergePose(Elsewhere, Pose(11, 19, 1400)) == ECubePoseHeard::Hurt);
+	TestTrue(TEXT("the late pose that showed them whole flashes nothing"), ACubeWorldGameMode::MergePose(Elsewhere, Pose(11, 20, 1300)) == ECubePoseHeard::Older);
 	return true;
 }
 
