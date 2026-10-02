@@ -110,20 +110,34 @@ public sealed partial class CubeWorldServer
     // ── the blocks ──────────────────────────────────────────────────────────────────────────────────
 
     private static async Task<List<WorldCube>> LoadCubesAsync() =>
-        (await ReadAll(Platform.Table<WorldCube>().Query())).Select(r => r.Fields!).ToList();
+        (await ReadAll(() => Platform.Table<WorldCube>().Query())).Select(r => r.Fields!).ToList();
 
-    /// <summary>Every row a query finds, 200 a page.</summary>
-    private static async Task<List<Record<T>>> ReadAll<T>(RecordQuery<T> query) where T : class
+    /// <summary>
+    /// Every row a query finds, 200 a page, each page the rows after the last record id of the page before (PSV-3014).
+    /// The platform's cursor skips a count of rows in updated_at order, newest first, so a row written or deleted while
+    /// the read ran moved others past a page boundary, and they were never returned: on dev on 2026-10-02 two Unreal
+    /// servers lost 39 and 288 blocks in one read that way. A record id never changes, and the platform filters and sorts
+    /// it with the same collation, so a boundary stays where it was. <paramref name="query"/> makes a fresh query for
+    /// each page, since a query adds every filter it is given to the ones it has.
+    /// </summary>
+    private static async Task<List<Record<T>>> ReadAll<T>(Func<RecordQuery<T>> query) where T : class
     {
         var rows = new List<Record<T>>();
-        string? cursor = null;
-        do
+        string? after = null;
+        while (true)
         {
-            var page = await query.Take(200).WithCursor(cursor).ToPageAsync();
+            var next = query().WithSort("id", "asc").Take(200);
+            if (after is not null) next.WithFilters(new RecordFilterTerm("id", "gt", after));
+            var page = await next.ToPageAsync();
             rows.AddRange(page.Items);
-            cursor = page.NextCursor;
-        } while (!string.IsNullOrEmpty(cursor));
-        return rows;
+            if (string.IsNullOrEmpty(page.NextCursor)) return rows;
+            // A page that names no last row, or the one the page before ended on, cannot be followed: the read fails
+            // rather than come back short, since a caller takes a short read for the whole table.
+            var last = page.Items.Count > 0 ? page.Items[^1].Id : null;
+            if (string.IsNullOrEmpty(last) || last == after)
+                throw new InvalidOperationException("a page said more rows follow, but it did not end on a new record id");
+            after = last;
+        }
     }
 
     /// <summary>A block changed here: the other servers hear it through platform data, our players see it now.</summary>
@@ -147,7 +161,7 @@ public sealed partial class CubeWorldServer
     {
         var started = Now;
         var since = _cubesReadAt - 120_000;
-        var rows = await ReadAll(Platform.Table<WorldCube>().Query().WithFilters(new RecordFilterTerm("at", "gt", since)));
+        var rows = await ReadAll(() => Platform.Table<WorldCube>().Query().WithFilters(new RecordFilterTerm("at", "gt", since)));
         var missed = 0;
         lock (_world)
         {

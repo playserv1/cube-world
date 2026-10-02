@@ -9,6 +9,7 @@
 #include "CubeSocket.h"
 #include "CubeWorldGameInstance.h"
 #include "CubeWorldGameMode.h"
+#include "Data/PlayServData.h"
 #include "Misc/AutomationTest.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -459,6 +460,43 @@ bool FCubeWorldBombGoneFromTableTest::RunTest(const FString& Parameters)
 
 	ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T + CubeBombNoRowGraceMs + 1000);
 	TestTrue(TEXT("a bomb dropped longer ago than the grace is marked too"), Missing.Contains(TEXT("fresh")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldKeysetPagingTest,
+	"CubeWorld.Data.AFullReadPagesByRecordId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A full read of WorldCube is about 80 pages. The platform's cursor skips a count of rows in updated_at order, so the rows
+// deleted while a read ran moved others past a page: on dev on 2026-10-02 two Unreal servers lost 39 and 288 blocks in one
+// read (PSV-3014). Each page asks for the records after the last record id of the page before, in record-id order.
+bool FCubeWorldKeysetPagingTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Base;
+	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(TEXT("{\"filters\":[{\"field\":\"x\",\"op\":\"gte\",\"value\":48}],\"limit\":200,\"cursor\":\"eyJvIjoyMDB9\"}")), Base);
+	const auto SortedById = [](const TSharedPtr<FJsonObject>& Body)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Sort;
+		return Body->TryGetArrayField(TEXT("sort"), Sort) && Sort->Num() == 1
+			&& (*Sort)[0]->AsObject()->GetStringField(TEXT("field")) == TEXT("id") && (*Sort)[0]->AsObject()->GetStringField(TEXT("dir")) == TEXT("asc");
+	};
+
+	const TSharedPtr<FJsonObject> First = UPlayServData::KeysetPageBody(Base, FString());
+	TestTrue(TEXT("the first page is sorted by record id"), SortedById(First));
+	TestFalse(TEXT("and asks for no cursor"), First->HasField(TEXT("cursor")));
+	TestEqual(TEXT("its filters are the read's own"), First->GetArrayField(TEXT("filters")).Num(), 1);
+	TestEqual(TEXT("and so is its page size"), (int32)First->GetNumberField(TEXT("limit")), 200);
+
+	const TSharedPtr<FJsonObject> Next = UPlayServData::KeysetPageBody(Base, TEXT("rec_009VJWN3ZCKQTJF2QR7Q1NVHMD"));
+	const TArray<TSharedPtr<FJsonValue>>& Filters = Next->GetArrayField(TEXT("filters"));
+	TestEqual(TEXT("the next page adds one filter"), Filters.Num(), 2);
+	const TSharedPtr<FJsonObject> After = Filters.Last()->AsObject();
+	TestTrue(TEXT("for the records after the last one of the page before"), After->GetStringField(TEXT("field")) == TEXT("id")
+		&& After->GetStringField(TEXT("op")) == TEXT("gt") && After->GetStringField(TEXT("value")) == TEXT("rec_009VJWN3ZCKQTJF2QR7Q1NVHMD"));
+	TestTrue(TEXT("still sorted by record id"), SortedById(Next));
+	TestEqual(TEXT("the read's own filters stay as they were"), Base->GetArrayField(TEXT("filters")).Num(), 1);
+	TestEqual(TEXT("a read with no filters gets only that one"), UPlayServData::KeysetPageBody(MakeShared<FJsonObject>(), TEXT("rec_A"))->GetArrayField(TEXT("filters")).Num(), 1);
 	return true;
 }
 

@@ -241,7 +241,7 @@ public sealed partial class CubeWorldServer
 
     private static async Task<List<WorldBomb>> LoadBombsAsync()
     {
-        var bombs = (await ReadAll(Platform.Table<WorldBomb>().Query())).Select(r => r.Fields!);
+        var bombs = (await ReadAll(() => Platform.Table<WorldBomb>().Query())).Select(r => r.Fields!);
         // A bomb can have several rows (the drop function's and the servers'): the one furthest on is the bomb.
         return bombs.GroupBy(b => b.bomb_id)
             .Select(g => g.OrderByDescending(b => Bomb.Rank(b.state)).ThenByDescending(b => b.at).First())
