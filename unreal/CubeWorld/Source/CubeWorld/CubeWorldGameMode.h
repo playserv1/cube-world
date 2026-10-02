@@ -304,7 +304,8 @@ private:
 	void KeepLastPose(const FCubeServerPlayer& Player);
 	void WriteHit(const FString& HitId, const FString& Victim, const FString& Attacker, double Damage, double KX, double KY, double Strength);
 	void WriteRegionClaim(const TFunction<void(bool)>& Done);
-	void ClearRegionAndExit();
+	/** The room ended: the bombs over the region go up in smoke and the process exits. The region's blocks stay. */
+	void FizzleBombsAndExit();
 	void ExitSoon();
 
 	// ---- the platform's rooms ---------------------------------------------------------------

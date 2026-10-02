@@ -1498,23 +1498,25 @@ void ACubeWorldGameMode::TurnAway(FCubeServerPlayer& P, const FString& Reason)
 }
 
 /**
- * The room was closed by the platform: the operator closed it, or it reached its lifetime. Its region goes back to
- * the generated terrain (every change in it is deleted, and every server and client hears the deletes), the bombs
- * over it go up in smoke, and the process ends. Docker starts it again on the same machine, where it claims its
- * region again and opens the room fresh.
+ * The room was closed by the platform: the operator closed it, or it reached its lifetime. The bombs over its region
+ * go up in smoke and the process ends; Docker starts it again on the same machine, where it claims its region again
+ * and opens the room fresh. The blocks stay as they are, as on the C# servers since c9424c6: the world goes back to its
+ * default state only through the cubeworld-reset function. This server used to delete every changed block of its
+ * region here, so one Delete room or session_closing wiped everything built there, for everyone (897 blocks of blue on
+ * dev on 2026-10-02, bug hunt B2).
  */
 void ACubeWorldGameMode::HandleRoomEnded(const FString& InRoomName, const FString& Reason)
 {
-	// A room refused at registration (another process still holds the name) was never ours to clear.
+	// A room refused at registration (another process still holds the name) was never ours to end.
 	if (InRoomName != RoomName() || bClosing || !bServing) return;
 	bClosing = true;
-	ServerLog(FString::Printf(TEXT("was closed (%s): clearing region %d and exiting"), *Reason, Region));
+	ServerLog(FString::Printf(TEXT("was closed (%s): exiting, the blocks of region %d stay"), *Reason, Region));
 	for (auto& Pair : Players) TurnAway(*Pair.Value, TEXT("room_closed_by_operator"));
 	FTimerHandle H;
-	GetWorldTimerManager().SetTimer(H, this, &ACubeWorldGameMode::ClearRegionAndExit, 1.f, false);
+	GetWorldTimerManager().SetTimer(H, this, &ACubeWorldGameMode::FizzleBombsAndExit, 1.f, false);
 }
 
-void ACubeWorldGameMode::ClearRegionAndExit()
+void ACubeWorldGameMode::FizzleBombsAndExit()
 {
 	TArray<FString> Ids;
 	Bombs.GetKeys(Ids);
@@ -1524,40 +1526,7 @@ void ACubeWorldGameMode::ClearRegionAndExit()
 		if (Live && !Live->Record.IsOver() && CubeSpec::RegionOf(Live->Record.X, Live->Record.Y) == Region)
 			ShareBomb(Next(Live->Record, TEXT("fizzled"), Live->Record.Holder, Live->Record.X, Live->Record.Y, Live->Z), false);
 	}
-	// The rows of the region go a few at a time: the SDK's DeleteAll fires every delete at once, and hundreds of
-	// requests in flight run past its timeout.
-	int32 X0, X1, Y0, Y1;
-	CubeSpec::RegionBounds(Region, X0, X1, Y0, Y1);
-	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	PlayServ::Data::LoadAll<UWorldCube>(FPlayServFilter::Where(TEXT("x")).GreaterThanOrEqual(X0).And(TEXT("x")).LessThan(X1).And(TEXT("y")).GreaterThanOrEqual(Y0).And(TEXT("y")).LessThan(Y1), [Weak](bool bOk, TArray<UWorldCube*> Rows, const FPlayServError& Error)
-	{
-		if (!Weak.IsValid()) return;
-		if (!bOk) { Weak->ServerLog(FString::Printf(TEXT("region not cleared, its rows could not be read: %s"), *Error.Message)); Weak->ExitSoon(); return; }
-		TSharedRef<TArray<TStrongObjectPtr<UWorldCube>>> Pending = MakeShared<TArray<TStrongObjectPtr<UWorldCube>>>();
-		for (UWorldCube* Row : Rows) Pending->Add(TStrongObjectPtr<UWorldCube>(Row));
-		const int32 Total = Pending->Num();
-		TSharedRef<int32> Deleted = MakeShared<int32>(0), Failed = MakeShared<int32>(0), InFlight = MakeShared<int32>(0);
-		TSharedRef<TFunction<void()>> Next = MakeShared<TFunction<void()>>();
-		*Next = [Weak, Pending, Total, Deleted, Failed, InFlight, Next]()
-		{
-			while (Pending->Num() > 0 && *InFlight < 16)
-			{
-				TStrongObjectPtr<UWorldCube> Row = Pending->Pop();
-				(*InFlight)++;
-				PlayServ::Data::Delete(Row.Get(), FPlayServSimpleCallback::CreateLambda([Weak, Row, Total, Deleted, Failed, InFlight, Next](bool bDeleted, const FPlayServError&)
-				{
-					(*InFlight)--;
-					if (bDeleted) (*Deleted)++; else (*Failed)++;
-					if (*Deleted + *Failed < Total) { (*Next)(); return; }
-					if (!Weak.IsValid()) return;
-					Weak->ServerLog(FString::Printf(TEXT("region cleared, %d changed blocks deleted%s"), *Deleted, *Failed > 0 ? *FString::Printf(TEXT(", %d not"), *Failed) : TEXT("")));
-					Weak->ExitSoon();
-				}));
-			}
-		};
-		if (Total == 0) { Weak->ServerLog(TEXT("region cleared, nothing to delete")); Weak->ExitSoon(); return; }
-		(*Next)();
-	});
+	ExitSoon();
 }
 
 // The platform has its answer and the players their reason already; this gives the logs time to leave before the process does.

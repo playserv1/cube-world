@@ -129,7 +129,7 @@ public:
 	void Remember(const FIntVector& At, UWorldCube* Row);
 	/** A write of this block landed: it is in the table from now on. */
 	void Touch(const FIntVector& At);
-	/** A row that is gone (the world was reset, or a region cleared): the block is the generated one again. Returns whether there was one. */
+	/** A row that is gone (the world was reset): the block is the generated one again. Returns whether there was one. */
 	bool Forget(const FIntVector& At);
 	/** The blocks held here that a read of the table did not find, leaving out any set, heard or written after Version AsOf. */
 	TArray<FIntVector> Missing(const TSet<FIntVector>& Found, uint64 AsOf) const;

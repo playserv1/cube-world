@@ -102,8 +102,8 @@ from 2026-09-29, remains for Unreal-only tests):
 
 **On a developer machine** the servers are the editor run headless (`Scripts/RunServers.ps1`); the platform
 lists their rooms (`list_game_sessions(env="dev")`) beside the C# servers', and the admin's **Remove player**
-and **Delete room** work the same way: the room's server turns the players away, clears its region and exits
-(start it again by hand, since no Docker restarts it there).
+and **Delete room** work the same way: the room's server turns the players away, puts out the bombs over its region
+and exits (start it again by hand, since no Docker restarts it there). The region's blocks stay, as on the C# servers.
 
 **On the platform's machine pool** the server is a Linux image of the Server target, `CubeWorldServer`: a real
 dedicated server, which no game build replaces. The Launcher's engine has no Server target, so the image is built with
