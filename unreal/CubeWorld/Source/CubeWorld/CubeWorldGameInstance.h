@@ -90,6 +90,8 @@ public:
 	bool IsConnected() const { return bWelcomed; }
 	/** In the game for the player: connected, or walking over a border into the next server. The HUD shows through a crossing. */
 	bool IsInPlay() const { return bWelcomed || Crossing.bSet; }
+	/** How much of a fresh join's world has arrived since the welcome, 0 to 1. */
+	float WorldLoaded() const { return ChunksExpected > 0 ? FMath::Clamp(float(ChunksReceived) / ChunksExpected, 0.f, 1.f) : 0.f; }
 	/** The field of view the pawn draws with (horizontal degrees), for the view held through a crossing. */
 	float LastHorizontalFov = 0, LastFov = 0;
 	/** True while the server is a C# one, reached over the JSON socket; false on an Unreal server, reached over Iris. */
@@ -127,6 +129,13 @@ public:
 	double Health = 20;
 	bool bDead = false;
 	bool bPlaced = false;
+	/** From Play, or a jump from the server list, until the player stands where the server put them the view is curtained:
+	 *  the world is never shown from the wrong place first (the web client draws the same curtain). */
+	bool bEntering = false;
+	/** The curtain lifts a moment after the player is placed, once the world is drawn around them. */
+	double CurtainUntil = 0;
+	/** How far the curtain is down, 0 to 1: kept here, as the HUD is made again with every map. */
+	float Curtain = 0.f;
 	/** Set once a border has been crossed in this run (the -holdkeys test walks by itself only up to the first one). */
 	bool bCrossedOnce = false;
 	/** The -walkto spot the test walks to now, kept through crossings (each server's pawn is a new one). */

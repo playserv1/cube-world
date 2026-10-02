@@ -378,6 +378,7 @@ void UCubeWorldGameInstance::StartPlay(const FString& Name)
 	if (bSigningIn || IsConnected() || bSwitching) return;
 	PlayerName = Name;
 	bSigningIn = true;
+	bEntering = true;
 	Status = TEXT("Signing in...");
 	if (PlayServ::Auth::IsLoggedIn() && !PlayerId.IsEmpty()) { Browse(); return; }
 	if (CubeIsOffline())
@@ -406,6 +407,7 @@ void UCubeWorldGameInstance::StartPlay(const FString& Name)
 		if (Error.Code == EPlayServErrorCode::NetworkUnreachable || Error.Code == EPlayServErrorCode::Timeout)
 		{
 			Self->bSigningIn = false;
+			Self->bEntering = false;
 			Self->Status = FString::Printf(TEXT("Sign-in failed: %s"), *Error.Message);
 			Self->Log(Self->Status);
 			return;
@@ -426,6 +428,7 @@ void UCubeWorldGameInstance::SignInAsNewGuest()
 		if (!bOk)
 		{
 			Self->bSigningIn = false;
+			Self->bEntering = false;
 			Self->Status = FString::Printf(TEXT("Sign-in failed: %s"), *Error.Message);
 			Self->Log(Self->Status);
 			return;
@@ -509,6 +512,7 @@ void UCubeWorldGameInstance::Browsed()
 		if (!BrowseError.IsEmpty() || RoomSlugs.Num() == 0)
 		{
 			bSigningIn = false;
+			bEntering = false;
 			Status = BrowseError.IsEmpty() ? TEXT("No server is running. Press Enter to retry.") : FString::Printf(TEXT("Browse failed: %s"), *BrowseError);
 			Log(Status);
 			return;
@@ -535,6 +539,7 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 	if (RoomName == Room || bSwitching) return;
 	bSwitching = true;
 	Status = FString::Printf(TEXT("Joining %s..."), *RoomName);
+	if (bTeleport) bEntering = true;
 	if (CubeIsOffline())
 	{
 		// No join, no ticket: straight to the address of the server that holds the room's region.
@@ -796,6 +801,7 @@ void UCubeWorldGameInstance::OnWorldChunk(const TArray<FCubeCellRep>& Cells, boo
 	if (bDiff) ApplySnapshot();
 	OnWelcome.Broadcast(WelcomePose, !bDiff);
 	bPlaced = true;
+	if (bEntering) { bEntering = false; CurtainUntil = FPlatformTime::Seconds() + 0.3; }
 	for (const FPendingCubes& P : PendingCubes) ApplyCubes(P.Changes, P.Falls, P.bRemote);
 	PendingCubes.Empty();
 }

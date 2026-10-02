@@ -7,6 +7,7 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "Engine/GameViewportClient.h"
 #include "EngineFontServices.h"
 #include "Fonts/FontMeasure.h"
 #include "Camera/CameraComponent.h"
@@ -174,8 +175,9 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(TEXT("You died!"), H / 2 - 44, 28, FLinearColor::White, true);
 		DrawCentered(TEXT("Press Enter or click to respawn"), H / 2 + 10, 12, FLinearColor::White);
 	}
-	else if (!Game->IsInPlay() && !Game->bPlaced)
+	else if (!Game->bPlaced)
 	{
+		// Until the player is placed: a welcome comes before the world does, and nothing of the game shows meanwhile.
 		DrawRect(FLinearColor(0, 0, 0, 0.5f), 0, 0, W, H);
 		DrawCentered(TEXT("Cube World"), H / 2 - 90, 36, FLinearColor::White, true);
 		DrawCentered(FString::Printf(TEXT("Playing as %s  (start with -name=YourName to change it)"), *Game->PlayerName), H / 2 - 24, 11, FLinearColor(0.8f, 0.85f, 0.9f));
@@ -192,9 +194,28 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(TEXT("Game menu"), H / 2 - 80, 20, FLinearColor::White, true);
 		DrawButton(TEXT("Resume"), H / 2 - 30, ResumeRect, Mouse);
 		DrawButton(TEXT("Exit"), H / 2 + 10, ExitRect, Mouse);
-		return;
 	}
-	ResumeRect = ExitRect = FBox2D(ForceInit);
+	else ResumeRect = ExitRect = FBox2D(ForceInit);
+
+	// The curtain, over everything: down from Play (or a jump from the server list) until the player stands where the
+	// server put them, then it lifts and the game fades in. Its title and status stand where the start screen has them,
+	// so going from one to the other moves nothing.
+	const bool bDown = Game->bEntering || Now < Game->CurtainUntil;
+	const float Dt = FMath::Min(GetWorld()->GetDeltaSeconds(), 0.05f);
+	Game->Curtain = bDown ? FMath::Min(1.f, Game->Curtain + Dt / 0.3f) : FMath::Max(0.f, Game->Curtain - Dt / 0.5f);
+	// Under the whole curtain the world is not drawn at all: the next map's first frames, before its HUD is made, show
+	// the viewport's black, the curtain's own colour, instead of the world from the server's spawn point.
+	if (UGameViewportClient* Viewport = GetWorld()->GetGameViewport()) Viewport->bDisableWorldRendering = Game->Curtain >= 1.f;
+	if (Game->Curtain > 0.f)
+	{
+		const float A = FMath::SmoothStep(0.f, 1.f, Game->Curtain);
+		DrawRect(FLinearColor(0, 0, 0, A), 0, 0, W, H);
+		DrawCentered(TEXT("Cube World"), H / 2 - 90, 36, FLinearColor(1, 1, 1, A), true);
+		// After the welcome the world still streams in, and that takes seconds from an Unreal server.
+		const FString Line = !Game->Status.IsEmpty() ? Game->Status
+			: Game->IsConnected() ? FString::Printf(TEXT("Loading the world... %d%%"), FMath::RoundToInt32(Game->WorldLoaded() * 100)) : FString();
+		if (bDown) DrawCentered(Line, H / 2 + 4, 15, FLinearColor(1, 1, 1, A), true);
+	}
 }
 
 void ACubeHUD::DrawButton(const FString& Label, float Y, FBox2D& OutRect, FVector2D Mouse)

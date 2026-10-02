@@ -155,6 +155,7 @@ async function refreshServers() {
 async function enter(roomName, teleport = true) {
   if (roomName === state.room || state.switching) return;
   state.switching = true;
+  if (teleport) curtain(true, `Joining ${roomName}...`);
   try {
     // A region's claim can carry a stale room type (a C# server that writes none keeps the Unreal one that held the
     // region before): a room not found under one type is tried under the other.
@@ -203,10 +204,11 @@ async function enter(roomName, teleport = true) {
         if (turned.message) state.notBefore[roomName] = performance.now() + turned.waitMs;
         state.room = null;
       }
-      if (state.socket !== socket) state.switching = false;
+      if (state.socket !== socket) { state.switching = false; if (teleport) curtain(false); }
     };
   } catch (e) {
     state.switching = false;
+    if (teleport) curtain(false);
     throw e;
   }
 }
@@ -326,10 +328,23 @@ function onHurt(frame) {
   if (avatar) avatar.hurtUntil = performance.now() + S.HURT_TICKS * S.TICK_MS;
 }
 
+// From Play, or a jump from the server list, until the player stands where the server put them the view is curtained,
+// then it fades in a moment later, once the world is drawn there: it never shows from the wrong place first.
+let curtainTimer = 0;
+function curtain(on, text) {
+  const c = $("curtain");
+  clearTimeout(curtainTimer);
+  if (text !== undefined) $("curtain-status").textContent = text;
+  c.classList.toggle("lifting", !on);
+  if (on) c.classList.add("shown");
+  else curtainTimer = setTimeout(() => c.classList.remove("shown"), 250);
+}
+
 function spawn(at) {
   const p = toClient(at);
   Object.assign(me, { x: p.x, y: p.y, z: p.z, px: p.x, py: p.y, pz: p.z, vx: 0, vy: 0, vz: 0, peak: p.y, onGround: false });
   state.placed = true;
+  curtain(false);
   unstick();
 }
 
@@ -1036,12 +1051,14 @@ requestAnimationFrame(frame);
 $("name").value = sessionStorage.getItem("cubeworld.name") || "";
 $("join").onsubmit = async e => {
   e.preventDefault();
+  curtain(true, "Signing in...");
   try {
     await signIn($("name").value.trim());
     if (OFFLINE) { enterOffline(); return; }
     const rooms = await refreshServers();
     if (rooms.length) await enter(rooms[0].room_name);
+    else curtain(false);
     setInterval(() => refreshServers().catch(() => {}), 5000);
-  } catch {}
+  } catch { curtain(false); }
 };
 window.cubeworld = { state, enter, send, world, avatars, me, camera, aim, controls, keys, mouse, bombs };
