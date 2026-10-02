@@ -1295,6 +1295,22 @@ bool FPlayServAuthV2RefreshFailureClassificationTest::RunTest(const FString& Par
 	// been consumed, and re-presenting a consumed token is what revokes a live family.
 	TestTrue(TEXT("Unknown is terminal — a 5xx is still an answer"), IsTerminal(EPlayServErrorCode::Unknown));
 
+	// Except where the platform's front end answered for an app that was not there to take the request (502, 503: a
+	// restart or a deploy), gave up waiting for it (504, as a Timeout), or asked the client to slow down (429): the
+	// refresh was not processed, so the token is still the live one. Cube World lost its session to one such answer
+	// during the dev platform's restarts (bug hunt B16). A 500 comes from the app itself and stays terminal.
+	auto IsTerminalStatus = [](int32 Status)
+	{
+		FPlayServError Error = FPlayServError::Make(EPlayServErrorCode::Unknown, TEXT("synthetic"));
+		Error.HttpStatus = Status;
+		return FPlayServAuthTestAccess::IsTerminalRefreshFailure(Error);
+	};
+	TestFalse(TEXT("503 is NOT terminal — no app instance took the request"), IsTerminalStatus(503));
+	TestFalse(TEXT("502 is NOT terminal — the front end had no app to pass it to"), IsTerminalStatus(502));
+	TestFalse(TEXT("504 is NOT terminal — no answer in time, as a Timeout"), IsTerminalStatus(504));
+	TestFalse(TEXT("429 is NOT terminal — slow down, not a refusal"), IsTerminalStatus(429));
+	TestTrue(TEXT("500 is terminal — the app answered and may have spent the token"), IsTerminalStatus(500));
+
 	// A request the transport never dispatched is classified at the HTTP layer as
 	// NetworkUnreachable for exactly this reason — it must not read as "the platform answered".
 	TestFalse(TEXT("the not-dispatched case lands on the non-terminal side"),

@@ -3,6 +3,7 @@
 #include "CubeWorldActor.h"
 #include "CubeSocket.h"
 #include "PlayServ.h"
+#include "Auth/PlayServAuth.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -406,8 +407,10 @@ void UCubeWorldGameInstance::StartPlay(const FString& Name)
 			Self->Browse();
 			return;
 		}
-		// Offline, the platform never saw the token: it is kept for the next try.
-		if (Error.Code == EPlayServErrorCode::NetworkUnreachable || Error.Code == EPlayServErrorCode::Timeout)
+		// Not refused: no answer, or the platform's front end standing in for an app that was restarting (429, 502, 503,
+		// 504). The token is still the live one and is kept for the next try; taken as refused, one 503 at launch made a
+		// new guest under the same name (bug hunt B16).
+		if (!UPlayServAuth::IsTerminalRefreshFailure(Error))
 		{
 			Self->bSigningIn = false;
 			Self->bEntering = false;

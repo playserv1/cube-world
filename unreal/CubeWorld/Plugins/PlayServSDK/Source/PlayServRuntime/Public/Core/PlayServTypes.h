@@ -72,6 +72,10 @@ struct PLAYSERVRUNTIME_API FPlayServError
 	UPROPERTY(BlueprintReadOnly, Category="PlayServ")
 	FString ProblemCode;
 
+	/** The HTTP status the platform answered with, such as 404 or 503; 0 when no answer came or the error is the SDK's own. */
+	UPROPERTY(BlueprintReadOnly, Category="PlayServ")
+	int32 HttpStatus = 0;
+
 	/** True for an error. */
 	bool IsError() const { return Code != EPlayServErrorCode::None; }
 

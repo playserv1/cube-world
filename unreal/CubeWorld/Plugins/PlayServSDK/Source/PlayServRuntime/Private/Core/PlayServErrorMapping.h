@@ -32,6 +32,7 @@ namespace PlayServErrorMapping
 
 		FPlayServError Err = FPlayServError::Make(Code, Message);
 		Err.ProblemCode = ProblemCode;
+		Err.HttpStatus = Status;
 		return Err;
 	}
 
