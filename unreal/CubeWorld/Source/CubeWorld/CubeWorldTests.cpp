@@ -163,29 +163,35 @@ bool FCubeWorldInventorySyncTest::RunTest(const FString& Parameters)
 
 	FCubeInventorySync Late;
 	Late.Base = Stacks(10);
-	TestTrue(TEXT("the old server's late write is another writer's"), Late.Heard(Stacks(10), Stacks(9), Merged));
+	TestTrue(TEXT("the old server's late write is another writer's"), Late.Heard(Stacks(10), Stacks(9), 0, Merged));
 	TestEqual(TEXT("a block spent there just before the crossing stays spent"), Merged.Count(TEXT("dirt")), 9);
 
 	FCubeInventorySync Both;
 	Both.Base = Stacks(10);
-	Both.Heard(Stacks(8), Stacks(9), Merged);
+	Both.Heard(Stacks(8), Stacks(9), 0, Merged);
 	TestEqual(TEXT("and what the player did here meanwhile is kept too"), Merged.Count(TEXT("dirt")), 7);
 
 	FCubeInventorySync Own;
 	Own.Base = Stacks(10);
-	Own.Wrote(Stacks(9));
-	Own.Wrote(Stacks(8));
-	TestFalse(TEXT("this server's own latest write coming back changes nothing"), Own.Heard(Stacks(8), Stacks(8), Merged));
+	Own.Wrote(Stacks(9), 0);
+	Own.Wrote(Stacks(8), 0);
+	TestFalse(TEXT("this server's own latest write coming back changes nothing"), Own.Heard(Stacks(8), Stacks(8), 0, Merged));
 	TestTrue(TEXT("its base is that write"), Own.Base.Same(Stacks(8)) && Own.Written.Num() == 0);
-	TestTrue(TEXT("an earlier one heard after it is someone else's"), Own.Heard(Stacks(8), Stacks(9), Merged));
+	TestTrue(TEXT("an earlier one heard after it is someone else's"), Own.Heard(Stacks(8), Stacks(9), 0, Merged));
 
 	FCubeInventorySync Refill;
 	Refill.Base = Stacks(10);
-	Refill.Wrote(Stacks(9));
-	Refill.Heard(Stacks(9), Stacks(9), Merged);
-	Refill.Wrote(Stacks(8));
-	Refill.Heard(Stacks(8), Stacks(10, 11), Merged);
+	Refill.Wrote(Stacks(9), 0);
+	Refill.Heard(Stacks(9), Stacks(9), 0, Merged);
+	Refill.Wrote(Stacks(8), 0);
+	Refill.Heard(Stacks(8), Stacks(10, 11), 0, Merged);
 	TestTrue(TEXT("a refill tops up what the player holds now"), Merged.Count(TEXT("dirt")) == 9 && Merged.Count(TEXT("stone")) == 11);
+
+	FCubeInventorySync Unheard;
+	Unheard.Base = Stacks(10);
+	Unheard.Wrote(Stacks(8), 0);
+	Unheard.Heard(Stacks(8), Stacks(9, 11), 5000, Merged);
+	TestTrue(TEXT("a write of ours never heard back counts as in the row"), Merged.Count(TEXT("dirt")) == 9 && Merged.Count(TEXT("stone")) == 11);
 
 	const FCubeInventory Clamped = FCubeInventorySync::Merge(Stacks(64, 0), Stacks(10, 5), Stacks(20, 1));
 	TestTrue(TEXT("a merge keeps every kind within 0 and a stack"), Clamped.Count(TEXT("dirt")) == CubeSpec::StackSize && Clamped.Count(TEXT("stone")) == 0);

@@ -206,14 +206,17 @@ struct FCubeInventory
  */
 struct FCubeInventorySync
 {
+	/** A write of ours not heard back after this long is taken to be in the row (an uplink that sends a server none of its own). */
+	static constexpr int64 EchoMs = 3000;
+
 	/** The row as this server last knew it: read at the join, or heard since. */
 	FCubeInventory Base;
-	/** This server's writes not heard back yet, oldest first. */
-	TArray<FCubeInventory> Written;
+	/** This server's writes not heard back yet, oldest first, and when each went out. */
+	TArray<TPair<FCubeInventory, int64>> Written;
 
-	void Wrote(const FCubeInventory& Stacks);
+	void Wrote(const FCubeInventory& Stacks, int64 Now);
 	/** A row was heard. False when it is this server's own write (nothing changes); else Merged is the inventory to hold now. */
-	bool Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, FCubeInventory& Merged);
+	bool Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, int64 Now, FCubeInventory& Merged);
 	/** Ours plus what Theirs changed since Base, each kind kept within 0 and a stack. */
 	static FCubeInventory Merge(const FCubeInventory& Ours, const FCubeInventory& InBase, const FCubeInventory& Theirs);
 };

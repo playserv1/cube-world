@@ -553,7 +553,7 @@ void ACubeWorldGameMode::ReadInventoryAgain(const FString& Id)
 		P->InventoryRow.Reset(Row);
 		const FCubeInventory Theirs = Rows.Num() > 0 ? FCubeInventory::Parse(Row->stacks) : P->InventorySync.Base;
 		FCubeInventory Merged;
-		if (P->InventorySync.Heard(P->Inventory, Theirs, Merged)) P->Inventory = Merged;
+		if (P->InventorySync.Heard(P->Inventory, Theirs, Self->Now(), Merged)) P->Inventory = Merged;
 		Self->ServerLog(FString::Printf(TEXT("inventory of %s read at last"), *P->Name));
 		Self->ShareInventory(*P);
 	});
@@ -565,7 +565,7 @@ void ACubeWorldGameMode::HearInventory(const FString& PlayerId, const FCubeInven
 	if (!P) return;
 	if (!P->bInventoryRead) { P->InventoryHeardWhileReading = Theirs; return; }
 	FCubeInventory Merged;
-	if (!P->InventorySync.Heard(P->Inventory, Theirs, Merged)) return;
+	if (!P->InventorySync.Heard(P->Inventory, Theirs, Now(), Merged)) return;
 	const bool bChangedHere = !Merged.Same(P->Inventory);
 	P->Inventory = Merged;
 	// The row lacks what the player did here (another writer's row came after this server's): it is written again.
@@ -1211,7 +1211,7 @@ void ACubeWorldGameMode::WriteInventory(FCubeServerPlayer& P)
 	Row->player_id = P.Id;
 	Row->cubes = P.Inventory.Total();
 	Row->stacks = P.Inventory.ToJson();
-	P.InventorySync.Wrote(P.Inventory);
+	P.InventorySync.Wrote(P.Inventory, Now());
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	TStrongObjectPtr<UCubeInventory> Keep(Row);
 	const FString Id = P.Id;
@@ -1225,7 +1225,7 @@ void ACubeWorldGameMode::WriteInventory(FCubeServerPlayer& P)
 		// A write that never landed never comes back.
 		if (P)
 		{
-			const int32 Unsent = P->InventorySync.Written.IndexOfByPredicate([&Sent](const FCubeInventory& W) { return W.Same(Sent); });
+			const int32 Unsent = P->InventorySync.Written.IndexOfByPredicate([&Sent](const TPair<FCubeInventory, int64>& W) { return W.Key.Same(Sent); });
 			if (Unsent != INDEX_NONE) P->InventorySync.Written.RemoveAt(Unsent);
 		}
 		// Another writer changed the row since this server read it (the old server's last write, a refill): the save is
@@ -1242,7 +1242,7 @@ void ACubeWorldGameMode::WriteInventory(FCubeServerPlayer& P)
 				if (!bReloaded) { Inner->ServerLog(FString::Printf(TEXT("inventory of %s not read again: %s"), *Id, *ReloadError.Message)); return; }
 				FCubeInventory Merged;
 				const FCubeInventory Theirs = FCubeInventory::Parse(Keep->stacks);
-				const bool bForeign = Q->InventorySync.Heard(Q->Inventory, Theirs, Merged);
+				const bool bForeign = Q->InventorySync.Heard(Q->Inventory, Theirs, Inner->Now(), Merged);
 				const bool bChangedHere = bForeign && !Merged.Same(Q->Inventory);
 				if (bForeign) Q->Inventory = Merged;
 				Inner->WriteInventory(*Q);

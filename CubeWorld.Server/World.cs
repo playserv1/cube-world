@@ -410,28 +410,40 @@ public sealed class Inventory
 /// </summary>
 public sealed class InventorySync(IReadOnlyDictionary<string, int> read)
 {
-    private readonly List<Dictionary<string, int>> _written = [];
+    /// <summary>
+    /// A write of ours not heard back after this long is taken to be in the row: should the uplink not send a server its
+    /// own writes, another writer's change would otherwise be counted from a row older than them.
+    /// </summary>
+    public const long EchoMs = 3000;
+
+    private readonly List<(Dictionary<string, int> Stacks, long At)> _written = [];
 
     /// <summary>The row as this server last knew it: read at the join, or heard since.</summary>
     public IReadOnlyDictionary<string, int> Base { get; private set; } = new Dictionary<string, int>(read);
 
-    public void Wrote(IReadOnlyDictionary<string, int> stacks)
+    public void Wrote(IReadOnlyDictionary<string, int> stacks, long now)
     {
-        _written.Add(new Dictionary<string, int>(stacks));
+        _written.Add((new Dictionary<string, int>(stacks), now));
         if (_written.Count > 32) _written.RemoveAt(0);
     }
 
     /// <summary>A row was heard. Null when it is this server's own write (nothing changes); else the inventory to hold now.</summary>
-    public Dictionary<string, int>? Heard(IReadOnlyDictionary<string, int> ours, IReadOnlyDictionary<string, int> theirs)
+    public Dictionary<string, int>? Heard(IReadOnlyDictionary<string, int> ours, IReadOnlyDictionary<string, int> theirs, long now)
     {
         // The platform keeps one write of a row at a time and sends the latest: a later write of ours heard means the
         // earlier ones are behind us too.
-        var own = _written.FindIndex(w => Same(w, theirs));
+        var own = _written.FindIndex(w => Same(w.Stacks, theirs));
         if (own >= 0)
         {
             _written.RemoveRange(0, own + 1);
             Base = new Dictionary<string, int>(theirs);
             return null;
+        }
+        var landed = _written.FindLastIndex(w => now - w.At >= EchoMs);
+        if (landed >= 0)
+        {
+            Base = _written[landed].Stacks;
+            _written.RemoveRange(0, landed + 1);
         }
         var merged = Merge(ours, Base, theirs);
         Base = new Dictionary<string, int>(theirs);

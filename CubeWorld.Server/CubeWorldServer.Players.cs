@@ -160,7 +160,7 @@ public sealed partial class CubeWorldServer
 
     private void WriteInventory(Player player)
     {
-        player.Sync.Wrote(player.Inventory.Stacks);
+        player.Sync.Wrote(player.Inventory.Stacks, Now);
         Platform.RuntimeData.Write(Uplink, "CubeInventory", player.Pose.player_id, player.Inventory.ToRecord(player.Pose.player_id));
     }
 
@@ -178,7 +178,7 @@ public sealed partial class CubeWorldServer
         var theirs = Inventory.Parse(row.stacks).Stacks;
         lock (_world)
         {
-            if (player.Sync.Heard(player.Inventory.Stacks, theirs) is not { } merged) return;
+            if (player.Sync.Heard(player.Inventory.Stacks, theirs, Now) is not { } merged) return;
             var changedHere = !InventorySync.Same(merged, player.Inventory.Stacks);
             player.Inventory.Set(merged);
             // The row lacks what the player did here (another writer's row came after this server's): it is written again.

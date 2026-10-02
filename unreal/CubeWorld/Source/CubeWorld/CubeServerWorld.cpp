@@ -284,22 +284,29 @@ bool FCubeInventory::Same(const FCubeInventory& Other) const
 	return true;
 }
 
-void FCubeInventorySync::Wrote(const FCubeInventory& Stacks)
+void FCubeInventorySync::Wrote(const FCubeInventory& Stacks, int64 Now)
 {
-	Written.Add(Stacks);
+	Written.Add({ Stacks, Now });
 	if (Written.Num() > 32) Written.RemoveAt(0);
 }
 
-bool FCubeInventorySync::Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, FCubeInventory& Merged)
+bool FCubeInventorySync::Heard(const FCubeInventory& Ours, const FCubeInventory& Theirs, int64 Now, FCubeInventory& Merged)
 {
 	// The platform keeps one write of a row at a time and sends the latest: a later write of ours heard means the
 	// earlier ones are behind us too.
-	const int32 Own = Written.IndexOfByPredicate([&Theirs](const FCubeInventory& W) { return W.Same(Theirs); });
+	const int32 Own = Written.IndexOfByPredicate([&Theirs](const TPair<FCubeInventory, int64>& W) { return W.Key.Same(Theirs); });
 	if (Own != INDEX_NONE)
 	{
 		Written.RemoveAt(0, Own + 1);
 		Base = Theirs;
 		return false;
+	}
+	// Writes of ours that never came back are in the row: another writer's change counts from the latest of them.
+	const int32 Landed = Written.FindLastByPredicate([Now](const TPair<FCubeInventory, int64>& W) { return Now - W.Value >= EchoMs; });
+	if (Landed != INDEX_NONE)
+	{
+		Base = Written[Landed].Key;
+		Written.RemoveAt(0, Landed + 1);
 	}
 	Merged = Merge(Ours, Base, Theirs);
 	Base = Theirs;
