@@ -125,5 +125,6 @@ frame drawn around a crossing. `-DoorRegions 4` plays region 4 through its serve
 played, so crossings between Iris and a socket are tried as well.
 
 Putting the server on the platform's machine pool takes a Linux build. The Launcher's engine has no Server
-target, so the image runs the Game target headless as a listen server (`-cubeserver`, `Docker/entrypoint.sh`):
-no picture, no sound, its own local player a spectator that is not a player of the world. `RUNBOOK.md`, "Part E".
+target, so the image runs either the Server target from a source-built engine or the Game target headless as a
+listen server (`-cubeserver`, the entrypoint in `Docker/Dockerfile`): no picture, no sound, its own local player a
+spectator that is not a player of the world. `RUNBOOK.md`, "Part E".

@@ -106,7 +106,7 @@ and **Delete room** work the same way: the room's server turns the players away,
 (start it again by hand, since no Docker restarts it there).
 
 **On the platform's machine pool** the server is a Linux image. The Launcher's engine has no Server target, so
-the image is the Game target run headless as a listen server (`-cubeserver` in `Docker/entrypoint.sh`; the
+the image is the Game target run headless as a listen server (`-cubeserver`, in the entrypoint `Docker/Dockerfile` writes; the
 process is a server in every way but the spectator it keeps for itself; the SDK logs one error line at start,
 that a server credential is set in a process that is not a dedicated server, and then serves with it; the
 `DedicatedServerGame.ini` layer is not read in this mode, so the key comes from `PLAYSERV_SERVER_KEY` or, on
@@ -114,13 +114,24 @@ the pool, the deployment token). It needs, once, in the Epic Games
 Launcher (Library → Engine Versions → 5.8 → Options), the **Linux** target platform ticked, and the Linux
 cross-toolchain for 5.8 installed (`v26_clang-20.1.8-rockylinux8`, the installer sets `LINUX_MULTIARCH_ROOT`).
 
-1. Build and package: `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -platform=Linux -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>`.
-2. Push the image: `playserv image push --slug cubeworld-ue --src <out>\Linux --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag ue-1.0.0` (logged in with an `sk_` key of environment `dev`).
+1. Build and package: `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -platform=Linux -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>` (the archive is `<out>\Linux`), or the Server target from a source-built engine (below; `<out>\LinuxServer`).
+2. Push the image: `playserv image push --slug cubeworld-ue --src <out>\Linux --dockerfile <repo>\unreal\CubeWorld\Docker\Dockerfile --tag ue-1.0.0` (logged in with an `sk_` key of environment `dev`). The build context is the archive and nothing else: the Dockerfile writes the entrypoint itself, and leaves out what a server never needs at run time (the debugger's `*.debug`, the Vulkan layers): the image a machine pulls was 1.31 GB compressed, 335 MB now.
 3. The pool: `set_machine_pool(env="dev", executor_slug="cubeworld-ue", desired_size=3, rooms_per_machine=1, image_version="ue-1.0.0")`. One process per machine, as the C# pool; each claims a region of the lower row and opens `<colour>-<machine>`. The process reads `PLAYSERV_DEPLOYMENT_TOKEN` for its credential and listens on the port the platform allots it (`PLAYSERV_ROOM_LISTEN_PORT`, 7777 when unset): Iris on UDP and the JSON door on TCP, both on that number (the image runs with host networking). Browsers never reach the door directly: the platform's TLS front offers it as `wss` on the public port that `PLAYSERV_PORTS_MAPPING` names (protocol `wss`), under the machine's name (`PLAYSERV_PUBLIC_HOST`, the certificate is for `*.pool.dev.playserv.com`), and the room registers that front as its connect, as the C# rooms do. The UDP address for Iris rides in the room's attribute `udp`, and the Unreal client dials it by the machine's address (`playserv_public_ip`), not its name.
 4. Taking the Unreal pool down (`destroy_machine_pool(executor_slug="cubeworld-ue")`, or `remove_pool_machine` one at a time) leaves the C# row playing: the rooms vanish from the browse within about fifteen seconds, the claims expire after thirty, and a C# server that restarts may then take a lower region.
 
-With a source-built engine the Server target works instead (`-server -serverplatform=Linux -noclient`, the
-`CubeWorldServer` binary); `entrypoint.sh` runs whichever binary the archive holds.
+With a source-built engine the Server target works instead, and this is how the Linux server is built on a machine
+whose Launcher engine has no Linux platform (`C:\PlayServ\UnrealEngine`, 5.8.2): `RunUAT.bat BuildCookRun -project=<repo>\unreal\CubeWorld\CubeWorld.uproject -target=CubeWorldServer -server -serverplatform=Linux -noclient -serverconfig=Development -build -cook -stage -pak -archive -archivedirectory=<out>`,
+then `--src <out>\LinuxServer`; the entrypoint runs whichever binary the archive holds. Three things make such a
+server work with the clients the Launcher builds, all in the project: the game module compiles file by file
+(`bUseUnity = false`: a source engine's unity file did not compile); the network version takes UE 5.8's compatible
+changelist when the engine has none (a source build has 0, and every Launcher-built client was turned away as
+"an incompatible version of the game"; `CubeWorld.cpp`); and `[Staging]` in `DefaultGame.ini` keeps
+`DedicatedServerGame.ini` out of the pak (a Server target staged a developer's `sk_` key into the image).
+
+To try an image on a developer machine, with no platform: `docker run --rm -p 7777:7777/udp -p 7787:7787 <image> -cubeoffline -region=3`
+(the arguments go on the server's command line; it is up in about 2 s, in about 110 MB), and a client with
+`-cubeoffline -peers=3@127.0.0.1:7777`. A second server: `-e PLAYSERV_ROOM_LISTEN_PORT=7778 -p 7778:7778/udp -p 7778:7778`,
+`-region=4`, and both in `-peers` on every process.
 
 ## Tear-down
 
