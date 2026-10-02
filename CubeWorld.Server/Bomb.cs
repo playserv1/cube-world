@@ -62,6 +62,14 @@ public static class Bomb
         return world.IsSolid(bx, by, below) || below < World.MinZ ? below + 1 : next;
     }
 
+    /// <summary>
+    /// A record heard live of a bomb this server does not follow, still in play though it was dropped long ago: a
+    /// server that missed its end handed it out again (an Unreal server's ghost of a fizzled bomb). Every server hears a
+    /// bomb from its drop on, so a live bomb is known; one loaded from the tables at start-up does not come this way.
+    /// </summary>
+    public static bool IsGhost(WorldBomb bomb, bool known, long now) =>
+        !known && !Over(bomb.state) && now - bomb.dropped_at > FinishedBombs.KeepMs;
+
     /// <summary>The bombs still in play over <paramref name="region"/>: when its room closes they go up in smoke.</summary>
     public static IEnumerable<WorldBomb> InRegion(IEnumerable<WorldBomb> bombs, int region) =>
         bombs.Where(b => !Over(b.state) && World.RegionOf(b.x, b.y) == region);
@@ -101,5 +109,29 @@ public static class Bomb
     {
         var half = Spec.PlayerWidth / 2;
         return Math.Abs(x - b.X) <= half && Math.Abs(y - b.Y) <= half && z >= b.Z && z <= b.Z + b.Height;
+    }
+}
+
+/// <summary>
+/// The bombs that went off or fizzled, kept for as long as the drop function keeps their rows: any later record of
+/// one is stale (a server that missed the end) and must not bring it back into play.
+/// </summary>
+public sealed class FinishedBombs
+{
+    public const long KeepMs = 15 * 60_000;
+
+    private readonly Dictionary<string, long> _over = new();
+
+    public void Remember(string bombId, long at)
+    {
+        _over[bombId] = Math.Max(at, _over.GetValueOrDefault(bombId));
+        if (_over.Count > 512) Forget(at);
+    }
+
+    public bool Has(string bombId, long now) => _over.TryGetValue(bombId, out var at) && now - at < KeepMs;
+
+    private void Forget(long now)
+    {
+        foreach (var id in _over.Where(p => now - p.Value >= KeepMs).Select(p => p.Key).ToArray()) _over.Remove(id);
     }
 }

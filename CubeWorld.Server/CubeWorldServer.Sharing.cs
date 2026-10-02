@@ -41,6 +41,7 @@ public sealed partial class CubeWorldServer
         try { _regions = await LiveRegionsAsync(); } catch { }
         Broadcast(new { type = "regions", regions = _regions });
         Subscribe();
+        ReconcileCubesNow();
     }
 
     private static async Task<WorldRegion[]> LiveRegionsAsync()
@@ -92,8 +93,13 @@ public sealed partial class CubeWorldServer
 
     private void HearPresence(WorldPresence pose, bool gone)
     {
-        if (gone) _elsewhere.TryRemove(pose.player_id, out _);
-        else _elsewhere[pose.player_id] = pose;
+        if (gone) { _elsewhere.TryRemove(pose.player_id, out _); return; }
+        var before = _elsewhere.GetValueOrDefault(pose.player_id);
+        _elsewhere[pose.player_id] = pose;
+        // A player another server hosts was hurt (a hit from here goes over as a WorldHit, a fall or a blast happens
+        // there): that server tells only its own players, so this one shows ours the flash.
+        if (!_players.ContainsKey(pose.player_id) && WorldPresence.WasHurt(before, pose))
+            Broadcast(new { type = "hurt", player = pose.player_id, health = pose.health, by = (string?)null, kx = 0, ky = 0, strength = 0 });
     }
 
     // ── the blocks ──────────────────────────────────────────────────────────────────────────────────
@@ -124,6 +130,42 @@ public sealed partial class CubeWorldServer
             else Platform.RuntimeData.Write(Uplink, "WorldCube", cube.key, cube);
         }
         BroadcastCubes(update.Falls, update.Changes, remote: false);
+    }
+
+    /// <summary>
+    /// Every 30 s the blocks written lately are read back from the table, and what this server missed is applied: the
+    /// platform's pushes to a game server are lost when the uplink drops for a moment, and nothing replays them, so a
+    /// block placed then stayed wrong here until the process restarted. The window reaches two minutes further back
+    /// than the last read, for writers whose clocks run behind.
+    /// </summary>
+    private async Task ReconcileCubesAsync()
+    {
+        var started = Now;
+        var since = _cubesReadAt - 120_000;
+        var rows = await ReadAll(Platform.Table<WorldCube>().Query().WithFilters(new RecordFilterTerm("at", "gt", since)));
+        var missed = 0;
+        lock (_world)
+        {
+            foreach (var cube in rows.Select(r => r.Fields!))
+            {
+                if (!_world.Reconcile(cube, _server, Now)) continue;
+                _heard.Add(new Change("upsert", cube));
+                missed++;
+            }
+        }
+        _cubesReadAt = started;
+        if (missed > 0) _ = Platform.Log($"{RoomName}: {missed} block changes missed over the uplink were read back from the table");
+    }
+
+    private void ReconcileCubesNow()
+    {
+        if (Now - _cubesReadAt < 30_000 || Interlocked.Exchange(ref _reconciling, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            try { await ReconcileCubesAsync(); }
+            catch (Exception e) { _ = Platform.Log($"{RoomName}: blocks not read back, again in 30 s: {e.Message}"); }
+            finally { Interlocked.Exchange(ref _reconciling, 0); }
+        });
     }
 
     private void HearCube(string op, WorldCube cube)

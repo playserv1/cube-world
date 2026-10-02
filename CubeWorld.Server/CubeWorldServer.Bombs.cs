@@ -16,8 +16,15 @@ public sealed partial class CubeWorldServer
         {
             foreach (var bomb in await LoadBombsAsync())
             {
-                lock (_world) OnBomb(bomb, owned: false);
+                lock (_world)
+                {
+                    // A bomb the tables say is over is remembered as over: a later row from a server that missed its end
+                    // does not bring it back.
+                    if (Bomb.Over(bomb.state)) _finished.Remember(bomb.bomb_id, bomb.at);
+                    else OnBomb(bomb, owned: false);
+                }
             }
+            _bombsLoaded = true;
         }
         catch (Exception e) { _ = Platform.Log($"bombs not loaded, the world opens without them: {e.Message}"); }
     }
@@ -128,17 +135,33 @@ public sealed partial class CubeWorldServer
 
     private void HearBomb(WorldBomb bomb)
     {
-        lock (_world) OnBomb(bomb, owned: false);
+        lock (_world)
+        {
+            // Only a server that read the bombs at start-up knows every live one; one that could not read them takes them as heard.
+            if (_bombsLoaded && Bomb.IsGhost(bomb, _bombs.ContainsKey(bomb.bomb_id), Now)) return;
+            OnBomb(bomb, owned: false);
+        }
     }
 
     /// <summary>A bomb moved on, here or on another server. Anything that does not move it forward is an echo or stale.</summary>
     private void OnBomb(WorldBomb bomb, bool owned)
     {
+        // A bomb that went off or fizzled stays over: a server that missed its end (an Unreal server's ghost of a free
+        // bomb, picked up after it fizzled) cannot bring it back, and an echo of its end does not go off again.
+        if (_finished.Has(bomb.bomb_id, Now)) return;
         var known = _bombs.GetValueOrDefault(bomb.bomb_id);
         if (known is not null && Bomb.Rank(bomb.state) <= Bomb.Rank(known.Record.state)) return;
-        if (known is null && Bomb.Over(bomb.state) && Now - bomb.at > 5000) return;
+        if (known is null && Bomb.Over(bomb.state) && Now - bomb.at > 5000)
+        {
+            _finished.Remember(bomb.bomb_id, bomb.at);
+            return;
+        }
 
-        if (Bomb.Over(bomb.state)) _bombs.Remove(bomb.bomb_id);
+        if (Bomb.Over(bomb.state))
+        {
+            _bombs.Remove(bomb.bomb_id);
+            _finished.Remember(bomb.bomb_id, Now);
+        }
         else _bombs[bomb.bomb_id] = LiveBomb.Of(bomb, _world, owned, Now);
         if (bomb.state == Bomb.Exploded) Crater(bomb);
 
@@ -159,7 +182,7 @@ public sealed partial class CubeWorldServer
         // A bomb can have several rows (the drop function's and the servers'): the one furthest on is the bomb.
         return bombs.GroupBy(b => b.bomb_id)
             .Select(g => g.OrderByDescending(b => Bomb.Rank(b.state)).ThenByDescending(b => b.at).First())
-            .Where(b => !Bomb.Over(b.state)).ToList();
+            .ToList();
     }
 
     /// <summary>A bomb as this server follows it: the height of a free one, the path of one it threw.</summary>

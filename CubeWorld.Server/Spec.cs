@@ -22,6 +22,12 @@ public static class Spec
     // Reach: 4.5 blocks for blocks, 3 for entities; the server allows a little extra for latency.
     public const double BlockReach = 4.5, EntityReach = 3.0, ReachTolerance = 1.0;
 
+    /// <summary>
+    /// How far past its region's border a player may stand and still dig and place through that region's server:
+    /// about a second's sprint, the time a crossing to the next server takes.
+    /// </summary>
+    public const double BorderSlack = 6.0;
+
     // Player hitbox 0.6 wide, 1.8 tall (1.5 sneaking); eyes at 1.62 (1.27 sneaking).
     public const double PlayerWidth = 0.6, PlayerHeight = 1.8, SneakHeight = 1.5, EyeHeight = 1.62, SneakEyeHeight = 1.27;
 
@@ -71,12 +77,19 @@ public static class Spec
         new("leaves", 0.2, false, true, false, null, CraterResistance),
     ];
 
-    public static readonly Dictionary<string, Block> ByKind = Blocks.ToDictionary(b => b.Kind);
+    /// <summary>
+    /// The kinds by name, whatever their case: the Unreal servers write a kind as its FName prints it, and the engine
+    /// names stone "Stone", so "Stone" in a table is stone here too.
+    /// </summary>
+    public static readonly Dictionary<string, Block> ByKind = Blocks.ToDictionary(b => b.Kind, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Hotbar order.</summary>
     public static readonly string[] Placeable = Blocks.Where(b => b.Placeable).Select(b => b.Kind).ToArray();
 
     public static Block Of(string? kind) => kind is not null && ByKind.TryGetValue(kind, out var block) ? block : ByKind["air"];
+
+    /// <summary>A kind as this server writes and sends it ("Stone" becomes "stone"); an unknown kind stays as it was.</summary>
+    public static string Canonical(string kind) => ByKind.TryGetValue(kind, out var block) ? block.Kind : kind;
 
     /// <summary>Superflat "Classic Flat": one bedrock, two dirt, one grass block. The player stands at z = 0.</summary>
     public static readonly (int z, string kind)[] Layers = [(-4, "bedrock"), (-3, "dirt"), (-2, "dirt"), (-1, "grass")];

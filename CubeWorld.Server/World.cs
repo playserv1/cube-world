@@ -46,6 +46,13 @@ public sealed class WorldPresence
     public long seen_at { get; set; }
 
     /// <summary>
+    /// The second of two poses heard of one player shows them hurt: less health than a pose heard within the last 5 s
+    /// (an older one may predate a stay on this very server, where they could have healed and been hurt again).
+    /// </summary>
+    public static bool WasHurt(WorldPresence? before, WorldPresence now) =>
+        before is not null && now.health < before.health && now.health > 0 && now.seen_at - before.seen_at is >= 0 and < 5000;
+
+    /// <summary>
     /// Where a player who joins this server stands. One who walked over a border from another server is still
     /// where that server last saw them, with the health they had; only a player nobody has seen in the last 5 s
     /// starts at <paramref name="spawn"/>. The pose keeps the time it was heard, so this server does not announce it
@@ -149,6 +156,18 @@ public sealed class World
     public static (int X0, int X1, int Y0, int Y1) Bounds(int region) =>
         (region % Columns * RegionSize, (region % Columns + 1) * RegionSize, region / Columns * RegionSize, (region / Columns + 1) * RegionSize);
 
+    /// <summary>
+    /// A spot inside <paramref name="region"/> or within <paramref name="slack"/> blocks of it. A server edits the world
+    /// only for players who stand in its region: one standing anywhere else edits through that region's server (a
+    /// player who walks over a border plays on with the old server for the moment the crossing takes, hence the slack).
+    /// </summary>
+    public static bool Near(int region, double x, double y, double slack)
+    {
+        if (region < 0) return false;
+        var (x0, x1, y0, y1) = Bounds(region);
+        return x >= x0 - slack && x <= x1 + slack && y >= y0 - slack && y <= y1 + slack;
+    }
+
     /// <summary>Where a region's players spawn: its middle.</summary>
     public static (double X, double Y) Centre(int region) => ((region % Columns + 0.5) * RegionSize, (region / Columns + 0.5) * RegionSize);
 
@@ -196,14 +215,36 @@ public sealed class World
     public bool Apply(string op, WorldCube cube)
     {
         if (op == "delete") return _overrides.Remove(cube.key);
+        cube.kind = Spec.Canonical(cube.kind);
         if (!Inside(cube.x, cube.y, cube.z) || _overrides.TryGetValue(cube.key, out var known) && known.kind == cube.kind) return false;
         _overrides[cube.key] = cube;
         return true;
     }
 
+    /// <summary>
+    /// A row read back from the table: applied only when it is newer than what this server holds, so a read that
+    /// crossed one of this server's own writes does not undo it. Returns whether it changed anything here.
+    /// </summary>
+    public bool Reconcile(WorldCube cube, string self, long now)
+    {
+        if (cube.at is not { } at) return false;
+        if (_overrides.TryGetValue(cube.key, out var known))
+        {
+            if (known.at is { } knownAt && knownAt >= at) return false;
+            // This server's own write of the last minute may not be in the table yet, and a writer whose clock runs
+            // ahead could have stamped the older row later: the live updates settle such a block, the read-back does not.
+            if (known.placed_on == self && known.at is { } ownAt && now - ownAt < 60_000) return false;
+        }
+        return Apply("upsert", cube);
+    }
+
     public void Load(IEnumerable<WorldCube> cubes)
     {
-        foreach (var cube in cubes) _overrides[cube.key] = cube;
+        foreach (var cube in cubes)
+        {
+            cube.kind = Spec.Canonical(cube.kind);
+            _overrides[cube.key] = cube;
+        }
     }
 
     /// <summary>
@@ -364,17 +405,34 @@ public sealed class Inventory
         try
         {
             var parsed = string.IsNullOrEmpty(stacks) ? null : JsonSerializer.Deserialize<Dictionary<string, int>>(stacks);
-            return parsed is null ? Starting() : new Inventory(parsed);
+            return parsed is null ? Starting() : new Inventory(Canonical(parsed));
         }
         catch (JsonException) { return Starting(); }
     }
 
+    /// <summary>
+    /// The stacks under the kinds' own names. A row an Unreal server wrote says "Stone", and the refill function then
+    /// added a "stone" beside it: the two are one kind, and the larger count is the player's (the refill's top-up only
+    /// started from nothing because it did not know the other spelling).
+    /// </summary>
+    public static Dictionary<string, int> Canonical(IReadOnlyDictionary<string, int> stacks)
+    {
+        var merged = new Dictionary<string, int>();
+        foreach (var (kind, count) in stacks)
+        {
+            var name = Spec.Canonical(kind);
+            merged[name] = Math.Max(merged.GetValueOrDefault(name), count);
+        }
+        return merged;
+    }
+
     public IReadOnlyDictionary<string, int> Stacks => _stacks;
 
-    public int Count(string kind) => _stacks.GetValueOrDefault(kind);
+    public int Count(string kind) => _stacks.GetValueOrDefault(Spec.Canonical(kind));
 
     public bool Take(string kind)
     {
+        kind = Spec.Canonical(kind);
         if (Count(kind) <= 0) return false;
         _stacks[kind]--;
         return true;
@@ -383,6 +441,7 @@ public sealed class Inventory
     /// <summary>Adds one item; a full stack (64) takes no more, as in Minecraft.</summary>
     public bool Give(string kind)
     {
+        kind = Spec.Canonical(kind);
         if (!Spec.Of(kind).Placeable || Count(kind) >= Spec.StackSize) return false;
         _stacks[kind] = Count(kind) + 1;
         return true;

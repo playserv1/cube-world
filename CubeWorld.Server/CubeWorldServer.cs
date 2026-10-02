@@ -26,6 +26,10 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     /// <summary>Players whose inventory row is being read as they join, with the newest row heard for them meanwhile.</summary>
     private readonly ConcurrentDictionary<string, CubeInventory?> _loading = new();
     private readonly Dictionary<string, LiveBomb> _bombs = new();
+    private readonly FinishedBombs _finished = new();
+    private long _cubesReadAt;
+    private int _reconciling;
+    private bool _bombsLoaded;
     private readonly List<Change> _heard = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));
@@ -68,6 +72,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
                 // Subscribe before loading: a change written while the world loads arrives as an update
                 // instead of being missed (applying one that the load already holds changes nothing).
                 Subscribe();
+                _cubesReadAt = Now;
                 _world.Load(await LoadCubesAsync());
                 await LoadBombs();
                 _region = await ClaimRegionAsync();

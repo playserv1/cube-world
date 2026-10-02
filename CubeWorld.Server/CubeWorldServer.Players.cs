@@ -85,7 +85,7 @@ public sealed partial class CubeWorldServer
 
         var (x, y, z) = command.Block;
         var block = _world.BlockAt(x, y, z);
-        if (!World.Inside(x, y, z) || !block.Solid || !block.Breakable || !CanReach(player, x, y, z)) return;
+        if (!World.Inside(x, y, z) || !block.Solid || !block.Breakable || !CanReach(player, x, y, z) || !InThisRegion(player)) return;
 
         player.Dig = new DigState(x, y, z, _tick, block.BreakTicks);
         ShowCrack(player, player.Dig, stage: 0);
@@ -97,7 +97,7 @@ public sealed partial class CubeWorldServer
         lock (_world)
         {
             if (player.Dig is not { } dig) return;
-            if (player.Dead || !CanReach(player, dig.X, dig.Y, dig.Z))
+            if (player.Dead || !CanReach(player, dig.X, dig.Y, dig.Z) || !InThisRegion(player))
             {
                 StopDig(player);
                 return;
@@ -137,8 +137,9 @@ public sealed partial class CubeWorldServer
     {
         if (player.Dead) return;
         var (x, y, z) = command.Block;
-        var kind = command.kind ?? "";
-        var update = CanReach(player, x, y, z) && player.Inventory.Count(kind) > 0
+        // The Unreal client names stone "Stone" (its FName): every kind goes on under its own name.
+        var kind = Spec.Canonical(command.kind ?? "");
+        var update = CanReach(player, x, y, z) && InThisRegion(player) && player.Inventory.Count(kind) > 0
             ? _world.Place(x, y, z, command.nx, command.ny, command.nz, kind, player.Pose.player_id, _server, EveryoneAlive().Select(HitboxOf))
             : null;
 
@@ -294,6 +295,18 @@ public sealed partial class CubeWorldServer
     {
         var (ex, ey, ez) = Eye(player);
         return World.DistanceToHitbox(ex, ey, ez, HitboxOf(other)) <= Spec.EntityReach + Spec.ReachTolerance;
+    }
+
+    /// <summary>
+    /// The player stands in this server's region, or just past its border (the crossing to the next server takes a
+    /// moment), or in a region no server holds now (a player stays with the old server there): only then does this
+    /// server edit the world for them. Anywhere else the region's own server does.
+    /// </summary>
+    private bool InThisRegion(Player player)
+    {
+        if (World.Near(_region, player.Pose.x, player.Pose.y, Spec.BorderSlack)) return true;
+        var there = World.RegionOf(player.Pose.x, player.Pose.y).ToString();
+        return !_regions.Any(r => r.region == there && r.server != _server);
     }
 
     private static (double x, double y, double z) Eye(Player player) => (player.Pose.x, player.Pose.y, player.Pose.z + EyeHeightOf(player.Pose));

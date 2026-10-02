@@ -89,8 +89,9 @@ back, because the server's process restarts on the same machine.
 
 The Unreal servers (`unreal/CubeWorld`, README "The Unreal dedicated server and client") play in `dev` beside
 the C# servers, as a second game server `cubeworld-ue` with its own pool: the world is six regions, the C#
-pool takes the upper row and the Unreal pool the lower, so they never race for a region while both rows are
-up. What `dev` got for it, and how (all through the agent's MCP tools; the `ue` environment, a copy of `dev`
+pool prefers the upper row and the Unreal pool the lower, so they never race for a region while both rows are
+up. A claim is kept while its server lives, so a pool that started while the other row was free holds that row
+until its servers stop: `WorldRegion` and `list_game_sessions` say which pool holds which row. What `dev` got for it, and how (all through the agent's MCP tools; the `ue` environment, a copy of `dev`
 from 2026-09-29, remains for Unreal-only tests):
 
 | Step | How |
