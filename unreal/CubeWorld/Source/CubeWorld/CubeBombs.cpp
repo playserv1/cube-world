@@ -4,6 +4,8 @@
 #include "CubeVoxelWorld.h"
 #include "ProceduralMeshComponent.h"
 #include "Engine/World.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 double CubeBombs::Descend(const FCubeVoxelWorld& World, double X, double Y, double Z)
 {
@@ -135,6 +137,8 @@ void ACubeBomb::Animate(double Now)
 	Head->SetRelativeScale3D(FVector(1 + 0.06 * Swell));
 	Flash->SetVisibility(Swell > 0.6);
 	const bool bOpen = State == TEXT("free") && !bLanded && Holder.IsEmpty();
+	if (bOpen != bWasOpen && FParse::Param(FCommandLine::Get(), TEXT("logbombs"))) UE_LOG(LogTemp, Log, TEXT("bomb %s: parachute %s (state %s, landed %d, at %.2f %.2f %.2f)"), *Id, bOpen ? TEXT("opens") : TEXT("folds"), *State, bLanded, Pos.X, Pos.Y, Pos.Z);
+	bWasOpen = bOpen;
 	Parachute->SetVisibility(bOpen);
 	if (bOpen) Parachute->SetRelativeRotation(FRotator(0, 0, FMath::RadiansToDegrees(FMath::Sin(Now * 1000 / 700 + Pos.X) * 0.08)));
 }

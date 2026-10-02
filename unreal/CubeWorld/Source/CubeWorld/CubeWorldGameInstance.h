@@ -64,6 +64,8 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnDeath, const FString& /*PlayerId*/, 
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnRespawn, const FCubePose&);
 DECLARE_MULTICAST_DELEGATE(FCubeOnInventory);
 DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnBomb, const FCubeBombFrame&);
+/** A server handed its whole list of bombs (its welcome): the ids it knows, every other bomb on this client is gone. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FCubeOnBombList, const TSet<FString>&);
 
 UCLASS()
 class CUBEWORLD_API UCubeWorldGameInstance : public UGameInstance
@@ -115,6 +117,8 @@ public:
 	void OnDeathFrame(const FString& PlayerId, const FString& By);
 	void OnRespawnFrame(const FCubePose& You);
 	void OnBombFrame(const FCubeBombRep& Bomb);
+	/** A server's whole list of bombs, as its welcome hands it: the bombs it does not list are taken away, as the web client does. */
+	void OnBombListFrame(const TArray<FCubeBombRep>& Bombs);
 	/** The server turned this player away (an operator's close or removal): note it and say so. */
 	void TurnedAwayBy(const FString& Reason);
 
@@ -185,6 +189,7 @@ public:
 	FCubeOnInventory OnInventory;
 	FCubeOnCubes OnCubes;
 	FCubeOnBomb OnBomb;
+	FCubeOnBombList OnBombList;
 
 private:
 	/** A guest is kept per name on this machine (Saved/Guests), as the browser keeps one per name: signing in again under

@@ -366,6 +366,8 @@ function overlapsBlocks() {
 // A free bomb comes down under its parachute, a held one sits in its holder's hand, a thrown one flies the
 // path the server flies it. The server says when one is picked up, thrown, explodes or fizzles out.
 
+const BOMB_RANK = { free: 0, held: 1, flying: 2 };
+
 function onBomb({ bomb: b, age = 0, z }) {
   const at = toClient(b);
   let e = bombs.get(b.bomb_id);
@@ -379,6 +381,9 @@ function onBomb({ bomb: b, age = 0, z }) {
     removeBomb(b.bomb_id);
     return;
   }
+  // A bomb only moves forward (free, held, flying): a frame that would take it back is stale, and never takes a bomb
+  // out of the hand (the Unreal client keeps the same rule).
+  if (e && BOMB_RANK[b.state] < BOMB_RANK[e.state]) return;
   if (!e) {
     e = { id: b.bomb_id, mesh: buildBomb(), parachute: buildParachute(), pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), landed: false };
     e.mesh.add(e.parachute);

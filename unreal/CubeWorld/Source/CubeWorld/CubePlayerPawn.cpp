@@ -99,6 +99,7 @@ void ACubePlayerPawn::Bind()
 	Game->OnPlayers.AddUObject(this, &ACubePlayerPawn::HandlePlayers);
 	Game->OnCube.AddUObject(this, &ACubePlayerPawn::HandleCube);
 	Game->OnBomb.AddUObject(this, &ACubePlayerPawn::HandleBomb);
+	Game->OnBombList.AddUObject(this, &ACubePlayerPawn::HandleBombList);
 	bBound = true;
 	OnRep_PlayerId();
 
@@ -709,8 +710,7 @@ void ACubePlayerPawn::ClientWorldChunk_Implementation(const TArray<FCubeCellRep>
 
 void ACubePlayerPawn::ClientBombs_Implementation(const TArray<FCubeBombRep>& InBombs)
 {
-	if (!Game) return;
-	for (const FCubeBombRep& B : InBombs) Game->OnBombFrame(B);
+	if (Game) Game->OnBombListFrame(InBombs);
 }
 
 void ACubePlayerPawn::ClientInventory_Implementation(const TArray<FCubeStackRep>& Stacks)
@@ -750,6 +750,10 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 		RemoveBomb(B.Id);
 		return;
 	}
+	// A bomb only moves forward (free, held, flying): a frame that would take it back is stale, and never takes a bomb
+	// out of the hand (the web client keeps the same rule).
+	const auto Rank = [](const FString& S) { return S == TEXT("free") ? 0 : S == TEXT("held") ? 1 : 2; };
+	if (Bomb && Rank(B.State) < Rank(Bomb->State)) return;
 	if (!Bomb)
 	{
 		Bomb = GetWorld()->SpawnActor<ACubeBomb>();
@@ -782,6 +786,15 @@ void ACubePlayerPawn::HandleBomb(const FCubeBombFrame& B)
 	Bomb->Prev = Bomb->Pos;
 	if (B.State != TEXT("held")) Bomb->SetActorLocation(Bomb->Pos * CubeSpec::BlockCm);
 	UpdateHolding();
+}
+
+// A new server's welcome lists every bomb it knows: one this client still shows and the server does not know is gone
+// (it went off or fizzled while the client was elsewhere), as the web client drops every bomb at a welcome.
+void ACubePlayerPawn::HandleBombList(const TSet<FString>& Known)
+{
+	TArray<FString> Ids;
+	Bombs.GetKeys(Ids);
+	for (const FString& Id : Ids) if (!Known.Contains(Id)) RemoveBomb(Id);
 }
 
 void ACubePlayerPawn::RemoveBomb(const FString& Id)

@@ -155,7 +155,14 @@ void ACubeWorldGameMode::LoadBombs()
 			const FCubeBombRecord* Known = Furthest.Find(R.Id);
 			if (!Known || FCubeBombRecord::Rank(R.State) > FCubeBombRecord::Rank(Known->State) || (FCubeBombRecord::Rank(R.State) == FCubeBombRecord::Rank(Known->State) && R.At > Known->At)) Furthest.Add(R.Id, R);
 		}
-		for (const auto& Pair : Furthest) if (!Pair.Value.IsOver()) Weak->OnBomb(Pair.Value, false);
+		// A bomb the tables say is over is remembered as over, as the C# servers do: a later row from a server that
+		// missed its end does not bring it back.
+		for (const auto& Pair : Furthest)
+		{
+			if (Pair.Value.IsOver()) Weak->BombsOver.Add(Pair.Key, Pair.Value.At);
+			else Weak->OnBomb(Pair.Value, false);
+		}
+		Weak->bBombsLoaded = bOk;
 		Weak->RegionTry = 0;
 		Weak->ClaimRegion(0);
 	});
@@ -1050,17 +1057,28 @@ void ACubeWorldGameMode::ShareBomb(const FCubeBombRecord& Bomb, bool bOwned)
 /** A bomb moved on, here or on another server. Anything that does not move it forward is an echo or stale. */
 void ACubeWorldGameMode::OnBomb(const FCubeBombRecord& Bomb, bool bOwned)
 {
+	// A bomb that went off or fizzled stays over. Every push of the live table brings its rows round again, its free row
+	// among them, and taking that row brought the bomb back as a ghost: a free bomb only this server had, handed to
+	// its clients on every push and on every join, that a player could pick up and carry into a C# room, which knew it
+	// was gone. The C# servers keep the same rule (CubeWorldServer.OnBomb, FinishedBombs).
+	const int64 NowMs = Now();
+	if (const int64* Ended = BombsOver.Find(Bomb.Id))
+	{
+		if (NowMs - *Ended < BombsOverKeepMs) { Bombs.Remove(Bomb.Id); return; }
+		BombsOver.Remove(Bomb.Id);
+	}
 	const FCubeLiveBomb* Known = Bombs.Find(Bomb.Id);
 	if (Known && FCubeBombRecord::Rank(Bomb.State) <= FCubeBombRecord::Rank(Known->Record.State)) return;
-	if (!Known && Bomb.IsOver() && Now() - Bomb.At > 5000) return;
-	// A finished bomb's record comes round again with every push of the live table: it went off once.
+	if (!Known && Bomb.IsOver() && NowMs - Bomb.At > 5000) { BombsOver.Add(Bomb.Id, Bomb.At); return; }
+	// A record heard of a bomb this server does not follow, still in play though it was dropped long ago: a server that
+	// missed its end handed it out again. Every server hears a bomb from its drop on, so a live bomb is known (Bomb.IsGhost).
+	if (!Known && !Bomb.IsOver() && bBombsLoaded && NowMs - Bomb.DroppedAt > BombsOverKeepMs) return;
 	if (Bomb.IsOver())
 	{
-		// Always let go of it, even when it went off before: a bomb left in Bombs as flying explodes again every tick.
+		// Always let go of it: a bomb left in Bombs as flying explodes again every tick.
 		Bombs.Remove(Bomb.Id);
-		if (BombsOver.Contains(Bomb.Id)) return;
-		BombsOver.Add(Bomb.Id);
-		if (BombsOver.Num() > 1000) BombsOver.Empty();
+		BombsOver.Add(Bomb.Id, NowMs);
+		if (BombsOver.Num() > 2000) for (auto It = BombsOver.CreateIterator(); It; ++It) if (NowMs - It.Value() >= BombsOverKeepMs) It.RemoveCurrent();
 		ServerLog(FString::Printf(TEXT("bomb %s %s at %.1f %.1f %.1f (%s)"), *Bomb.Id, *Bomb.State, Bomb.X, Bomb.Y, Bomb.Z, *Bomb.Holder));
 	}
 

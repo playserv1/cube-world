@@ -251,7 +251,11 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	bPlaced = true;
 	const TArray<TSharedPtr<FJsonValue>>* BombsJson;
 	if (Frame->TryGetArrayField(TEXT("bombs"), BombsJson))
-		for (const auto& V : *BombsJson) OnBombFrame(ReadBomb(V->AsObject()));
+	{
+		TArray<FCubeBombRep> List;
+		for (const auto& V : *BombsJson) List.Add(ReadBomb(V->AsObject()));
+		OnBombListFrame(List);
+	}
 	// This client shows bombs and reads batched cube frames; the server hands both only to clients that say so.
 	const TSharedRef<FJsonObject> Bombs = MakeShared<FJsonObject>();
 	Bombs->SetStringField(TEXT("op"), TEXT("bombs"));

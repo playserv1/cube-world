@@ -876,6 +876,14 @@ void UCubeWorldGameInstance::OnRespawnFrame(const FCubePose& You)
 	OnRespawn.Broadcast(You);
 }
 
+void UCubeWorldGameInstance::OnBombListFrame(const TArray<FCubeBombRep>& List)
+{
+	TSet<FString> Known;
+	for (const FCubeBombRep& B : List) Known.Add(B.Id);
+	OnBombList.Broadcast(Known);
+	for (const FCubeBombRep& B : List) OnBombFrame(B);
+}
+
 void UCubeWorldGameInstance::OnBombFrame(const FCubeBombRep& B)
 {
 	FCubeBombFrame F;
@@ -883,5 +891,8 @@ void UCubeWorldGameInstance::OnBombFrame(const FCubeBombRep& B)
 	F.X = B.X; F.Y = B.Y; F.Z = B.Z; F.VX = B.VX; F.VY = B.VY; F.VZ = B.VZ;
 	F.Age = B.AgeMs;
 	if (B.bHasHeight) F.Height = B.Height;
+	// -logbombs: every bomb frame a server sends, to follow a bomb through crossings.
+	if (FParse::Param(FCommandLine::Get(), TEXT("logbombs")))
+		UE_LOG(LogCubeWorld, Log, TEXT("bomb frame from %s: %s %s holder '%s' at %.1f %.1f %.1f height %.2f age %d ms"), *Room, *B.Id, *B.State, *B.Holder, B.X, B.Y, B.Z, B.bHasHeight ? B.Height : -1.0, B.AgeMs);
 	OnBomb.Broadcast(F);
 }

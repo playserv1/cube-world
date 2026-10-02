@@ -46,6 +46,8 @@ public:
 	/** Where the simulation has it, in blocks, and where it was a tick before. */
 	FVector Pos = FVector::ZeroVector, Prev = FVector::ZeroVector, Vel = FVector::ZeroVector;
 	bool bLanded = false;
+	/** Whether the parachute was open at the last draw (for -logbombs). */
+	bool bWasOpen = false;
 	/** The tick a thrown bomb came to rest on this client, 0 while it still flies. */
 	int64 Stopped = 0;
 

@@ -114,6 +114,7 @@ private:
 	void HandlePlayers(const TArray<FCubePresence>& Players);
 	void HandleCube(int32 X, int32 Y, int32 Z, FName Kind);
 	void HandleBomb(const FCubeBombFrame& Frame);
+	void HandleBombList(const TSet<FString>& Known);
 	void RemoveBomb(const FString& Id);
 	void TickBomb(ACubeBomb* Bomb);
 	void PlaceHeld(ACubeBomb* Bomb);

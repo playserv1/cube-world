@@ -259,7 +259,13 @@ private:
 	TMap<FString, FCubeElsewhere> Elsewhere;
 	TMap<FString, FCubeLiveBomb> Bombs;
 	TArray<FCubeChange> Heard;
-	TSet<FString> HitsApplied, BombsOver;
+	TSet<FString> HitsApplied;
+	/** The bombs seen to go off or fizzle, and when: an older record of one (an echo, a row the sweep has not yet deleted) never
+	 *  brings it back. Kept as long as the C# servers keep theirs (FinishedBombs.KeepMs). */
+	TMap<FString, int64> BombsOver;
+	/** Set once the bombs were read at start-up: a live bomb is known from its drop on after that. */
+	bool bBombsLoaded = false;
+	static constexpr int64 BombsOverKeepMs = 15 * 60000;
 	TArray<FCubeRegionRep> Regions;
 	TStrongObjectPtr<UWorldRegion> RegionRow;
 	UPROPERTY() ACubeWorldState* State = nullptr;
