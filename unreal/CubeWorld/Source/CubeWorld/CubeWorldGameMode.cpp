@@ -1138,7 +1138,9 @@ void ACubeWorldGameMode::OnBomb(const FCubeBombRecord& Bomb, bool bOwned)
 		Bombs.Remove(Bomb.Id);
 		BombsOver.Add(Bomb.Id, NowMs);
 		if (BombsOver.Num() > 2000) for (auto It = BombsOver.CreateIterator(); It; ++It) if (NowMs - It.Value() >= BombsOverKeepMs) It.RemoveCurrent();
-		ServerLog(FString::Printf(TEXT("bomb %s %s at %.1f %.1f %.1f (%s)"), *Bomb.Id, *Bomb.State, Bomb.X, Bomb.Y, Bomb.Z, *Bomb.Holder));
+		// Verbose: every server hears the end of every bomb in the world, a dozen a minute each, and Log lines go to the
+		// platform's function logs (ForwardLogs). -LogCmds="LogCubeWorld Verbose" shows them.
+		UE_LOG(LogCubeWorld, Verbose, TEXT("%s: bomb %s %s at %.1f %.1f %.1f (%s)"), *RoomName(), *Bomb.Id, *Bomb.State, Bomb.X, Bomb.Y, Bomb.Z, *Bomb.Holder);
 	}
 
 	if (Bomb.IsOver()) Bombs.Remove(Bomb.Id);
