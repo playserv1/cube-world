@@ -309,7 +309,9 @@ function onFrame(frame, teleport) {
       onBomb(frame);
       break;
     case "correct":
-      // A move too far for the time it took (the server's move check): back to where the last good move left us.
+      // A move too far for the time it took (the server's move check): back to where the last good move left us. Not
+      // while crossing: the room being left is behind, and following it back over the border crossed again, and again.
+      if (state.switching) break;
       state.moveSeq = frame.seq;
       snapTo(frame);
       break;

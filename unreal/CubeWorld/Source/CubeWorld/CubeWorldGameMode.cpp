@@ -446,7 +446,7 @@ void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 		P.Z = FMath::Clamp(HelloPos->Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
 	}
 	if (bHeard || HelloPos) P.LastAttackTick = TickCount;
-	P.Moves.Reset(P.X, P.Y, P.Z, Now());
+	P.Moves.Arrive(P.X, P.Y, P.Z, Region, Now());
 }
 
 void ACubeWorldGameMode::OnHello(ACubePlayerPawn* Pawn, const FString& Name, bool bCross, double X, double Y, double Z)

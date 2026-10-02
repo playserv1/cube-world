@@ -195,8 +195,16 @@ struct FCubeMoveCheck
 	double X = 0, Y = 0, Z = 0;
 	int32 Seq = 0;
 
-	/** The server put the player here: they joined, walked in over a border or came back from the dead. */
+	/** The server put the player here: they came back from the dead. */
 	void Reset(double InX, double InY, double InZ, int64 Now);
+	/**
+	 * The player joined, or walked in over a border, and the server guessed they stand at (X, Y, Z): where the last server
+	 * saw them, or the region's spawn when it saw them too long ago or too far off. A client that crossed plays on where
+	 * it stands, which can be well past that guess, so the first move is taken as it comes when it is in this region or
+	 * just past its border; only a first move from anywhere else is put back to the guess. Anchored on the guess, a
+	 * player who crossed was snapped to a region's middle, and from there over and over between two rooms.
+	 */
+	void Arrive(double InX, double InY, double InZ, int32 Region, int64 Now);
 	/** A hit threw the player: they may fly further than they walk. */
 	void Knocked(double Strength) { Allowance += FMath::Max(0.0, Strength) * CubeSpec::KnockbackReach; }
 	ECubeMoveVerdict Check(double InX, double InY, double InZ, TOptional<int32> SaidSeq, int64 Now);
@@ -204,6 +212,7 @@ struct FCubeMoveCheck
 private:
 	int64 At = 0, RefusedSince = -1;
 	double Allowance = 0;
+	int32 ArrivedIn = -1;
 };
 
 /**

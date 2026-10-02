@@ -437,6 +437,13 @@ bool FCubeWorldMoveCheckTest::RunTest(const FString& Parameters)
 	Old.Check(40, 10, 0, TOptional<int32>(), 3000);
 	TestTrue(TEXT("a client that cannot take a correction is taken where it says after a second"), Old.Check(40.4, 10, 0, TOptional<int32>(), 4000) == ECubeMoveVerdict::Accepted && Old.X == 40.4);
 
+	FCubeMoveCheck Crossed;
+	Crossed.Arrive(12, 36, 0, 3, 0);
+	TestTrue(TEXT("a player who crossed plays on where they stand, though the server guessed the region's middle"), Crossed.Check(12, 22.5, 0, TOptional<int32>(0), 50) == ECubeMoveVerdict::Accepted && Crossed.Y == 22.5);
+	FCubeMoveCheck FarOff;
+	FarOff.Arrive(12, 36, 0, 3, 0);
+	TestTrue(TEXT("a first move from far off the region is put back to the guess"), FarOff.Check(60, 5, 0, TOptional<int32>(0), 50) == ECubeMoveVerdict::Refused && FarOff.Y == 36);
+
 	FCubeMoveCheck Climb;
 	Climb.Reset(10, 10, 0, 0);
 	TestTrue(TEXT("a climb of twenty blocks in one move is refused"), Climb.Check(10, 10, 20, TOptional<int32>(), 50) == ECubeMoveVerdict::Refused);

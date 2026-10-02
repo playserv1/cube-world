@@ -129,16 +129,30 @@ public sealed class MoveCheck
 
     private long _at, _refusedSince = -1;
     private double _allowance;
+    private int _arrivedIn = -1;
 
     public double X { get; private set; }
     public double Y { get; private set; }
     public double Z { get; private set; }
     public int Seq { get; private set; }
 
-    /// <summary>The server put the player here: they joined, walked in over a border or came back from the dead.</summary>
+    /// <summary>The server put the player here: they came back from the dead.</summary>
     public void Reset(double x, double y, double z, long now)
     {
-        (X, Y, Z, _at, _allowance, _refusedSince) = (x, y, z, now, Spec.MoveBurst, -1);
+        (X, Y, Z, _at, _allowance, _refusedSince, _arrivedIn) = (x, y, z, now, Spec.MoveBurst, -1, -1);
+    }
+
+    /// <summary>
+    /// The player joined, or walked in over a border, and the server guessed they stand at (x, y, z): where the last
+    /// server saw them, or the region's spawn when it saw them too long ago or too far off. A client that crossed plays on
+    /// where it stands, which can be well past that guess, so the first move is taken as it comes when it is in this
+    /// region or just past its border; only a first move from anywhere else is put back to the guess. Anchored on the
+    /// guess, a player who crossed was snapped to a region's middle, and from there over and over between two rooms.
+    /// </summary>
+    public void Arrive(double x, double y, double z, int region, long now)
+    {
+        Reset(x, y, z, now);
+        _arrivedIn = region;
     }
 
     /// <summary>A hit threw the player: they may fly further than they walk.</summary>
@@ -147,6 +161,19 @@ public sealed class MoveCheck
     public MoveVerdict Check(double x, double y, double z, int? seq, long now)
     {
         if (seq is { } said && said < Seq) return MoveVerdict.Stale;
+        if (_arrivedIn >= 0)
+        {
+            var near = World.Near(_arrivedIn, x, y, Spec.BorderSlack);
+            _arrivedIn = -1;
+            if (near)
+            {
+                Reset(x, y, z, now);
+                return MoveVerdict.Accepted;
+            }
+            if (seq is null) _refusedSince = now;
+            Seq++;
+            return MoveVerdict.Refused;
+        }
 
         // The allowance fills with time up to the burst; a knockback's extra stays until it is spent.
         _allowance = Math.Min(_allowance + Spec.MoveSpeed * Math.Max(0, now - _at) / 1000.0, Math.Max(_allowance, Spec.MoveBurst));

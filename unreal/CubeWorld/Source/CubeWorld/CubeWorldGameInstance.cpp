@@ -882,6 +882,9 @@ void UCubeWorldGameInstance::OnRespawnFrame(const FCubePose& You)
 
 void UCubeWorldGameInstance::OnCorrectFrame(const FCubePose& At, int32 Seq)
 {
+	// Not while crossing: the room being left is behind, and following it back over the border crossed again, and again
+	// (the web client's rule too).
+	if (bSwitching) return;
 	MoveSeq = Seq;
 	OnCorrect.Broadcast(At);
 }

@@ -218,12 +218,31 @@ void FCubeServerWorld::Settle(int32 X, int32 Y, int32 Z, FCubeWorldUpdate& Out)
 
 void FCubeMoveCheck::Reset(double InX, double InY, double InZ, int64 Now)
 {
-	X = InX; Y = InY; Z = InZ; At = Now; Allowance = CubeSpec::MoveBurst; RefusedSince = -1;
+	X = InX; Y = InY; Z = InZ; At = Now; Allowance = CubeSpec::MoveBurst; RefusedSince = -1; ArrivedIn = -1;
+}
+
+void FCubeMoveCheck::Arrive(double InX, double InY, double InZ, int32 Region, int64 Now)
+{
+	Reset(InX, InY, InZ, Now);
+	ArrivedIn = Region;
 }
 
 ECubeMoveVerdict FCubeMoveCheck::Check(double InX, double InY, double InZ, TOptional<int32> SaidSeq, int64 Now)
 {
 	if (SaidSeq.IsSet() && SaidSeq.GetValue() < Seq) return ECubeMoveVerdict::Stale;
+	if (ArrivedIn >= 0)
+	{
+		const bool bNear = CubeNear(ArrivedIn, InX, InY, CubeSpec::BorderSlack);
+		ArrivedIn = -1;
+		if (bNear)
+		{
+			Reset(InX, InY, InZ, Now);
+			return ECubeMoveVerdict::Accepted;
+		}
+		if (!SaidSeq.IsSet()) RefusedSince = Now;
+		Seq++;
+		return ECubeMoveVerdict::Refused;
+	}
 
 	// The allowance fills with time up to the burst; a knockback's extra stays until it is spent.
 	Allowance = FMath::Min(Allowance + CubeSpec::MoveSpeed * FMath::Max<int64>(0, Now - At) / 1000.0, FMath::Max(Allowance, CubeSpec::MoveBurst));

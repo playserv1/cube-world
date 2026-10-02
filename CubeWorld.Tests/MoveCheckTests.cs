@@ -75,6 +75,28 @@ public class MoveCheckTests
     }
 
     [Fact]
+    public void A_player_who_crossed_plays_on_where_they_stand_though_the_server_guessed_its_middle()
+    {
+        // Red (region 0) was seen too long ago: yellow (region 3) guessed its spawn, the middle, 12 blocks from the border.
+        var check = new MoveCheck();
+        check.Arrive(12, 36, 0, region: 3, now: 0);
+        Assert.Equal(MoveVerdict.Accepted, check.Check(12, 22.5, 0, 0, 50));
+        Assert.Equal((12.0, 22.5), (check.X, check.Y));
+        Assert.Equal(MoveVerdict.Accepted, check.Check(12, 22.8, 0, 0, 100));
+        Assert.Equal(0, check.Seq);
+    }
+
+    [Fact]
+    public void A_first_move_from_far_off_the_region_is_put_back_to_the_guess()
+    {
+        var check = new MoveCheck();
+        check.Arrive(12, 36, 0, region: 3, now: 0);
+        Assert.Equal(MoveVerdict.Refused, check.Check(60, 5, 0, 0, 50));
+        Assert.Equal((12.0, 36.0, 1), (check.X, check.Y, check.Seq));
+        Assert.Equal(MoveVerdict.Accepted, check.Check(12.2, 36, 0, 1, 100));
+    }
+
+    [Fact]
     public void A_client_that_cannot_take_a_correction_is_taken_where_it_says_after_a_second()
     {
         var check = At(10, 10, 0);
