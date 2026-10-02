@@ -5,6 +5,7 @@
 #include "CubeServerWorld.h"
 #include "CubeSpec.h"
 #include "CubeVoxelWorld.h"
+#include "CubeWebSocketServer.h"
 #include "CubeWorldGameInstance.h"
 #include "Misc/AutomationTest.h"
 
@@ -284,6 +285,19 @@ bool FCubeWorldRowOrderTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the oldest first"), Ordered[0]->GetStringField(TEXT("hit_id")), FString(TEXT("old")));
 	TestEqual(TEXT("then the full hit"), Ordered[1]->GetStringField(TEXT("hit_id")), FString(TEXT("full")));
 	TestEqual(TEXT("and the weak one last"), Ordered[2]->GetStringField(TEXT("hit_id")), FString(TEXT("weak")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldDoorCloseTest,
+	"CubeWorld.Wire.TheDoorAnswersABareCloseWithANormalOne",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// A browser's close() sends no status code; answering with none reached it as 1005, where the C# servers answer 1000.
+bool FCubeWorldDoorCloseTest::RunTest(const FString& Parameters)
+{
+	TestTrue(TEXT("a bare close is answered with 1000"), FCubeWebSocketServer::CloseAnswer({}) == TArray<uint8>({ 0x03, 0xE8 }));
+	TestTrue(TEXT("a close with a code is answered with that code"), FCubeWebSocketServer::CloseAnswer({ 0x0F, 0xA1, 'b', 'y', 'e' }) == TArray<uint8>({ 0x0F, 0xA1 }));
 	return true;
 }
 

@@ -24,6 +24,12 @@ public:
 	void Send(int32 Client, const FString& Text);
 	/** Sends a close frame with a code and a reason, then drops the socket. */
 	void Close(int32 Client, uint16 Code, const FString& Reason);
+
+	/**
+	 * The close frame that answers a peer's: its own status code, or 1000 when it gave none (a browser's bare close()),
+	 * as the C# servers answer. An empty answer reached the browser as 1005, "no status".
+	 */
+	static TArray<uint8> CloseAnswer(const TArray<uint8>& PeerClosePayload);
 	void Shutdown();
 	int32 ListeningPort() const { return Port; }
 

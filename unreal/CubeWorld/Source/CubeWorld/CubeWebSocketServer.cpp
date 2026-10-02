@@ -160,9 +160,7 @@ void FCubeWebSocketServer::ReadFrames(int32 Id, FClient& Client)
 		else if (Opcode == 0x8)
 		{
 			// The peer is closing: answer with a close frame, then drop, so they see a clean close rather than a lost connection.
-			TArray<uint8> Echo;
-			if (Payload.Num() >= 2) { Echo.Add(Payload[0]); Echo.Add(Payload[1]); }
-			SendFrame(Client, 0x8, Echo);
+			SendFrame(Client, 0x8, CloseAnswer(Payload));
 			Drop(Id, true);
 			return;
 		}
@@ -198,6 +196,13 @@ void FCubeWebSocketServer::Send(int32 Id, const FString& Text)
 	TArray<uint8> Payload;
 	Payload.Append((const uint8*)Utf8.Get(), Utf8.Length());
 	if (!SendFrame(*Client, 0x1, Payload)) Drop(Id, true);
+}
+
+TArray<uint8> FCubeWebSocketServer::CloseAnswer(const TArray<uint8>& PeerClosePayload)
+{
+	if (PeerClosePayload.Num() >= 2) return { PeerClosePayload[0], PeerClosePayload[1] };
+	constexpr uint16 Normal = 1000;
+	return { (uint8)(Normal >> 8), (uint8)(Normal & 0xFF) };
 }
 
 void FCubeWebSocketServer::Close(int32 Id, uint16 Code, const FString& Reason)
