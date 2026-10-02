@@ -94,9 +94,8 @@ struct FCubeServerPlayer
 	TOptional<FCubeInventory> InventoryHeardWhileReading;
 	/** Saves refused in a row because the row changed meanwhile; each one reads the row again and merges. */
 	int32 InventoryConflicts = 0;
-	TStrongObjectPtr<UWorldPresence> PresenceRow;
+	/** When this server last wrote the player's presence row (over the uplink, WritePresence). */
 	int64 PresenceWrittenAt = 0;
-	bool bPresenceBusy = false;
 };
 
 /** A player another server hosts, as last heard. */
@@ -171,6 +170,11 @@ public:
 	/** A player another server hosts, from their WorldPresence row. */
 	static FCubeElsewhere ElsewhereOf(const TSharedPtr<FJsonObject>& Row);
 	static FCubeElsewhere ElsewhereOf(const UWorldPresence* Row);
+	/** A player's WorldPresence row, every field as the C# servers' WorldPresence carries it: what WritePresence sends. */
+	static TSharedRef<FJsonObject> PresenceJson(const FCubePresenceRep& Pose, int64 SeenAt);
+	/** The newest pose heard of a player who left this server is another server's, written after this server's last one:
+	 *  they crossed, and that server holds them and their row now. WorldPresence.TakenOver on the C# side. */
+	static bool TakenOver(const FCubeElsewhere* Heard, const FCubeElsewhere& Ours);
 	/**
 	 * Takes a pose into what is known of the players elsewhere, unless the pose known is newer: the platform sends each
 	 * change on its own, so two writes of a row a moment apart can arrive the other way round.
@@ -305,7 +309,7 @@ private:
 	void WritePresence(FCubeServerPlayer& Player);
 	void WriteInventory(FCubeServerPlayer& Player);
 	/** A player who left: their row goes CubeLeaveGraceMs later, unless another server took them over or they came back. */
-	void DeletePresence(const FString& PlayerId, UWorldPresence* Row);
+	void DeletePresence(const FString& PlayerId, const FCubeElsewhere& Last);
 	/** A player who leaves this server goes on standing where it last saw them, until the next server's first pose. */
 	void KeepLastPose(const FCubeServerPlayer& Player);
 	void WriteHit(const FString& HitId, const FString& Victim, const FString& Attacker, double Damage, double KX, double KY, double Strength);

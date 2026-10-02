@@ -53,17 +53,8 @@ namespace
 		return F;
 	}
 
-	TSharedRef<FJsonObject> PoseJson(const FCubePresenceRep& P, int64 SeenAt)
-	{
-		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
-		J->SetStringField(TEXT("player_id"), P.Id); J->SetStringField(TEXT("name"), P.Name);
-		J->SetStringField(TEXT("server"), P.Server); J->SetStringField(TEXT("color"), P.Color);
-		J->SetNumberField(TEXT("x"), P.X); J->SetNumberField(TEXT("y"), P.Y); J->SetNumberField(TEXT("z"), P.Z);
-		J->SetNumberField(TEXT("yaw"), P.Yaw); J->SetNumberField(TEXT("pitch"), P.Pitch); J->SetNumberField(TEXT("health"), P.Health);
-		J->SetNumberField(TEXT("sneaking"), P.bSneaking ? 1 : 0); J->SetNumberField(TEXT("sprinting"), P.bSprinting ? 1 : 0);
-		J->SetNumberField(TEXT("seen_at"), (double)SeenAt);
-		return J;
-	}
+	/** A pose as a browser client reads it: the fields of a WorldPresence row. */
+	TSharedRef<FJsonObject> PoseJson(const FCubePresenceRep& P, int64 SeenAt) { return ACubeWorldGameMode::PresenceJson(P, SeenAt); }
 
 	TSharedRef<FJsonObject> BombJson(const FCubeBombRep& B)
 	{
@@ -242,11 +233,13 @@ void ACubeWorldGameMode::RemovePlayer(const FString& Id)
 	ServerLog(FString::Printf(TEXT("%s left"), *Player->Name));
 	// A browser's leave is the game's to report, as its join was (an Unreal client's goes through the engine's logout).
 	if (Player->WebClient && !bOffline) PlayServ::Rooms::RemovePlayer(RoomName(), Id);
-	UWorldPresence* Row = Player->PresenceRow.Get();
-	TStrongObjectPtr<UWorldPresence> Keep(Row);
+	// Their last pose here, which DeletePresence holds against what the other servers write of them meanwhile.
+	FCubeElsewhere Last;
+	Last.Pose = PoseOf(*Player);
+	Last.SeenAt = Now();
 	KeepLastPose(*Player);
 	Players.Remove(Id);
-	if (Row) DeletePresence(Id, Row);
+	DeletePresence(Id, Last);
 	PublishPlayers();
 }
 

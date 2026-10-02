@@ -17,6 +17,8 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/InputSettings.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "Serialization/JsonWriter.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -735,6 +737,57 @@ bool FCubeWorldFakeHandTest::RunTest(const FString& Parameters)
 	Input.Forward = Keys.X; Input.Strafe = Keys.Y; Input.Yaw = CubeSpec::YawFromUnreal(0);
 	CubePhysics::Tick(Body, Input, [](int32, int32, int32 Z) { return Z < 0; });
 	TestTrue(TEXT("the body walks +y"), Body.Y > 10 && FMath::IsNearlyEqual(Body.X, 10.0, 1e-6));
+	return true;
+}
+
+// ── presence over the uplink (PSV-3028) ──────────────────────────────────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldPresenceRowTest,
+	"CubeWorld.Presence.TheRowGoesOutAsTheCSharpServersWriteIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FCubeWorldPresenceRowTest::RunTest(const FString& Parameters)
+{
+	FCubePresenceRep P;
+	P.Id = TEXT("plr_1"); P.Name = TEXT("Ann"); P.Server = TEXT("ck7g8"); P.Color = TEXT("blue");
+	P.X = 23.5f; P.Y = 9.f; P.Z = 0.25f; P.Yaw = 1.5f; P.Pitch = -0.25f; P.Health = 17.f; P.bSneaking = false; P.bSprinting = true;
+	const TSharedRef<FJsonObject> Row = ACubeWorldGameMode::PresenceJson(P, 1790979996713);
+	// Every field of WorldPresence as the C# servers declare and write it (CubeWorld.Server/World.cs), and no other: an
+	// upsert merges what it carries, so a field left out would keep whatever the last writer put there.
+	const TArray<FString> Fields = { TEXT("player_id"), TEXT("name"), TEXT("server"), TEXT("color"), TEXT("x"), TEXT("y"), TEXT("z"),
+		TEXT("yaw"), TEXT("pitch"), TEXT("health"), TEXT("sneaking"), TEXT("sprinting"), TEXT("seen_at") };
+	TestEqual(TEXT("as many fields as the table has"), Row->Values.Num(), Fields.Num());
+	for (const FString& Field : Fields) TestTrue(FString::Printf(TEXT("%s is there"), *Field), Row->HasField(Field));
+	TestEqual(TEXT("the key is the player"), Row->GetStringField(TEXT("player_id")), FString(TEXT("plr_1")));
+	TestEqual(TEXT("sprinting as the integer the table holds"), Row->GetNumberField(TEXT("sprinting")), 1.0);
+	TestEqual(TEXT("sneaking too"), Row->GetNumberField(TEXT("sneaking")), 0.0);
+	// The table's integers must reach the platform as integers: seen_at is a time in milliseconds, 13 digits.
+	FString Text;
+	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text);
+	FJsonSerializer::Serialize(Row, Writer);
+	TestTrue(TEXT("seen_at goes out as a plain integer"), Text.Contains(TEXT("\"seen_at\":1790979996713")));
+	TestTrue(TEXT("and so do the flags"), Text.Contains(TEXT("\"sprinting\":1")) && Text.Contains(TEXT("\"sneaking\":0")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldPresenceTakenOverTest,
+	"CubeWorld.Presence.ALeaversRowGoesUnlessAnotherServerTookThemOver",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FCubeWorldPresenceTakenOverTest::RunTest(const FString& Parameters)
+{
+	FCubeElsewhere Ours;
+	Ours.Pose.Id = TEXT("plr_1"); Ours.Pose.Server = TEXT("ck7g8"); Ours.SeenAt = 1000;
+	TestFalse(TEXT("nobody heard of since: the row goes"), ACubeWorldGameMode::TakenOver(nullptr, Ours));
+	TestFalse(TEXT("only the pose this server kept: the row goes"), ACubeWorldGameMode::TakenOver(&Ours, Ours));
+	FCubeElsewhere Next = Ours;
+	Next.Pose.Server = TEXT("8we6h"); Next.SeenAt = 1300;
+	TestTrue(TEXT("the next server wrote them after they left: they are its now, and so is the row"), ACubeWorldGameMode::TakenOver(&Next, Ours));
+	FCubeElsewhere Before = Next;
+	Before.SeenAt = 900;
+	TestFalse(TEXT("a pose another server wrote before they came here does not count"), ACubeWorldGameMode::TakenOver(&Before, Ours));
 	return true;
 }
 

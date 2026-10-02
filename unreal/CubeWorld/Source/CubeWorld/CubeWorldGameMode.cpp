@@ -643,8 +643,8 @@ void ACubeWorldGameMode::GameTick()
 /**
  * 20 times a second the presence rows of this server's players whose pose changed go out (a still player's every 2 s;
  * both clients send a move only when the pose changed), and every other time everyone's pose, ours and the others', goes
- * to the clients: the C# servers' ShareMovesAsync (PSV-3015). A player's next save waits for the one before it
- * (bPresenceBusy), so a slow platform gets fewer saves, never a queue of them.
+ * to the clients: the C# servers' ShareMovesAsync (PSV-3015). A row goes out over the uplink and nothing answers it, so
+ * no write waits for another (PSV-3028).
  */
 void ACubeWorldGameMode::ShareMoves()
 {
@@ -1317,80 +1317,66 @@ void ACubeWorldGameMode::WriteDone(const FIntVector& At, bool bLanded)
 	if (CubesSubscribedAt > 0 && CubeWriteLandedAt == 0) CubeWriteLandedAt = Now();
 }
 
+// Over the uplink, as the C# servers write it (RuntimeData.Write): an upsert of the whole row by the player's id. It has
+// no version to match, so the two servers that write a crossing player's row a moment apart no longer refuse each other
+// (HTTP 412, a read of the row again, and only then the next save: 1-3 times at each browser crossing into an Unreal
+// room on 2026-10-02), and it costs no HTTP round trip. The other servers hear it at once; this one does not hear its
+// own writes, nor did it need to (HearPose skips them). Pushes can come in either order: seen_at decides (MergePose).
 void ACubeWorldGameMode::WritePresence(FCubeServerPlayer& P)
 {
-	if (bOffline) { P.bMoved = false; P.PresenceWrittenAt = Now(); return; }
-	if (P.bPresenceBusy) return;
-	P.bPresenceBusy = true;
 	P.bMoved = false;
 	P.PresenceWrittenAt = Now();
-	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
-	const FString Id = P.Id;
-	auto Write = [Weak, Id]()
-	{
-		if (!Weak.IsValid()) return;
-		FCubeServerPlayer* P = Weak->PlayerById(Id);
-		if (!P || !P->PresenceRow.IsValid()) { if (P) P->bPresenceBusy = false; return; }
-		UWorldPresence* Row = P->PresenceRow.Get();
-		Row->player_id = P->Id; Row->name = P->Name; Row->server = Weak->ServerName; Row->color = Weak->Color();
-		Row->x = P->X; Row->y = P->Y; Row->z = P->Z; Row->yaw = P->Yaw; Row->pitch = P->Pitch; Row->health = P->Health;
-		Row->sneaking = P->bSneaking ? 1 : 0; Row->sprinting = P->bSprinting ? 1 : 0; Row->seen_at = Now();
-		PlayServ::Data::Save(Row, FPlayServSimpleCallback::CreateLambda([Weak, Id](bool bOk, const FPlayServError& Error)
-		{
-			if (!Weak.IsValid()) return;
-			FCubeServerPlayer* P = Weak->PlayerById(Id);
-			if (!P) return;
-			P->bPresenceBusy = false;
-			if (bOk) return;
-			P->bMoved = true;
-			// The row is gone: find or make one next time.
-			if (Error.Code == EPlayServErrorCode::NotFound) { P->PresenceRow.Reset(); return; }
-			// Another writer saved the row since this server read it (the server the player came from, its last pose): the
-			// save carried the old version and was refused, and so would every save after it. The 2 s presence poll used to
-			// read the row again; since the uplink took its place nothing did, and a player stood frozen for the others
-			// until they left (PSV-3018). The row is read again before the next save.
-			if (Error.Code == EPlayServErrorCode::PreconditionFailed && P->PresenceRow.IsValid())
-			{
-				P->bPresenceBusy = true;
-				TStrongObjectPtr<UWorldPresence> Stale(P->PresenceRow.Get());
-				PlayServ::Data::Reload(Stale.Get(), FPlayServSimpleCallback::CreateLambda([Weak, Id, Stale](bool, const FPlayServError&)
-				{
-					if (!Weak.IsValid()) return;
-					if (FCubeServerPlayer* Q = Weak->PlayerById(Id)) { Q->bPresenceBusy = false; Q->bMoved = true; }
-				}));
-			}
-		}));
-	};
-	if (P.PresenceRow.IsValid()) { Write(); return; }
-	// The player's row from wherever they last were, or a new one.
-	PlayServ::Data::LoadAll<UWorldPresence>(FPlayServFilter::Where(TEXT("player_id")).EqualTo(Id), [Weak, Id, Write](bool bOk, TArray<UWorldPresence*> Rows, const FPlayServError&)
-	{
-		if (!Weak.IsValid()) return;
-		FCubeServerPlayer* P = Weak->PlayerById(Id);
-		if (!P) return;
-		P->PresenceRow.Reset(bOk && Rows.Num() > 0 ? Rows[0] : PlayServ::Data::Create<UWorldPresence>());
-		Write();
-	});
+	if (bOffline) return;
+	// The uplink is down (it reconnects within seconds): the row goes out again on the next tick.
+	if (!PlayServ::Rooms::WriteData(TEXT("WorldPresence"), P.Id, PresenceJson(PoseOf(P), P.PresenceWrittenAt))) P.bMoved = true;
+}
+
+TSharedRef<FJsonObject> ACubeWorldGameMode::PresenceJson(const FCubePresenceRep& P, int64 SeenAt)
+{
+	TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+	J->SetStringField(TEXT("player_id"), P.Id); J->SetStringField(TEXT("name"), P.Name);
+	J->SetStringField(TEXT("server"), P.Server); J->SetStringField(TEXT("color"), P.Color);
+	J->SetNumberField(TEXT("x"), P.X); J->SetNumberField(TEXT("y"), P.Y); J->SetNumberField(TEXT("z"), P.Z);
+	J->SetNumberField(TEXT("yaw"), P.Yaw); J->SetNumberField(TEXT("pitch"), P.Pitch); J->SetNumberField(TEXT("health"), P.Health);
+	J->SetNumberField(TEXT("sneaking"), P.bSneaking ? 1 : 0); J->SetNumberField(TEXT("sprinting"), P.bSprinting ? 1 : 0);
+	J->SetNumberField(TEXT("seen_at"), (double)SeenAt);
+	return J;
+}
+
+bool ACubeWorldGameMode::TakenOver(const FCubeElsewhere* Heard, const FCubeElsewhere& Ours)
+{
+	return Heard && Heard->Pose.Server != Ours.Pose.Server && Heard->SeenAt >= Ours.SeenAt;
 }
 
 /**
  * A player who left: their row goes a moment later, unless another server took them over meanwhile (a border crossing:
- * the next server wrote the row) or they came back. The next server's first write can come up to a second after the
- * leave, later than its hello when the old connection goes first, so the row is not deleted at once (PSV-3018).
+ * the next server wrote the row, and this server heard it over the uplink) or they came back. The next server's first
+ * write can come up to a second after the leave, later than its hello when the old connection goes first, so the row is
+ * not deleted at once (PSV-3018). The pose this server kept of them (KeepLastPose) goes with it: an uplink delete does
+ * not come back to the server that sent it, as the delete of a REST call did. ForgetUnlessTakenOverAsync on the C# side.
  */
-void ACubeWorldGameMode::DeletePresence(const FString& PlayerId, UWorldPresence* Row)
+void ACubeWorldGameMode::DeletePresence(const FString& PlayerId, const FCubeElsewhere& Last)
 {
-	if (bOffline || Row->server != ServerName) return;
-	TStrongObjectPtr<UWorldPresence> Keep(Row);
-	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
+	if (bOffline) return;
 	FTimerHandle Later;
-	GetWorldTimerManager().SetTimer(Later, FTimerDelegate::CreateWeakLambda(this, [Weak, Keep, PlayerId]()
+	GetWorldTimerManager().SetTimer(Later, FTimerDelegate::CreateWeakLambda(this, [this, PlayerId, Last]()
 	{
-		PlayServ::Data::Reload(Keep.Get(), FPlayServSimpleCallback::CreateLambda([Weak, Keep, PlayerId](bool bOk, const FPlayServError&)
+		const FCubeElsewhere* Heard = Elsewhere.Find(PlayerId);
+		if (Players.Contains(PlayerId) || TakenOver(Heard, Last)) return;
+		if (Heard && Heard->Pose.Server == ServerName) Elsewhere.Remove(PlayerId);
+		if (PlayServ::Rooms::DeleteData(TEXT("WorldPresence"), PlayerId)) return;
+		// No uplink at the moment: the row is deleted through the REST API instead, as long as it is still this server's.
+		TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
+		PlayServ::Data::LoadAll<UWorldPresence>(FPlayServFilter::Where(TEXT("player_id")).EqualTo(PlayerId), [Weak, PlayerId](bool bOk, TArray<UWorldPresence*> Rows, const FPlayServError&)
 		{
-			if (!Weak.IsValid() || !bOk || Keep->server != Weak->ServerName || Weak->Players.Contains(PlayerId)) return;
-			PlayServ::Data::Delete(Keep.Get(), FPlayServSimpleCallback::CreateLambda([Keep](bool, const FPlayServError&) {}));
-		}));
+			if (!Weak.IsValid() || !bOk || Weak->Players.Contains(PlayerId)) return;
+			for (UWorldPresence* Row : Rows)
+			{
+				if (Row->server != Weak->ServerName) continue;
+				TStrongObjectPtr<UWorldPresence> Keep(Row);
+				PlayServ::Data::Delete(Row, FPlayServSimpleCallback::CreateLambda([Keep](bool, const FPlayServError&) {}));
+			}
+		});
 	}), CubeLeaveGraceMs / 1000.f, false);
 }
 
