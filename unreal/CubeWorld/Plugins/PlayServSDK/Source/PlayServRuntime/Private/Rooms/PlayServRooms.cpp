@@ -622,6 +622,48 @@ void UPlayServRooms::UnsubscribeData(const FString& Entity)
 	Uplink->SendFrame(Frame);
 }
 
+bool UPlayServRooms::WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data)
+{
+	return SendDataWrite(Entity, Id, PlayServRoomsWire::OpUpsert, Data);
+}
+
+bool UPlayServRooms::DeleteData(const FString& Entity, const FString& Id)
+{
+	// The platform reads no data for a delete; the frame carries an empty object, as the platform's contract shows it.
+	// (The C# SDK's delete never left the server: it sent no data at all, which its JSON writer could not serialize.)
+	return SendDataWrite(Entity, Id, PlayServRoomsWire::OpDelete, MakeShared<FJsonObject>());
+}
+
+bool UPlayServRooms::SendDataWrite(const FString& Entity, const FString& Id, const TCHAR* Op, const TSharedRef<FJsonObject>& Data)
+{
+	if (Entity.IsEmpty() || Id.IsEmpty())
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: a data write needs an entity and an id (%s %s '%s')"), Op, *Entity, *Id);
+		return false;
+	}
+	if (!Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready)
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Frame = MakeShared<FJsonObject>();
+	Frame->SetStringField(PlayServRoomsWire::FieldType, PlayServRoomsWire::TypeDataWrite);
+	Frame->SetStringField(PlayServRoomsWire::FieldProjectId, FString());
+	Frame->SetStringField(PlayServRoomsWire::FieldEntity, Entity);
+	Frame->SetStringField(PlayServRoomsWire::FieldOp, Op);
+	Frame->SetStringField(PlayServRoomsWire::FieldId, Id);
+	Frame->SetObjectField(PlayServRoomsWire::FieldData, Data);
+	if (!Uplink->SendFrame(Frame))
+	{
+		return false;
+	}
+	if (!DataWritten.Contains(Entity))
+	{
+		DataWritten.Add(Entity);
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: the first %s write went out over the uplink (%s %s)"), *Entity, Op, *Id);
+	}
+	return true;
+}
+
 bool UPlayServRooms::SendDataSubscription(const FString& Entity, const FString& KeyPath)
 {
 	if (!Uplink.IsValid() || Uplink->GetState() != EPlayServUplinkState::Ready)

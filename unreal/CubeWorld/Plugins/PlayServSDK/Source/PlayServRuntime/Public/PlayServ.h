@@ -397,6 +397,12 @@ namespace PlayServ::Rooms
 	/** Stop hearing an entity's changes. */
 	PLAYSERVRUNTIME_API void UnsubscribeData(const FString& Entity);
 
+	/** Upsert a record over the uplink by its business key (UPlayServRooms::WriteData): no version check, no answer. False while the uplink is not ready. */
+	PLAYSERVRUNTIME_API bool WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data);
+
+	/** Delete a record over the uplink by its business key (UPlayServRooms::DeleteData). False while the uplink is not ready. */
+	PLAYSERVRUNTIME_API bool DeleteData(const FString& Entity, const FString& Id);
+
 	// ---- Logs ------------------------------------------------------------------------------
 
 	/** A line in this game server's logs on the platform (list_function_logs), sent over the uplink as the C# SDK's Platform.Log; a line logged before the uplink is ready waits for it (the last 200). Game thread. */

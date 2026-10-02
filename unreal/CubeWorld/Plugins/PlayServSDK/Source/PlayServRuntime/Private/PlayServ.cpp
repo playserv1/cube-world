@@ -390,6 +390,18 @@ void PlayServ::Rooms::UnsubscribeData(const FString& Entity)
 	}
 }
 
+bool PlayServ::Rooms::WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	return PS != nullptr && PS->GetRooms()->WriteData(Entity, Id, Data);
+}
+
+bool PlayServ::Rooms::DeleteData(const FString& Entity, const FString& Id)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	return PS != nullptr && PS->GetRooms()->DeleteData(Entity, Id);
+}
+
 void PlayServ::Rooms::Log(const FString& Message, EPlayServLogLevel Level, const TSharedPtr<FJsonObject>& Data)
 {
 	if (UPlayServSubsystem* PS = UPlayServSubsystem::Get())

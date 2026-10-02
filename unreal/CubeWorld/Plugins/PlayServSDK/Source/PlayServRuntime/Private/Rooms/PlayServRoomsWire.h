@@ -11,6 +11,7 @@ namespace PlayServRoomsWire
 	static const TCHAR* TypeTicketRelease = TEXT("ticket_release");
 	static const TCHAR* TypeSubscribeData = TEXT("subscribe_data");
 	static const TCHAR* TypeUnsubscribeData = TEXT("unsubscribe_data");
+	static const TCHAR* TypeDataWrite = TEXT("data_write");
 
 	static const TCHAR* TypeHelloAck = TEXT("uplink_hello_ack");
 	static const TCHAR* TypePing = TEXT("ping");
@@ -42,8 +43,8 @@ namespace PlayServRoomsWire
 	static const TCHAR* FieldDetail = TEXT("detail");
 	static const TCHAR* FieldParams = TEXT("params");
 
-	// Data subscriptions, as the C# SDK's RuntimeData speaks them. project_id and client_key are empty: the platform
-	// scopes the subscription to the project and environment the uplink signed in to.
+	// Data subscriptions and writes, as the C# SDK's RuntimeData speaks them. project_id and client_key are empty: the
+	// platform scopes them to the project and environment the uplink signed in to.
 	static const TCHAR* FieldProjectId = TEXT("project_id");
 	static const TCHAR* FieldClientKey = TEXT("client_key");
 	static const TCHAR* FieldEntity = TEXT("entity");
@@ -51,6 +52,8 @@ namespace PlayServRoomsWire
 	static const TCHAR* FieldId = TEXT("id");
 	static const TCHAR* FieldOp = TEXT("op");
 	static const TCHAR* FieldData = TEXT("data");
+	static const TCHAR* OpUpsert = TEXT("upsert");
+	static const TCHAR* OpDelete = TEXT("delete");
 
 	// A line in the game server's function logs, as the C# SDK's Platform.Log sends it (UplinkLog): message, level
 	// (debug, info, warn, error) and optional data.

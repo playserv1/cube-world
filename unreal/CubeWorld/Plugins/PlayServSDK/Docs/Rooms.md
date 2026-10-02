@@ -9,7 +9,7 @@ A room's server runs one of two ways, and admission, presence and joining are th
 - **You run it**, on your own machines or a host you choose, and it registers its rooms with `StartHosting` and `StartRoom` (below).
 - **PlayServ hosting runs it**: a player asks for a room with `RequestNewRoom`, the platform starts one server process for that room on your room type's machine pool, and the process registers it with the single call `StartRoomPlayServHosted` ("Rooms PlayServ hosting starts").
 
-> **Not in this version:** matchmaking (there is no `JoinGame`: the platform has no matchmaking in service, so build your room browser on `Browse`), and writing or reading game data over the uplink: a hosting server writes and reads through `PlayServ::Data`, and hears other writers' changes with `SubscribeData` ("Hearing data changes" below).
+> **Not in this version:** matchmaking (there is no `JoinGame`: the platform has no matchmaking in service, so build your room browser on `Browse`), and reading game data over the uplink: a hosting server reads through `PlayServ::Data`, hears other writers' changes with `SubscribeData` ("Hearing data changes" below), and can write records over the uplink with `WriteData` ("Writing data over the uplink").
 
 ## Prerequisites (hosting)
 
@@ -330,6 +330,27 @@ void AMyGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
 ```
 
 The subscription goes out as soon as the uplink is ready and again on every new uplink socket, and `OnDataSubscribed(Entity)` fires each time it goes out. The platform does not send again what changed while no subscription was in place (before the first one, or while the uplink reconnected), so a server that must not miss a change reads the records again from `OnDataSubscribed`. `UnsubscribeData(Entity)` stops it. `Display` logs each subscription and the first change of each entity with the fields it carried.
+
+## Writing data over the uplink
+
+A hosting server can write a record over its uplink, as the C# SDK's `Platform.RuntimeData.Write` does. The platform upserts it by its business key (the value of the entity's primary field), merging the fields sent into the row, or deletes it by that key:
+
+```cpp
+TSharedRef<FJsonObject> Pose = MakeShared<FJsonObject>();
+Pose->SetStringField(TEXT("player_id"), PlayerId);
+Pose->SetNumberField(TEXT("x"), X);   // ... the row's other fields
+PlayServ::Rooms::WriteData(TEXT("WorldPresence"), PlayerId, Pose);   // {"type":"data_write","op":"upsert",...}
+PlayServ::Rooms::DeleteData(TEXT("WorldPresence"), PlayerId);        // {"type":"data_write","op":"delete","data":{}}
+```
+
+Unlike `PlayServ::Data::Save`, a write has no version to match, so two servers writing one record never refuse each other (no HTTP 412), and it costs no HTTP round trip. Nothing answers it either. Mind what the platform does with it:
+
+- every subscriber of the entity hears it except the server that wrote it;
+- the subscribers hear it before the row is stored, so a read made at once can miss it;
+- two writes of one row a moment apart can reach a subscriber in either order, so a row that changes often carries its own time, and readers keep the newer one;
+- while the uplink is not ready the call returns `false` and sends nothing: a write is not queued.
+
+`Display` logs the first write of each entity.
 
 ## Logs on the platform
 

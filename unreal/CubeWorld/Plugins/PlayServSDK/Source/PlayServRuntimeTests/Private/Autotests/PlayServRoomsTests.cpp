@@ -2120,6 +2120,80 @@ bool FPlayServRoomsDataSubscriptionTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
+// PlayServ.Rooms.Data.WritesGoOutAsDataWriteFrames
+//
+// WriteData and DeleteData speak the C# SDK's RuntimeData wire: a `data_write` frame names the entity, the op, the
+// record's business key and its fields; the platform upserts or deletes the row by that key. project_id is empty, as for
+// a subscription: the platform takes the uplink's own project. A delete carries an empty data object, the shape the
+// platform's contract shows (the C# SDK's delete sent none and never left the server, PSV-2989). Nothing is queued:
+// while the uplink is not ready a write is refused.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsDataWriteTest,
+	"PlayServ.Rooms.Data.WritesGoOutAsDataWriteFrames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsDataWriteTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	if (!TestNotNull(TEXT("subsystem"), PS))
+	{
+		return false;
+	}
+	UPlayServRooms* Server = PS->GetRooms();
+
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+	TSharedPtr<FPlayServFakeUplinkTransport> Socket = Factory.Current();
+	Socket->SimulateConnected();
+
+	TSharedRef<FJsonObject> Pose = MakeShared<FJsonObject>();
+	Pose->SetStringField(TEXT("player_id"), TEXT("plr_1"));
+	Pose->SetNumberField(TEXT("x"), 23.5);
+	Pose->SetNumberField(TEXT("sneaking"), 0);
+	TestFalse(TEXT("before the hello ack a write is refused"), Server->WriteData(TEXT("WorldPresence"), TEXT("plr_1"), Pose));
+	TestEqual(TEXT("and nothing goes out, nor later"), Socket->CountSentOfType(TEXT("data_write")), 0);
+
+	Socket->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	TestEqual(TEXT("a refused write is not sent once the uplink is ready"), Socket->CountSentOfType(TEXT("data_write")), 0);
+	TestTrue(TEXT("on a ready uplink a write goes out"), Server->WriteData(TEXT("WorldPresence"), TEXT("plr_1"), Pose));
+	const TSharedPtr<FJsonObject> Upsert = Socket->LastSentOfType(TEXT("data_write"));
+	if (TestNotNull(TEXT("as a data_write frame"), Upsert.Get()))
+	{
+		TestEqual(TEXT("entity"), Upsert->GetStringField(TEXT("entity")), FString(TEXT("WorldPresence")));
+		TestEqual(TEXT("an upsert"), Upsert->GetStringField(TEXT("op")), FString(TEXT("upsert")));
+		TestEqual(TEXT("by its business key"), Upsert->GetStringField(TEXT("id")), FString(TEXT("plr_1")));
+		TestTrue(TEXT("project_id is there and empty"), Upsert->HasField(TEXT("project_id")) && Upsert->GetStringField(TEXT("project_id")).IsEmpty());
+		const TSharedPtr<FJsonObject>* Data = nullptr;
+		TestTrue(TEXT("with the record's fields as an object"), Upsert->TryGetObjectField(TEXT("data"), Data)
+			&& (*Data)->GetNumberField(TEXT("x")) == 23.5 && (*Data)->GetStringField(TEXT("player_id")) == TEXT("plr_1") && (*Data)->HasField(TEXT("sneaking")));
+	}
+
+	TestTrue(TEXT("a delete goes out"), Server->DeleteData(TEXT("WorldPresence"), TEXT("plr_1")));
+	const TSharedPtr<FJsonObject> Delete = Socket->LastSentOfType(TEXT("data_write"));
+	if (TestNotNull(TEXT("as a data_write frame too"), Delete.Get()))
+	{
+		TestEqual(TEXT("a delete"), Delete->GetStringField(TEXT("op")), FString(TEXT("delete")));
+		TestEqual(TEXT("by the same key"), Delete->GetStringField(TEXT("id")), FString(TEXT("plr_1")));
+		const TSharedPtr<FJsonObject>* Data = nullptr;
+		TestTrue(TEXT("with an empty data object, not none"), Delete->TryGetObjectField(TEXT("data"), Data) && (*Data)->Values.Num() == 0);
+	}
+	TestEqual(TEXT("two frames in all"), Socket->CountSentOfType(TEXT("data_write")), 2);
+
+	TestFalse(TEXT("no entity: refused"), Server->WriteData(FString(), TEXT("plr_1"), Pose));
+	TestFalse(TEXT("no key: refused"), Server->DeleteData(TEXT("WorldPresence"), FString()));
+	TestEqual(TEXT("and not sent"), Socket->CountSentOfType(TEXT("data_write")), 2);
+
+	Socket->SimulateClosed(1012, TEXT("Service Restart"));
+	TestFalse(TEXT("a closed uplink refuses a write"), Server->WriteData(TEXT("WorldPresence"), TEXT("plr_1"), Pose));
+
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // PlayServ.Rooms.Logs.LinesWaitForTheUplinkAndGoOutAsLogFrames
 //
 // Log speaks the C# SDK's Platform.Log over the uplink: a `log` frame with message, level and optional data. On a

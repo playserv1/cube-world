@@ -236,6 +236,19 @@ public:
 	/** A data subscription went out on the uplink: at SubscribeData on a ready uplink, and on every new uplink socket. */
 	FPlayServOnDataSubscribed OnDataSubscribed;
 
+	/**
+	 * Write a record over the uplink, as the C# SDK's RuntimeData.Write does: the platform upserts it by its business key
+	 * Id (the value of the entity's primary field), Data's fields merged into the row, a new row if none has that key.
+	 * There is no version to match (no ETag, no 412 from another writer) and no HTTP round trip; nothing answers. The
+	 * platform tells every subscriber of the entity but this server, and tells them before it stores the row, so a read
+	 * made at once can still miss it; and two writes a moment apart can reach a subscriber in either order. False, and
+	 * nothing sent, while the uplink is not ready: a write is not queued, so a game writes a row it keeps current again.
+	 */
+	bool WriteData(const FString& Entity, const FString& Id, const TSharedRef<FJsonObject>& Data);
+
+	/** Delete a record over the uplink by its business key, as RuntimeData.Delete does. False while the uplink is not ready. */
+	bool DeleteData(const FString& Entity, const FString& Id);
+
 	// ---- Hosting: logs ----------------------------------------------------------------------
 
 	/**
@@ -363,6 +376,8 @@ private:
 	void HandleDataUpdate(const TSharedPtr<FJsonObject>& Frame);
 	/** Sends one data subscription on the ready uplink and reports it through OnDataSubscribed. */
 	bool SendDataSubscription(const FString& Entity, const FString& KeyPath);
+	/** Sends one data_write frame (WriteData, DeleteData) on the ready uplink. */
+	bool SendDataWrite(const FString& Entity, const FString& Id, const TCHAR* Op, const TSharedRef<FJsonObject>& Data);
 	/** Sends the log lines waiting for the uplink, oldest first, while it is ready. */
 	void FlushPendingLogs();
 	bool TickLogForwarding(float DeltaTime);
@@ -450,6 +465,8 @@ private:
 	TMap<FString, FString> DataSubscriptions;
 	/** The entities a data_update has arrived for, so the first one of each is logged. */
 	TSet<FString> DataHeard;
+	/** The entities a write has gone out for, so the first one of each is logged. */
+	TSet<FString> DataWritten;
 	/** The uplink frame types this module does not serve that have arrived, so the first of each is logged. */
 	TSet<FString> UnknownFrames;
 
