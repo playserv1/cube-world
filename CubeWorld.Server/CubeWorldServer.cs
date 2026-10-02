@@ -149,13 +149,18 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     protected override async Task OnPlayerConnected(PlayerSession session)
     {
         var name = session.DisplayName ?? session.Id;
+        var helloAt = Now;
         _loading[session.Id] = null;
         (Inventory inventory, bool isNew) loaded;
         try { loaded = await LoadInventory(session.Id); }
         catch { _loading.TryRemove(session.Id, out _); throw; }
         var (inventory, isNew) = loaded;
         var spawn = Spawn(session.Id, name);
-        var player = new Player(session, inventory, WorldPresence.Arriving(spawn, _elsewhere.GetValueOrDefault(session.Id), Now));
+        var pose = WorldPresence.Arriving(spawn, _elsewhere.GetValueOrDefault(session.Id), Now);
+        var player = new Player(session, inventory, pose)
+        {
+            Guess = (pose.x, pose.y, pose.z), GuessFrom = pose.x == spawn.x && pose.y == spawn.y ? "the spawn" : "presence", ArrivedAt = helloAt,
+        };
         // A crossing takes the hand's charge with it, so a player cannot cross for a full-strength hit.
         if (!ReferenceEquals(player.Pose, spawn)) player.LastAttackTick = _tick;
         player.Moves.Arrive(player.Pose.x, player.Pose.y, player.Pose.z, _region, Now);

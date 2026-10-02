@@ -61,7 +61,18 @@ public sealed partial class CubeWorldServer
     {
         if (player.Dead) return;
         double x = Math.Clamp(command.x, 0, World.Width), y = Math.Clamp(command.y, 0, World.Depth), z = Math.Clamp(command.z, World.MinZ, World.MaxZ + 8);
-        switch (player.Moves.Check(x, y, z, command.seq, Now))
+        var verdict = player.Moves.Check(x, y, z, command.seq, Now);
+        // The first move after a join or a crossing is where the client really is: how far off the guess was, and whether
+        // it was taken, is the hand-over as this server saw it (a refused one puts the player back). The Unreal servers
+        // log the same line.
+        if (!player.FirstMoveLogged && verdict != MoveVerdict.Stale)
+        {
+            player.FirstMoveLogged = true;
+            var (gx, gy, gz) = player.Guess;
+            var off = Math.Sqrt((x - gx) * (x - gx) + (y - gy) * (y - gy) + (z - gz) * (z - gz));
+            _ = Platform.Log($"{RoomName}: first move of {player.Pose.name}: {(verdict == MoveVerdict.Accepted ? "accepted" : "refused")}, {off:0.0} blocks from the guess ({player.GuessFrom}), {Now - player.ArrivedAt} ms after the hello");
+        }
+        switch (verdict)
         {
             case MoveVerdict.Stale: return;
             case MoveVerdict.Refused: Correct(player, x, y, z); return;
@@ -355,6 +366,11 @@ public sealed partial class CubeWorldServer
         public PlayerFall Fall { get; set; } = new();
         public MoveCheck Moves { get; } = new();
         public long CorrectionLoggedAt { get; set; }
+        /// <summary>Where the server guessed the player stands when they came in, from what, and when their hello came.</summary>
+        public (double x, double y, double z) Guess { get; init; }
+        public string GuessFrom { get; init; } = "the spawn";
+        public long ArrivedAt { get; init; }
+        public bool FirstMoveLogged { get; set; }
         public long LastAttackTick { get; set; } = long.MinValue / 2;
         public long LastHurtTick { get; set; } = long.MinValue / 2;
         public DigState? Dig { get; set; }

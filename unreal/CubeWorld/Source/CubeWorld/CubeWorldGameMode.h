@@ -74,6 +74,12 @@ struct FCubeServerPlayer
 	FCubePlayerFall Fall;
 	FCubeMoveCheck Moves;
 	int64 CorrectionLoggedAt = 0;
+	/** Where Arrive guessed the player stands, from what (their hello, another server's presence, or the spawn) and when:
+	 *  the first move is logged against it, the moment a crossing is judged. */
+	FVector Guess = FVector::ZeroVector;
+	const TCHAR* GuessFrom = TEXT("the spawn");
+	int64 ArrivedAt = 0;
+	bool bFirstMoveLogged = false;
 	int64 LastAttackTick = -1000000, LastHurtTick = -1000000;
 	TOptional<FCubeDig> Dig;
 	/** When the player stepped out of this server's region (ms); 0 while they stand in it. */

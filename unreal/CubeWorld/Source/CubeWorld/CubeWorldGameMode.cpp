@@ -418,6 +418,7 @@ void ACubeWorldGameMode::Spawn(FCubeServerPlayer& P)
 void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 {
 	Spawn(P);
+	P.GuessFrom = TEXT("the spawn");
 	const FCubeElsewhere* Seen = Elsewhere.Find(P.Id);
 	const bool bHeard = Seen && CubeSeenJustNow(Seen->SeenAt, Seen->Pose.Health, Now());
 	if (bHeard)
@@ -428,6 +429,7 @@ void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 		{
 			P.X = X; P.Y = Y; P.Z = Seen->Pose.Z; P.Yaw = Seen->Pose.Yaw; P.Pitch = Seen->Pose.Pitch;
 			P.bSneaking = Seen->Pose.bSneaking; P.bSprinting = Seen->Pose.bSprinting;
+			P.GuessFrom = TEXT("presence");
 		}
 	}
 	if (HelloPos)
@@ -435,8 +437,12 @@ void ACubeWorldGameMode::Arrive(FCubeServerPlayer& P, const FVector* HelloPos)
 		P.X = FMath::Clamp(HelloPos->X, 0.0, (double)CubeSpec::Width_);
 		P.Y = FMath::Clamp(HelloPos->Y, 0.0, (double)CubeSpec::Depth);
 		P.Z = FMath::Clamp(HelloPos->Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
+		P.GuessFrom = TEXT("the hello");
 	}
 	if (bHeard || HelloPos) P.LastAttackTick = TickCount;
+	P.Guess = FVector(P.X, P.Y, P.Z);
+	P.ArrivedAt = Now();
+	P.bFirstMoveLogged = false;
 	P.Moves.Arrive(P.X, P.Y, P.Z, Region, Now());
 	NoteWhere(P);
 }
@@ -743,7 +749,15 @@ void ACubeWorldGameMode::OnMove(FCubeServerPlayer* P, double X, double Y, double
 	X = FMath::Clamp(X, 0.0, (double)CubeSpec::Width_);
 	Y = FMath::Clamp(Y, 0.0, (double)CubeSpec::Depth);
 	Z = FMath::Clamp(Z, (double)CubeSpec::MinZ, CubeSpec::MaxZ + 8.0);
-	switch (P->Moves.Check(X, Y, Z, SaidSeq, Now()))
+	const ECubeMoveVerdict Verdict = P->Moves.Check(X, Y, Z, SaidSeq, Now());
+	// The first move after a join or a crossing is where the client really is: how far off the guess was, and whether it
+	// was taken, is the hand-over as this server saw it (a refused one puts the player back).
+	if (!P->bFirstMoveLogged && Verdict != ECubeMoveVerdict::Stale)
+	{
+		P->bFirstMoveLogged = true;
+		ServerLog(FString::Printf(TEXT("first move of %s: %s, %.1f blocks from the guess (%s), %lld ms after the hello"), *P->Name, Verdict == ECubeMoveVerdict::Accepted ? TEXT("accepted") : TEXT("refused"), FVector::Dist(FVector(X, Y, Z), P->Guess), P->GuessFrom, Now() - P->ArrivedAt));
+	}
+	switch (Verdict)
 	{
 	case ECubeMoveVerdict::Stale: return;
 	case ECubeMoveVerdict::Refused: Correct(*P, X, Y, Z); return;
