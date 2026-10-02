@@ -140,15 +140,23 @@ void ACubeWorldGameMode::OnLiveHits(const TArray<TSharedPtr<FJsonObject>>& Rows)
 	if (Rows.Num() >= WindowFull) SubscribeLiveHits();
 }
 
+FCubeBombRecord ACubeWorldGameMode::RecordOf(const TSharedPtr<FJsonObject>& Row)
+{
+	FCubeBombRecord R;
+	R.Id = Str(Row, TEXT("bomb_id")); R.State = Str(Row, TEXT("state")); R.Holder = Str(Row, TEXT("holder"));
+	R.X = Num(Row, TEXT("x")); R.Y = Num(Row, TEXT("y")); R.Z = Num(Row, TEXT("z"));
+	R.VX = Num(Row, TEXT("vx")); R.VY = Num(Row, TEXT("vy")); R.VZ = Num(Row, TEXT("vz"));
+	R.DroppedAt = (int64)Num(Row, TEXT("dropped_at")); R.At = (int64)Num(Row, TEXT("at"));
+	return R;
+}
+
+// The window on `at` stays behind the uplink's subscription as a fallback: a row it brings that the uplink already
+// brought is an echo, and a finished bomb's older rows are dropped (OnBomb).
 void ACubeWorldGameMode::OnLiveBombs(const TArray<TSharedPtr<FJsonObject>>& Rows)
 {
 	for (const TSharedPtr<FJsonObject>& Row : CubeRowsInWrittenOrder(Rows))
 	{
-		FCubeBombRecord R;
-		R.Id = Str(Row, TEXT("bomb_id")); R.State = Str(Row, TEXT("state")); R.Holder = Str(Row, TEXT("holder"));
-		R.X = Num(Row, TEXT("x")); R.Y = Num(Row, TEXT("y")); R.Z = Num(Row, TEXT("z"));
-		R.VX = Num(Row, TEXT("vx")); R.VY = Num(Row, TEXT("vy")); R.VZ = Num(Row, TEXT("vz"));
-		R.DroppedAt = (int64)Num(Row, TEXT("dropped_at")); R.At = (int64)Num(Row, TEXT("at"));
+		const FCubeBombRecord R = RecordOf(Row);
 		LastBombAt = FMath::Max(LastBombAt, R.At);
 		if (!R.Id.IsEmpty()) OnBomb(R, false);
 	}
@@ -181,19 +189,35 @@ void ACubeWorldGameMode::SubscribeUplinkCubes()
 	// The inventories too, as the C# servers hear them: the old server's last write after a crossing and the refill
 	// function's top-ups reach a player who is here.
 	Rooms->SubscribeData(TEXT("CubeInventory"), TEXT("field:player_id"));
+	// The bombs too, by their id as the C# servers hear them (PSV-2977): every row any server or the drop function
+	// writes, whatever its `at`. The window on `at` missed rows stamped below it (a fizzle written with an old time)
+	// and rows beyond its 200, and every bomb it missed ending stayed in play here as a ghost.
+	Rooms->SubscribeData(TEXT("WorldBomb"), TEXT("field:bomb_id"));
 }
 
 // The subscription went out, first after the world was loaded, then on every new uplink socket: what changed before
 // it was in place was not heard, so the table is read again.
 void ACubeWorldGameMode::HandleDataSubscribed(const FString& Entity)
 {
-	if (Entity != CubeEntity || bClosing) return;
+	if (bClosing) return;
+	if (Entity == TEXT("WorldBomb")) { ReloadBombs(); return; }
+	if (Entity != CubeEntity) return;
 	if (CubesSubscribedAt == 0) CubesSubscribedAt = Now();
 	ReconcileCubes();
 }
 
 void ACubeWorldGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
 {
+	if (Update.Entity == TEXT("WorldBomb"))
+	{
+		// The sweep's deletes take nothing out of play: a bomb is deleted only two minutes after it went off.
+		if (Update.IsDelete() || !Update.Data.IsValid()) return;
+		const FCubeBombRecord R = RecordOf(Update.Data);
+		if (R.Id.IsEmpty()) return;
+		LastBombAt = FMath::Max(LastBombAt, R.At);
+		OnBomb(R, false);
+		return;
+	}
 	if (Update.Entity == TEXT("CubeInventory"))
 	{
 		// Only a whole row is a row to merge: one without its stacks would read as the starting stacks.

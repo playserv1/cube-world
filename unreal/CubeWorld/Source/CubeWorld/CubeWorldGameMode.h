@@ -145,6 +145,9 @@ private:
 	void StartOffline();
 	void LoadWorld();
 	void LoadBombs();
+	void ApplyBombTable(const TArray<UWorldBomb*>& Rows);
+	/** Reads the bomb table again: the uplink's subscription is new and heard nothing written before it. */
+	void ReloadBombs();
 	void ClaimRegion(int32 Region);
 	void OpenRoom();
 	void Serve();
@@ -234,6 +237,7 @@ private:
 	FCubeBombRecord Next(const FCubeBombRecord& Bomb, const FString& State, const FString& Holder, double X, double Y, double Z) const;
 	FCubeBombRep BombFrame(const FCubeBombRecord& Bomb, const FCubeLiveBomb* Live) const;
 	static FCubeBombRecord RecordOf(const UWorldBomb* Row);
+	static FCubeBombRecord RecordOf(const TSharedPtr<FJsonObject>& Row);
 
 	// ---- platform data ----------------------------------------------------------------------
 	void WriteCube(const FIntVector& At, int32 Attempt = 0);
@@ -265,6 +269,7 @@ private:
 	TMap<FString, int64> BombsOver;
 	/** Set once the bombs were read at start-up: a live bomb is known from its drop on after that. */
 	bool bBombsLoaded = false;
+	bool bBombsReloading = false;
 	static constexpr int64 BombsOverKeepMs = 15 * 60000;
 	TArray<FCubeRegionRep> Regions;
 	TStrongObjectPtr<UWorldRegion> RegionRow;

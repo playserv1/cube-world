@@ -147,21 +147,7 @@ void ACubeWorldGameMode::LoadBombs()
 		if (!Weak.IsValid()) return;
 		// The bombs are an extra: a world whose bombs cannot be read still opens, without them.
 		if (!bOk) Weak->ServerLog(FString::Printf(TEXT("bombs not loaded, the world opens without them: %s"), *Error.Message));
-		// A bomb can have several rows (the drop function's and the servers'): the one furthest on is the bomb.
-		TMap<FString, FCubeBombRecord> Furthest;
-		for (const UWorldBomb* Row : Rows)
-		{
-			const FCubeBombRecord R = RecordOf(Row);
-			const FCubeBombRecord* Known = Furthest.Find(R.Id);
-			if (!Known || FCubeBombRecord::Rank(R.State) > FCubeBombRecord::Rank(Known->State) || (FCubeBombRecord::Rank(R.State) == FCubeBombRecord::Rank(Known->State) && R.At > Known->At)) Furthest.Add(R.Id, R);
-		}
-		// A bomb the tables say is over is remembered as over, as the C# servers do: a later row from a server that
-		// missed its end does not bring it back.
-		for (const auto& Pair : Furthest)
-		{
-			if (Pair.Value.IsOver()) Weak->BombsOver.Add(Pair.Key, Pair.Value.At);
-			else Weak->OnBomb(Pair.Value, false);
-		}
+		Weak->ApplyBombTable(Rows);
 		Weak->bBombsLoaded = bOk;
 		Weak->RegionTry = 0;
 		Weak->ClaimRegion(0);
@@ -879,6 +865,51 @@ FCubeHitbox ACubeWorldGameMode::HitboxOf(const FCubeServerPlayer& P)
 // ── bombs ────────────────────────────────────────────────────────────────────────────────────────
 // Every server brings every free bomb down, but only the server of the region a bomb is over lets a player pick
 // it up, so two servers never hand out one bomb. A thrown bomb is flown by its thrower's server alone.
+
+/**
+ * The bomb table as it is now: at start-up, and again on every new uplink subscription, which hears nothing of what was
+ * written before it was in place. A bomb can have several rows (the drop function's and the servers'): the one furthest
+ * on is the bomb. One the table says is over goes up here too, if this server still has it in play (it missed the end);
+ * otherwise it is remembered as over, as the C# servers do, and no later row of it brings it back.
+ */
+void ACubeWorldGameMode::ApplyBombTable(const TArray<UWorldBomb*>& Rows)
+{
+	TMap<FString, FCubeBombRecord> Furthest;
+	for (const UWorldBomb* Row : Rows)
+	{
+		const FCubeBombRecord R = RecordOf(Row);
+		const FCubeBombRecord* Known = Furthest.Find(R.Id);
+		if (!Known || FCubeBombRecord::Rank(R.State) > FCubeBombRecord::Rank(Known->State) || (FCubeBombRecord::Rank(R.State) == FCubeBombRecord::Rank(Known->State) && R.At > Known->At)) Furthest.Add(R.Id, R);
+	}
+	for (const auto& Pair : Furthest)
+	{
+		LastBombAt = FMath::Max(LastBombAt, Pair.Value.At);
+		if (Pair.Value.IsOver() && !Bombs.Contains(Pair.Key)) BombsOver.Add(Pair.Key, Pair.Value.At);
+		else if (Pair.Value.IsOver() && Now() - Pair.Value.At > 5000)
+		{
+			// An end missed long ago: the blast was worked out by every server that heard it then, and is not again
+			// here. The bomb just goes out of play, as one that fizzled.
+			FCubeBombRecord Gone = Pair.Value;
+			Gone.State = TEXT("fizzled");
+			OnBomb(Gone, false);
+		}
+		else OnBomb(Pair.Value, false);
+	}
+}
+
+void ACubeWorldGameMode::ReloadBombs()
+{
+	if (bBombsReloading || bOffline) return;
+	bBombsReloading = true;
+	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
+	PlayServ::Data::LoadAll<UWorldBomb>(FPlayServFilter::None(), [Weak](bool bOk, TArray<UWorldBomb*> Rows, const FPlayServError& Error)
+	{
+		if (!Weak.IsValid()) return;
+		Weak->bBombsReloading = false;
+		if (!bOk) { Weak->ServerLog(FString::Printf(TEXT("bombs not read again: %s"), *Error.Message)); return; }
+		Weak->ApplyBombTable(Rows);
+	});
+}
 
 FCubeBombRecord ACubeWorldGameMode::RecordOf(const UWorldBomb* Row)
 {
