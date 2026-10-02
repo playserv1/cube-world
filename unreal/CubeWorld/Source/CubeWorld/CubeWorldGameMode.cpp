@@ -322,11 +322,11 @@ void ACubeWorldGameMode::Serve()
 	State->Color = Color();
 	State->Region = Region;
 	ServerLog(TEXT("world ready"));
-	if (bOffline) { GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, 0.1f, true); return; }
+	if (bOffline) { GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, CubePresenceWriteSeconds, true); return; }
 	// Every write and delete of the shared tables comes over the uplink, as on the C# servers
 	// (CubeWorldGameMode_Live.cpp); the regions are read in the heartbeat.
 	SubscribeUplink();
-	GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, 0.1f, true);
+	GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, CubePresenceWriteSeconds, true);
 	GetWorldTimerManager().SetTimer(RegionTimer, this, &ACubeWorldGameMode::Heartbeat, 5.f, true, 0.f);
 }
 
@@ -634,16 +634,22 @@ void ACubeWorldGameMode::GameTick()
 	Heard.Empty();
 }
 
+/**
+ * 20 times a second the presence rows of this server's players whose pose changed go out (a still player's every 2 s;
+ * both clients send a move only when the pose changed), and every other time everyone's pose, ours and the others', goes
+ * to the clients: the C# servers' ShareMovesAsync (PSV-3015). A player's next save waits for the one before it
+ * (bPresenceBusy), so a slow platform gets fewer saves, never a queue of them.
+ */
 void ACubeWorldGameMode::ShareMoves()
 {
 	static int64 Round = 0;
 	Round++;
-	if (Round % 2 == 0)
-		for (auto& Pair : Players)
-		{
-			FCubeServerPlayer& P = *Pair.Value;
-			if (P.bWelcomed && (P.bMoved || Now() - P.PresenceWrittenAt > 2000)) WritePresence(P);
-		}
+	for (auto& Pair : Players)
+	{
+		FCubeServerPlayer& P = *Pair.Value;
+		if (P.bWelcomed && (P.bMoved || Now() - P.PresenceWrittenAt > 2000)) WritePresence(P);
+	}
+	if (Round % 2 != 0) return;
 	PublishPlayers();
 	WebBroadcastPlayers();
 }

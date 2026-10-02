@@ -61,7 +61,7 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     private async Task RunAsync()
     {
         await LoadWorldAndClaimRegion();    // tries again every 5 s until the tables answer and a region is free
-        StartTicking();                     // the game 20 times a second, player positions 5 times a second
+        StartTicking();                     // the game 20 times a second, player positions 20 times a second when they change
         OpenRoom();
         await KeepRoomOpen();               // until the operator closes the room
         await Restart();

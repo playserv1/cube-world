@@ -415,6 +415,7 @@ bool FCubeWorldPresenceHandOffTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("so does a delete that names no server"), ACubeWorldGameMode::DeleteTakesOut(Elsewhere.Find(TEXT("plr_W")), FString()));
 	TestFalse(TEXT("a delete of a player nobody knows takes out nothing"), ACubeWorldGameMode::DeleteTakesOut(Elsewhere.Find(TEXT("plr_X")), TEXT("red")));
 	TestEqual(TEXT("the row is kept as long as the C# servers keep theirs"), CubeLeaveGraceMs, (int64)2000);
+	TestEqual(TEXT("and written as often as they write theirs, 20 times a second (PSV-3015)"), CubePresenceWriteSeconds, 0.05f);
 	return true;
 }
 

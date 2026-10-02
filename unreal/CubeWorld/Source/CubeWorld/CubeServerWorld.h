@@ -258,6 +258,14 @@ inline bool CubeSeenJustNow(int64 SeenAt, double Health, int64 Now) { return Now
 constexpr int64 CubePresenceTtlMs = 5000;
 
 /**
+ * How often a server writes the presence row of a player of its own whose pose changed: 20 times a second, as the C#
+ * servers do (ShareMovesAsync). At 5 a second a player hosted here moved in jerks for everyone elsewhere: other rooms saw
+ * about 4 positions a second, against 7-9 for a player on a C# server (PSV-3015). Every room still sends the poses to its
+ * own clients 10 times a second.
+ */
+constexpr float CubePresenceWriteSeconds = 0.05f;
+
+/**
  * How long a server keeps the presence row of a player who left before it deletes it. One who crossed is written by the
  * next server well within it; a row deleted at once left nobody in the table until then, so every server lost the
  * player for up to a second and the next one put them at its spawn with full health (PSV-3018). WorldPresence.LeaveGraceMs

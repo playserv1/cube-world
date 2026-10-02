@@ -39,7 +39,7 @@ public:
 	UPROPERTY() FString stacks;
 };
 
-/** Where a player is and how they are, written by their server five times a second and read by the others. */
+/** Where a player is and how they are, written by their server up to 20 times a second, when it changes, and read by the others. */
 UCLASS(PlayServEntity)
 class UWorldPresence : public UObject
 {
