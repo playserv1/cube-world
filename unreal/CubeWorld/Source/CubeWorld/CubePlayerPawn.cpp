@@ -436,8 +436,9 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 	}
 	// -walkto=<x>, -walkto=<x>,<y>, or spots one after another, -walkto=<x>,<y>;<x>,<y>: keep walking towards each spot in
 	// turn, one axis at a time (a border crossing test). The spot reached so far is the game instance's, so the walk goes
-	// on from it after a crossing, at once: walking on blind for 2 s took the walk 15 blocks off its route, over the
-	// next border and into craters it could not climb out of. A fresh join still waits 2 s for the world to settle.
+	// on from it after a crossing. It steers as soon as the welcome is in (the world has arrived by then): walking on
+	// blind for 2 s took the walk 11-15 blocks off its route, over the next border and into craters it could not climb
+	// out of, after a crossing and after a fresh join alike.
 	FString TargetText;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-walkto="), TargetText, false) && !TargetText.IsEmpty())
 	{
@@ -461,7 +462,7 @@ void ACubePlayerPawn::HandleWelcome(const FCubePose& You, bool bTeleport)
 			// must carry the player on (the test of keys surviving a crossing).
 			bMouseCaptured = true;
 			if (!FParse::Param(FCommandLine::Get(), TEXT("holdkeys")) || !Game->bCrossedOnce) { TestForward = 1.f; bTestSprint = true; }
-		}), bKeep ? 0.05f : 2.f, false);
+		}), 0.05f, false);
 		FTimerHandle Where;
 		GetWorldTimerManager().SetTimer(Where, FTimerDelegate::CreateWeakLambda(this, [this]() { Game->Log(FString::Printf(TEXT("walkto: at %.1f %.1f %.1f yaw %.0f in %s"), Body.X, Body.Y, Body.Z, GetControlRotation().Yaw, *Game->Room)); }), 1.f, true);
 	}

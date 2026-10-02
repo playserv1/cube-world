@@ -91,9 +91,10 @@ def analyse(paths):
         helds += held
         fovoffs += fovoff
         for t0, kind, room in marks:
-            # The gap's first frame: the first one the gap holds after the switch (an older log has no gap field: the
-            # first frame drawn after it).
-            i = next((k for k, f in enumerate(frames) if f.t >= t0 - 0.0005 and (f.gap is None or f.gap)), None)
+            # The gap's first frame: the first one the gap holds after the switch. Into a C# room the client's own pawn
+            # takes the view in the switch's own frame, so there it is the first frame drawn after it (as in an older log,
+            # which has no gap field).
+            i = next((k for k, f in enumerate(frames) if f.t >= t0 - 0.0005 and (f.gap is None or f.gap or kind == "Unreal -> C#")), None)
             if i is None or i < 12 or frames[i].t - t0 > 0.1:
                 continue
             p, q = frames[i - 1], frames[i]
@@ -110,7 +111,7 @@ def analyse(paths):
             # The hand-over as a whole: from the frame before the gap until 300 ms after the pawn took the view back.
             if q.fake is None:
                 continue
-            end = next((k for k in range(i, len(frames)) if not frames[k].gap), None)
+            end = next((k for k in range(i + (0 if kind == "Unreal -> C#" else 1), len(frames)) if not frames[k].gap), None) if kind != "Unreal -> C#" else i
             if end is None:
                 continue
             stop = next((k for k in range(end, len(frames)) if frames[k].t > frames[end].t + 0.3), len(frames) - 1)
