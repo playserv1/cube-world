@@ -39,6 +39,9 @@ if [ "$BIN" = /server/CubeWorld/Binaries/Linux/CubeWorldServer ]; then
 fi
 exec "$BIN" CubeWorld "/Engine/Maps/Entry?listen" -cubeserver -nullrhi -nosound -unattended -port="$PORT" -log -stdout -FullStdOutLogOutput "$@"
 EOF
+# A checkout on Windows may still hand this file over with CRLF line endings (.gitattributes keeps it LF), and a script
+# that starts "#!/bin/sh\r" cannot be run at all.
+RUN sed -i 's/\r$//' /server/entrypoint.sh
 USER server
 WORKDIR /server
 # With no allotted port: Iris on UDP 7777, the door on TCP 7787 (ten above). On the pool both are on the allotted one.
