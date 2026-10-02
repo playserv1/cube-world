@@ -15,8 +15,9 @@ pawn is the view), and each crossing's "frame(s) without a view, held from a wro
     python CrossingSnap.py <log> [<log> ...]          (Windows paths, E:/...)
     python CrossingSnap.py --pass <log> [...]         exit 1 unless the camera's pass thresholds hold
 
-Thresholds (the crossing test plan of 2026-10-03): no backward turn of 1 degree or more in a gap's first frame, a field
-of view change under 0.5 degrees there, no "fov off" stretch, and no frame without a view or held from a wrong place.
+Thresholds (the crossing test plan of 2026-10-03): no backward snap of 1 degree or more in a gap's first frame, a field
+of view change under 0.5 degrees there beyond the zoom's own easing, no "fov off" stretch, and no frame without a view
+or held from a wrong place.
 """
 import re
 import sys
@@ -103,11 +104,21 @@ def analyse(paths):
             span = before[-1].t - before[0].t
             rate = abs(signed) / span if span > 0 else 0
             step = turn(p.yaw, q.yaw)
-            backwards = rate >= 20 and step * signed < 0
             meant = q.fake[0] if q.fake else None
-            rows.append(dict(t=t0, kind=kind, room=room, rate=rate, step=step, backwards=backwards, meant=meant,
+            # With -fakemouse the turn the frame should show is known: a snap is the view turning other than the hand
+            # meant, backwards when against the way it was turning. Without it, a turn against the way the view turned
+            # over the 10 frames before. (The hand swings back and forth, so a turn against those 10 frames can be meant.)
+            off = step - meant if meant is not None else step
+            backwards = (abs(off) >= 1 and off * signed < 0) if meant is not None else (rate >= 20 and step * signed < 0)
+            # The field of view's change against the one under way: the zoom eases towards the sprint's or the walk's
+            # (12 per second), so a long switch frame in the middle of a sprint change moves it further. A pop is what
+            # the easing does not account for.
+            pp = frames[i - 2]
+            dt_prev, dt = p.t - pp.t, q.t - p.t
+            easing = (p.fov - pp.fov) * (dt / dt_prev) * max(0.0, 1 - 12 * dt_prev) if dt_prev > 0 else 0.0
+            rows.append(dict(t=t0, kind=kind, room=room, rate=rate, step=step, backwards=backwards, meant=meant, off=off,
                              pitch=(q.pitch - p.pitch) if q.gap is not None else None, dfov=q.fov - p.fov,
-                             frame_ms=(q.t - p.t) * 1000))
+                             pop=(q.fov - p.fov) - easing, frame_ms=(q.t - p.t) * 1000))
             # The hand-over as a whole: from the frame before the gap until 300 ms after the pawn took the view back.
             if q.fake is None:
                 continue
@@ -133,15 +144,16 @@ def main(argv):
     for kind in sorted({r["kind"] for r in rows}):
         k = [r for r in rows if r["kind"] == kind]
         turning = [r for r in k if r["rate"] >= 20]
-        back = [r for r in k if r["backwards"] and abs(r["step"]) >= 1]
-        print(f"  {kind:<16} {len(k):3d}: turning at {len(turning)}; a backward turn of 1 degree or more at {len(back)}, "
-              f"largest {max((abs(r['step']) for r in back), default=0):.1f}; the largest fov change {max((abs(r['dfov']) for r in k), default=0):.2f}")
+        back = [r for r in k if r["backwards"] and abs(r["off"]) >= 1]
+        print(f"  {kind:<16} {len(k):3d}: turning at {len(turning)}; a backward snap of 1 degree or more at {len(back)}, "
+              f"largest {max((abs(r['off']) for r in back), default=0):.1f}; the largest fov change {max((abs(r['dfov']) for r in k), default=0):.2f}, "
+              f"of it not the zoom's easing {max((abs(r['pop']) for r in k), default=0):.2f}")
     for r in rows:
-        flag = "  <<" if (r["backwards"] and abs(r["step"]) >= 1) or abs(r["dfov"]) >= 0.5 else ""
+        flag = "  <<" if (r["backwards"] and abs(r["off"]) >= 1) or abs(r["pop"]) >= 0.5 else ""
         meant = f", the hand meant {r['meant']:+6.2f}" if r["meant"] is not None else ""
         pitch = f", pitch {r['pitch']:+5.2f}" if r["pitch"] is not None else ""
         print(f"{datetime.fromtimestamp(r['t']).strftime('%H:%M:%S.%f')[:-3]} {r['kind']:<16} into {r['room']:<13} turning {r['rate']:5.0f} deg/s;"
-              f" first gap frame ({r['frame_ms']:4.1f} ms): turn {r['step']:+7.2f}{meant}{pitch}, fov {r['dfov']:+5.2f}{flag}")
+              f" first gap frame ({r['frame_ms']:4.1f} ms): turn {r['step']:+7.2f}{meant}{pitch}, fov {r['dfov']:+5.2f} (not easing {r['pop']:+5.2f}){flag}")
     if hands:
         print(f"\nthe hand's turn through each hand-over (gap start to 300 ms after the pawn took the view), {len(hands)} switches:")
         for h in hands:
@@ -157,10 +169,10 @@ def main(argv):
     if not check:
         return 0
     fails = []
-    if any(r["backwards"] and abs(r["step"]) >= 1 for r in rows):
-        fails.append("a backward turn of 1 degree or more in a gap's first frame")
-    if any(abs(r["dfov"]) >= 0.5 for r in rows):
-        fails.append("a field of view change of 0.5 degrees or more in a gap's first frame")
+    if any(r["backwards"] and abs(r["off"]) >= 1 for r in rows):
+        fails.append("a backward snap of 1 degree or more in a gap's first frame")
+    if any(abs(r["pop"]) >= 0.5 for r in rows):
+        fails.append("a field of view change of 0.5 degrees or more in a gap's first frame, beyond the zoom's easing")
     if fovoffs:
         fails.append("a drawn field of view that was not the pawn's")
     if bad_held:
