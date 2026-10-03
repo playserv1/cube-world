@@ -1,0 +1,118 @@
+{
+  "owner": "Artem",
+  "names": {
+    "surface": "Roof Guard",
+    "vault": "Vault Guard"
+  },
+  "box": {
+    "x0": 0,
+    "x1": 12,
+    "y0": 20,
+    "y1": 42,
+    "z0": -3,
+    "z1": -1
+  },
+  "surfaceZ": -1,
+  "entrance": {
+    "x": 6,
+    "y": 41,
+    "z": 0
+  },
+  "posts": {
+    "surface": {
+      "x": 3.5,
+      "y": 40.5,
+      "z": 0,
+      "yaw": 3.14159
+    },
+    "vault": {
+      "x": 8.5,
+      "y": 40.5,
+      "z": 0,
+      "yaw": 3.14159
+    }
+  },
+  "area": {
+    "x0": 0,
+    "x1": 30,
+    "y0": 8,
+    "y1": 47
+  },
+  "blueprint": {
+    "-1": [
+      "ggggggggggggg",
+      "GGGGGgGGGGGGg",
+      "GGGGGGGGGGGGg",
+      "GGGGGGGGGGGGg",
+      "GGGGGGGGGGGGg",
+      "GGGGGGGGGGGGg",
+      "GGGGGGGGGGGGg",
+      "GGGGGGGGGGGGg",
+      "GGGGGGGGGGGGg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggggggggggg",
+      "ggggGGGgggggg",
+      "ggggG..gggggg",
+      "ggggG..gggggg",
+      "ggggGGggggggg"
+    ],
+    "-2": [
+      "GGGGGGGGGGGGG",
+      "G....l.....GG",
+      "............G",
+      "...........WG",
+      "............G",
+      "............G",
+      "...........WG",
+      "............G",
+      "G...l.l....GG",
+      "GGGGG.GGGGGGG",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "dddddGddddddd"
+    ],
+    "-3": [
+      "GGGGGGGGGGGGG",
+      "GllllllllllGG",
+      "...........lG",
+      "...........WG",
+      "...........WG",
+      "...........WG",
+      "...........WG",
+      "...........lG",
+      "Gllll.lllllGG",
+      "GGGGG.GGGGGGG",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "ddddG.Gdddddd",
+      "dddddGGdddddd",
+      "ddddddddddddd"
+    ]
+  }
+}
