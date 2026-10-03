@@ -85,6 +85,35 @@ public class FunctionTests
         }
     }
 
+    /// <summary>
+    /// Only the server of the region a free bomb lies in hands it out, and only to its own players: a bomb a player in the
+    /// next region could reach looked stuck at the border (QA on dev, 2026-10-03). It comes down where only a player standing
+    /// in its own region reaches it.
+    /// </summary>
+    [Fact]
+    public void A_bomb_comes_down_out_of_reach_of_players_in_the_next_region()
+    {
+        for (var region = 0; region < DropBombs.Regions; region++)
+        {
+            var (x0, y0) = (region % DropBombs.Columns * DropBombs.RegionSize, region / DropBombs.Columns * DropBombs.RegionSize);
+            var (x1, y1) = (x0 + DropBombs.RegionSize, y0 + DropBombs.RegionSize);
+            for (var seed = 0; seed < 200; seed++)
+            {
+                foreach (var (x, y) in DropBombs.Spots(region, new Random(seed)))
+                {
+                    bool Reaches(double px, double py) => Server.Bomb.InPickupReach(new Server.Hitbox(px, py, 0, Server.Spec.PlayerHeight), x, y, 0);
+
+                    Assert.True(Reaches(x, y));
+                    // The nearest a player standing in another region gets: just over each of its four borders.
+                    Assert.False(Reaches(Math.BitDecrement((double)x0), y));
+                    Assert.False(Reaches(x1, y));
+                    Assert.False(Reaches(x, Math.BitDecrement((double)y0)));
+                    Assert.False(Reaches(x, y1));
+                }
+            }
+        }
+    }
+
     [Fact]
     public void A_region_keeps_at_most_three_free_bombs_and_the_others_regions_are_not_counted()
     {

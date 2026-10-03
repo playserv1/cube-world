@@ -34,25 +34,28 @@ public sealed partial class CubeWorldServer
         x = World.Centre(_region).X, y = World.Centre(_region).Y, z = 0, health = Spec.MaxHealth,
     };
 
-    /// <summary>Everything the client needs to draw the world: the rules, the changed blocks, the bombs, the inventory.</summary>
+    /// <summary>
+    /// Everything the client needs to draw the world: the rules, the changed blocks, the bombs, the inventory. It goes out
+    /// under the world's lock, as it was read: a bomb or block change made while it was written went out ahead of it, and a
+    /// client drops what comes before its welcome, so the welcome showed the world from before that change. A bomb handed
+    /// to a player crossing in, in that moment, lay on the ground for them, could not be taken, and came to their hand only
+    /// on the next server.
+    /// </summary>
     private void SendWelcome(Player player)
     {
-        WorldCube[] world;
-        object[] bombs;
         lock (_world)
         {
-            world = _world.Overrides.ToArray();
             player.Bomb = _bombs.Values.FirstOrDefault(b => b.Record.state == Bomb.Held && b.Record.holder == player.Pose.player_id)?.Record.bomb_id;
-            bombs = _bombs.Values.Select(b => BombFrame(b.Record, b)).ToArray();
+            Send(player.Session, new
+            {
+                type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = player.Pose,
+                width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
+                layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
+                blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
+                hotbar = Spec.Placeable, world = _world.Overrides.ToArray(), inventory = player.Inventory.Stacks, tick = _tick,
+                bombs = _bombs.Values.Select(b => BombFrame(b.Record, b)).ToArray(),
+            });
         }
-        Send(player.Session, new
-        {
-            type = "welcome", server = _server, color = Color, region = _region, regions = _regions, you = player.Pose,
-            width = World.Width, depth = World.Depth, regionSize = World.RegionSize, minZ = World.MinZ, maxZ = World.MaxZ,
-            layers = Spec.Layers.Select(l => new { l.z, l.kind }), trees = Spec.Trees.Select(t => new { t.x, t.y }),
-            blocks = Spec.Blocks.Select(b => new { kind = b.Kind, b.Hardness, b.NeedsTool, b.Transparent, b.Gravity, b.Drop, breakTicks = b.Breakable ? b.BreakTicks : -1 }),
-            hotbar = Spec.Placeable, world, inventory = player.Inventory.Stacks, tick = _tick, bombs,
-        });
     }
 
     // ── moving ──────────────────────────────────────────────────────────────────────────────────────

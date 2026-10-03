@@ -189,14 +189,22 @@ public sealed class DropBombs : PlatformFunction<object>
         return free.Take(Math.Max(0, free.Count - (MaxFreeBombs - BombsPerRegion)));
     }
 
-    /// <summary>Where a region's new bombs come down: different blocks, a block in from its border.</summary>
+    /// <summary>
+    /// How far in from its region's border a bomb comes down, in blocks. A player picks a bomb up within 1.3 blocks of their
+    /// middle (half their width and 1 more, CubeWorld.Server's Bomb.InPickupReach), and only the server of the region the
+    /// bomb lies in hands it out, to its own players. A bomb a block in from the border was in reach of players standing
+    /// in the next region, on its server, and could not be taken there: it looked stuck at the border.
+    /// </summary>
+    public const int BorderMargin = 2;
+
+    /// <summary>Where a region's new bombs come down: different blocks, <see cref="BorderMargin"/> in from its border.</summary>
     public static List<(int X, int Y)> Spots(int region, Random random)
     {
         var (x0, y0) = (region % Columns * RegionSize, region / Columns * RegionSize);
         var spots = new List<(int X, int Y)>();
         while (spots.Count < BombsPerRegion)
         {
-            var spot = (random.Next(x0 + 1, x0 + RegionSize), random.Next(y0 + 1, y0 + RegionSize));
+            var spot = (random.Next(x0 + BorderMargin, x0 + RegionSize - BorderMargin + 1), random.Next(y0 + BorderMargin, y0 + RegionSize - BorderMargin + 1));
             if (!spots.Contains(spot)) spots.Add(spot);
         }
         return spots;
