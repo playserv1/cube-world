@@ -17,6 +17,9 @@ const CONFIG = (() => {
   return window.CUBEWORLD;
 })();
 const API = CONFIG.api, KEY = CONFIG.clientKey, SLUG = CONFIG.slug ?? "cubeworld";
+// The C# servers' room type and the Unreal servers' (web/app.js ROOM_SLUGS): a room is joined under its own.
+const SLUGS = CONFIG.slugs ?? [SLUG, `${SLUG}-ue`];
+const roomSlugs = {};
 const PROBE = process.argv.includes("--probe");
 const COUNT = PROBE ? 1 : process.env.STRIPS ? process.env.STRIPS.split(",").length : Number(process.env.COUNT ?? 8);
 const PLACE_GAP_MS = 250;   // a held right button repeats every 4 ticks; a little slower than that
@@ -218,7 +221,7 @@ async function api(method, path, token, body) {
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`${API}${path}`, { method, headers, body: body && JSON.stringify(body) });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${json.code || json.title || ""}`);
+  if (!res.ok) throw Object.assign(new Error(`${method} ${path} → ${res.status} ${json.code || json.title || ""}`), { status: res.status });
   return json;
 }
 
@@ -227,9 +230,11 @@ class Bot {
 
   async join(room) {
     this.player = await api("POST", "/auth/players/anon", null, { display_name: this.name });
-    const ticket = await api("POST", `/rooms/${SLUG}/${room}:join`, this.player.access_token, {});
-    const c = ticket.connect;
-    const url = c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${API.replace(/^http/, "ws")}/games/${SLUG}`;
+    const slug = roomSlugs[room] ?? SLUG;
+    const ticket = await api("POST", `/rooms/${slug}/${room}:join`, this.player.access_token, {});
+    // An Unreal server plays browsers on a WebSocket port of its own, named in its attributes (as web/app.js).
+    const c = ticket.connect, door = ticket.attributes?.ws;
+    const url = door ? door : c ? `${c.transport === "wss" ? "wss" : "ws"}://${c.host}:${c.port}/` : `${API.replace(/^http/, "ws")}/games/${slug}`;
     this.socket = new WebSocket(url);
     await new Promise((resolve, reject) => {
       this.socket.onopen = () => this.socket.send(JSON.stringify({
@@ -639,7 +644,9 @@ async function crew(bots, jobs, how, label) {
 
 // ── main ────────────────────────────────────────────────────────────────────────────────────────
 const probe = await api("POST", "/auth/players/anon", null, { display_name: "probe" });
-const rooms = (await api("GET", `/rooms/${SLUG}:browse`, probe.access_token)).data;
+const rooms = (await Promise.all(SLUGS.map(slug => api("GET", `/rooms/${slug}:browse`, probe.access_token)
+  .then(page => page.data.map(r => ({ ...r, slug })), e => { if (e.status === 404) return []; throw e; })))).flat();
+for (const r of rooms) roomSlugs[r.room_name] = r.slug;
 log("rooms:", rooms.map(r => `${r.room_name} ${r.players}/${r.capacity}`).join(", "));
 const room = rooms.find(r => r.room_name.startsWith(`${COLORS[REGION]}-`))?.room_name;
 if (!room) throw new Error(`no ${COLORS[REGION]} room`);
@@ -689,10 +696,14 @@ const STRIPS = ONLY.map((k, i) => ({ k, i, us: [3 * k, 3 * k + 1, 3 * k + 2] }))
 const byCell = new Map(plan.map(b => [cellOf(b), b]));
 const wanted = (u, z) => byCell.get(cellOf(wallCell(u, z)));
 const painted = b => kindAt(b.x, b.y, b.z) === b.kind;
-// Dirt left standing in front of the wall by earlier runs counts as scaffolding: it comes down at the end.
+// Dirt left standing in front of the wall by earlier runs counts as scaffolding: it comes down at the end. Only a
+// pillar, dirt all the way down to the ground: a dirt slab of a house in front of the wall is not scaffolding.
 for (const [k, kind] of overrides) {
   const [x, y, z] = k.split(":").map(Number);
-  if (kind === "dirt" && inRegion(x, y) && depthOf({ x }) >= 1 && depthOf({ x }) <= 5 && z >= 0) scaffold.add(k);
+  if (kind !== "dirt" || !inRegion(x, y) || depthOf({ x }) < 1 || depthOf({ x }) > 5 || z < 0) continue;
+  let pillar = true;
+  for (let zz = z - 1; zz >= 0 && pillar; zz--) if (overrides.get(`${x}:${y}:${zz}`) !== "dirt") pillar = false;
+  if (pillar) scaffold.add(k);
 }
 log("old scaffolding blocks:", scaffold.size);
 
