@@ -2,8 +2,9 @@
 // each shared table and keyed as the C# servers key them (CubeWorldServer.Subscribe). The platform sends every upsert
 // and every delete, whoever made it, the moment it lands, whatever its timestamp. What changed while a subscription
 // was not in place (while the world loaded, or while the uplink reconnected) is not sent again, so a moment after
-// every (re)subscription the table is read again. Which server holds which region is read in the heartbeat every 5 s,
-// as the C# servers read it (LiveRegionsAsync).
+// every (re)subscription the table is read again. Neither is a push the platform lost while the uplink stayed up, so the
+// bomb table is also read every 5 s (CubeBombReadBackMs, PSV-3032). Which server holds which region is read in the
+// heartbeat every 5 s, as the C# servers read it (LiveRegionsAsync).
 //
 // Until PSV-3009 presence and hits came only through windows on their timestamps (collection subscriptions on the
 // realtime socket, with table polls behind them). A window keyed on the writer's clock missed rows stamped below it,
@@ -165,7 +166,8 @@ void ACubeWorldGameMode::HandleDataUpdate(const FPlayServDataUpdate& Update)
 	}
 	if (Update.Entity == BombEntity)
 	{
-		// The sweep's deletes take nothing out of play: a bomb is deleted only two minutes after it went off.
+		// The sweep's deletes take nothing out of play: a bomb is deleted only two minutes after it went off. A bomb whose
+		// end this server never heard goes at the next read of the table, every CubeBombReadBackMs (PSV-3032).
 		if (Update.IsDelete() || !Update.Data.IsValid()) return;
 		const FCubeBombRecord R = RecordOf(Update.Data);
 		if (!R.Id.IsEmpty()) OnBomb(R, false);

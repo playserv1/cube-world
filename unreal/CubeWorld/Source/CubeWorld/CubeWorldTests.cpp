@@ -471,6 +471,56 @@ bool FCubeWorldBombGoneFromTableTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldBombWithNoRowIsNotHandedOutTest,
+	"CubeWorld.Server.ABombWhoseEndWasMissedIsNotHandedOutAndGoesWithinSeconds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// PSV-3032: a bomb whose fizzle the uplink never brought stayed free on an Unreal server, drawn and offered to the players
+// in reach, until the uplink happened to reconnect; the table was read again only then. Now it is read every few seconds.
+// From the read that finds no row of a bomb on, nobody is handed it, and a read CubeBombRecheckMs later takes it out.
+bool FCubeWorldBombWithNoRowIsNotHandedOutTest::RunTest(const FString& Parameters)
+{
+	const int64 T = 1791052000000;
+	const int32 Red = 0, Blue = 1;
+	auto Record = [](const TCHAR* State, double X, double Y, int64 DroppedAt)
+	{
+		FCubeBombRecord R; R.State = State; R.X = X; R.Y = Y; R.DroppedAt = DroppedAt; R.At = DroppedAt;
+		return R;
+	};
+	auto InPlayAs = [](const FCubeBombRecord& R) { FCubeLiveBomb B; B.Record = R; return B; };
+	// Red's region is x 0-24, y 0-24; both lie two blocks in from its border with yellow, as the drop puts them now.
+	const FCubeBombRecord Live = Record(TEXT("free"), 21, 22, T - 60000);
+	const FCubeBombRecord Stale = Record(TEXT("free"), 22, 21, T - 4 * 60000);
+	TMap<FString, int64> Missing;
+
+	TestTrue(TEXT("the table is read again within a few seconds, not only when the uplink reconnects"), CubeBombReadBackMs <= 5000);
+	TestTrue(TEXT("a free bomb over this server's region is handed out"), ACubeWorldGameMode::HandsOut(TEXT("live"), Live, Red, Missing));
+	TestTrue(TEXT("so is one whose end this server missed, until a read of the table shows it"), ACubeWorldGameMode::HandsOut(TEXT("stale"), Stale, Red, Missing));
+	TestFalse(TEXT("not one over another server's region"), ACubeWorldGameMode::HandsOut(TEXT("live"), Live, Blue, Missing));
+	TestFalse(TEXT("nor one already held"), ACubeWorldGameMode::HandsOut(TEXT("live"), Record(TEXT("held"), 21, 22, T - 60000), Red, Missing));
+
+	// The fizzle of "stale" was lost and the drop function has swept its rows: the next read finds none of them.
+	TMap<FString, FCubeLiveBomb> InPlay;
+	InPlay.Add(TEXT("live"), InPlayAs(Live));
+	InPlay.Add(TEXT("stale"), InPlayAs(Stale));
+	const TSet<FString> Table = { TEXT("live"), TEXT("drop-elsewhere") };
+	TestEqual(TEXT("the read that first finds no row of it takes nothing out"), ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T).Num(), 0);
+	TestFalse(TEXT("but from then on nobody is handed it"), ACubeWorldGameMode::HandsOut(TEXT("stale"), Stale, Red, Missing));
+	TestTrue(TEXT("while a bomb the read found a row of is handed out as before"), ACubeWorldGameMode::HandsOut(TEXT("live"), Live, Red, Missing));
+	TestEqual(TEXT("a read a moment later takes nothing out yet"), ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T + 1000).Num(), 0);
+	TestFalse(TEXT("and still hands it to nobody"), ACubeWorldGameMode::HandsOut(TEXT("stale"), Stale, Red, Missing));
+	const TArray<FString> Gone = ACubeWorldGameMode::BombsGoneFromTable(InPlay, Table, Missing, T + CubeBombRecheckMs);
+	TestTrue(TEXT("the read CubeBombRecheckMs on takes it out of play"), Gone.Num() == 1 && Gone[0] == TEXT("stale"));
+
+	// A bomb a read missed for a moment (its row came back in the next one) is handed out again.
+	Missing.Reset();
+	Missing.Add(TEXT("live"), T);
+	ACubeWorldGameMode::BombsGoneFromTable(InPlay, { TEXT("live"), TEXT("stale") }, Missing, T + 1000);
+	TestTrue(TEXT("a bomb the next read found a row of is handed out again"), ACubeWorldGameMode::HandsOut(TEXT("live"), Live, Red, Missing));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCubeWorldKeysetPagingTest,
 	"CubeWorld.Data.AFullReadPagesByRecordId",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)

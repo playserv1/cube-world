@@ -291,6 +291,18 @@ constexpr int64 CubeBombNoRowGraceMs = 10000;
  */
 constexpr int64 CubeBombRecheckMs = 5000;
 
+/**
+ * How often an Unreal server reads the whole bomb table again, whatever the uplink brought (PSV-3032). The uplink sends a
+ * bomb's fizzle or explosion once, and a push the platform loses is never sent again. Until now the table was read only
+ * when a subscription went out (at the start and on every new uplink socket), so a bomb whose end this server missed
+ * stayed free here, drawn and offered to the players in reach, until the uplink happened to drop and come back (on dev
+ * on 2026-10-03 red and green went an hour, 17:37 to 18:37, without that). Now a missed end the table still holds ends
+ * the bomb within this long, and one whose rows the drop function has swept already within this long and
+ * CubeBombRecheckMs more. The table holds about a hundred rows, one page. The C# servers read it every 30 s
+ * (ReadBombsAgainNow).
+ */
+constexpr int64 CubeBombReadBackMs = 5000;
+
 /** How far outside a region the last server may have seen a player who walked in over its border, in blocks. */
 constexpr double CubeCrossingBand = 4.0;
 

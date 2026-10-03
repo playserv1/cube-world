@@ -324,10 +324,12 @@ void ACubeWorldGameMode::Serve()
 	ServerLog(TEXT("world ready"));
 	if (bOffline) { GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, CubePresenceWriteSeconds, true); return; }
 	// Every write and delete of the shared tables comes over the uplink, as on the C# servers
-	// (CubeWorldGameMode_Live.cpp); the regions are read in the heartbeat.
+	// (CubeWorldGameMode_Live.cpp); the regions are read in the heartbeat. The bomb table is read again every few
+	// seconds as well: a bomb's end comes over the uplink once, and a push the platform loses is never sent again.
 	SubscribeUplink();
 	GetWorldTimerManager().SetTimer(MoveTimer, this, &ACubeWorldGameMode::ShareMoves, CubePresenceWriteSeconds, true);
 	GetWorldTimerManager().SetTimer(RegionTimer, this, &ACubeWorldGameMode::Heartbeat, 5.f, true, 0.f);
+	GetWorldTimerManager().SetTimer(BombsReadTimer, this, &ACubeWorldGameMode::ReloadBombs, CubeBombReadBackMs / 1000.f, true);
 }
 
 void ACubeWorldGameMode::EndPlay(const EEndPlayReason::Type Reason)
@@ -971,7 +973,7 @@ void ACubeWorldGameMode::ApplyBombTable(const TArray<UWorldBomb*>& Rows)
 
 void ACubeWorldGameMode::ReloadBombs()
 {
-	if (bBombsReloading || bOffline) return;
+	if (bBombsReloading || bOffline || bClosing) return;
 	bBombsReloading = true;
 	TWeakObjectPtr<ACubeWorldGameMode> Weak(this);
 	PlayServ::Data::LoadAll<UWorldBomb>(FPlayServFilter::None(), [Weak](bool bOk, TArray<UWorldBomb*> Rows, const FPlayServError& Error)
@@ -999,6 +1001,11 @@ TArray<FString> ACubeWorldGameMode::BombsGoneFromTable(const TMap<FString, FCube
 		}
 	MissingSince = MoveTemp(StillMissing);
 	return Gone;
+}
+
+bool ACubeWorldGameMode::HandsOut(const FString& BombId, const FCubeBombRecord& Bomb, int32 ServerRegion, const TMap<FString, int64>& MissingSince)
+{
+	return Bomb.State == TEXT("free") && CubeSpec::RegionOf(Bomb.X, Bomb.Y) == ServerRegion && !MissingSince.Contains(BombId);
 }
 
 /**
@@ -1071,7 +1078,7 @@ void ACubeWorldGameMode::TickBombs()
 		if (Bomb.State == TEXT("free"))
 		{
 			Live->Z = CubeBombs::Descend(World.Voxels, Bomb.X, Bomb.Y, Live->Z);
-			if (CubeSpec::RegionOf(Bomb.X, Bomb.Y) != Region) continue;
+			if (!HandsOut(Id, Bomb, Region, BombsMissingSince)) continue;
 			for (auto& Pair : Players)
 			{
 				FCubeServerPlayer& P = *Pair.Value;

@@ -195,6 +195,12 @@ public:
 	 * as when each bomb was first found with no row, and goes out as that for the bombs this read did not take out.
 	 */
 	static TArray<FString> BombsGoneFromTable(const TMap<FString, FCubeLiveBomb>& InPlay, const TSet<FString>& InTable, TMap<FString, int64>& MissingSince, int64 NowMs);
+	/**
+	 * Whether the server of ServerRegion hands this bomb to a player in reach (TickBombs): a free bomb over its own region,
+	 * unless the last read of the bomb table found no row of it (MissingSince, see BombsGoneFromTable). Such a bomb is over
+	 * and this server missed its end (PSV-3032); it goes out of play at a later read, and until then nobody takes it.
+	 */
+	static bool HandsOut(const FString& BombId, const FCubeBombRecord& Bomb, int32 ServerRegion, const TMap<FString, int64>& MissingSince);
 
 private:
 	// ---- startup ----------------------------------------------------------------------------
@@ -203,7 +209,10 @@ private:
 	void LoadWorld();
 	void LoadBombs();
 	void ApplyBombTable(const TArray<UWorldBomb*>& Rows);
-	/** Reads the bomb table again: the uplink's subscription is new and heard nothing written before it. */
+	/**
+	 * Reads the bomb table again: when the uplink's subscription is new and heard nothing written before it, and every
+	 * CubeBombReadBackMs, since a push the platform lost is never sent again (PSV-3032).
+	 */
 	void ReloadBombs();
 	/** After a read of the bomb table again: the bombs in play here that the table no longer has go out of play (BombsGoneFromTable). */
 	void EndBombsGoneFromTable(const TArray<UWorldBomb*>& Rows);
@@ -343,6 +352,8 @@ private:
 	/** The bombs in play here that the last read of the bomb table had no row of, and since when (BombsGoneFromTable). */
 	TMap<FString, int64> BombsMissingSince;
 	FTimerHandle BombsRecheckTimer;
+	/** The bomb table is read again every CubeBombReadBackMs while the room is up (PSV-3032). */
+	FTimerHandle BombsReadTimer;
 	TArray<FCubeRegionRep> Regions;
 	TStrongObjectPtr<UWorldRegion> RegionRow;
 	UPROPERTY() ACubeWorldState* State = nullptr;
