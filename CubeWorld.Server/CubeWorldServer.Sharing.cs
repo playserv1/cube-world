@@ -152,28 +152,34 @@ public sealed partial class CubeWorldServer
     }
 
     /// <summary>
-    /// Every 30 s the blocks written lately are read back from the table, and what this server missed is applied: the
-    /// platform's pushes to a game server are lost when the uplink drops for a moment, and nothing replays them, so a
-    /// block placed then stayed wrong here until the process restarted. The window reaches two minutes further back
-    /// than the last read, for writers whose clocks run behind.
+    /// Every 30 s the whole table is read back and what this server missed is applied: the platform's pushes to a game
+    /// server are lost when the uplink drops for a moment, and nothing replays them, so a block placed or deleted then
+    /// stayed wrong here until the process restarted. A block that changed here since the read began is left as it is;
+    /// a row is taken only when it is newer than what this server holds;
+    /// a block whose row is gone goes back to the terrain (World.Forget), as ACubeWorldGameMode::ReconcileCubes does
+    /// on the Unreal servers.
     /// </summary>
     private async Task ReconcileCubesAsync()
     {
         var started = Now;
-        var since = _cubesReadAt - 120_000;
-        var rows = await ReadAll(() => Platform.Table<WorldCube>().Query().WithFilters(new RecordFilterTerm("at", "gt", since)));
-        var missed = 0;
+        long asOf;
+        lock (_world) asOf = _world.Version;
+        var rows = (await ReadAll(() => Platform.Table<WorldCube>().Query())).Select(r => r.Fields!).ToList();
+        int taken = 0, gone;
         lock (_world)
         {
-            foreach (var cube in rows.Select(r => r.Fields!))
+            foreach (var cube in rows)
             {
-                if (!_world.Reconcile(cube, _server, Now)) continue;
+                if (_world.ChangedSince(cube.key, asOf) || !_world.Reconcile(cube, _server, Now)) continue;
                 _heard.Add(new Change("upsert", cube));
-                missed++;
+                taken++;
             }
+            var forgotten = _world.Forget(rows.Select(c => c.key).ToHashSet(), asOf, _server, Now);
+            foreach (var cube in forgotten) _heard.Add(new Change("delete", cube));
+            gone = forgotten.Count;
         }
         _cubesReadAt = started;
-        if (missed > 0) _ = Platform.Log($"{RoomName}: {missed} block changes missed over the uplink were read back from the table");
+        if (taken + gone > 0) _ = Platform.Log($"{RoomName}: blocks read back from the table: {taken} taken, {gone} back to the terrain");
     }
 
     private void ReconcileCubesNow()

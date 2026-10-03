@@ -272,6 +272,12 @@ public sealed class World
 
     private readonly Dictionary<string, WorldCube> _overrides = new();
 
+    /// <summary>When each block last changed here, in <see cref="Version"/>s: a read of the table begun before that is behind it.</summary>
+    private readonly Dictionary<string, long> _changedAt = new();
+
+    /// <summary>Counts every change of a block on this server, from here or heard from elsewhere.</summary>
+    public long Version { get; private set; }
+
     public IEnumerable<WorldCube> Overrides => _overrides.Values;
 
     /// <summary>The region a spot belongs to: region r is column r % <see cref="Columns"/> of row r / <see cref="Columns"/>.</summary>
@@ -360,11 +366,36 @@ public sealed class World
     /// <summary>A change another server wrote. Returns whether it changed anything here.</summary>
     public bool Apply(string op, WorldCube cube)
     {
-        if (op == "delete") return _overrides.Remove(cube.key);
+        if (op == "delete")
+        {
+            if (!_overrides.Remove(cube.key)) return false;
+            _changedAt[cube.key] = ++Version;
+            return true;
+        }
         cube.kind = Spec.Canonical(cube.kind);
         if (!Inside(cube.x, cube.y, cube.z) || _overrides.TryGetValue(cube.key, out var known) && known.kind == cube.kind) return false;
         _overrides[cube.key] = cube;
+        _changedAt[cube.key] = ++Version;
         return true;
+    }
+
+    /// <summary>Whether the block changed here after <paramref name="asOf"/>: a read begun before then is behind it.</summary>
+    public bool ChangedSince(string key, long asOf) => _changedAt.GetValueOrDefault(key) > asOf;
+
+    /// <summary>
+    /// The whole table, read from <paramref name="asOf"/> on: every block this server holds whose row is not in it goes
+    /// back to the terrain, and is returned. A delete pushed while the uplink was down is never sent again (on dev on
+    /// 2026-10-03 yellow kept seven blocks of a world reset that every other server had dropped). A block that changed
+    /// here after the read began is newer than the read, and this server's own write of the last minute may not be in
+    /// the table yet: both stay.
+    /// </summary>
+    public List<WorldCube> Forget(IReadOnlySet<string> found, long asOf, string self, long now)
+    {
+        var gone = _overrides.Values.Where(cube => !found.Contains(cube.key)
+            && !ChangedSince(cube.key, asOf)
+            && !(cube.placed_on == self && cube.at is { } at && now - at < 60_000)).ToList();
+        foreach (var cube in gone) Apply("delete", cube);
+        return gone;
     }
 
     /// <summary>
@@ -513,6 +544,7 @@ public sealed class World
     {
         var cube = new WorldCube { key = Key(x, y, z), x = x, y = y, z = z, kind = kind, placed_by = by, placed_on = on, at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
         _overrides[cube.key] = cube;
+        _changedAt[cube.key] = ++Version;
         update.Changes.Add(new Change("upsert", cube));
     }
 

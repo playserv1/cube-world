@@ -84,6 +84,38 @@ public class SharedRowTests
     }
 
     [Fact]
+    public void A_block_whose_row_is_gone_from_the_table_goes_back_to_the_terrain()
+    {
+        // A world reset deleted the room's gold while yellow's uplink was down: the deletes never reached it.
+        var world = new World();
+        world.Apply("upsert", OnServer(Cube(7, 25, -1, "gold", 100_000), "2kk13"));
+        world.Apply("upsert", OnServer(Cube(5, 31, -2, "air", 100_000), "2kk13"));
+        world.Apply("upsert", Cube(8, 8, 0, "brick", 100_000));
+
+        var gone = world.Forget(new HashSet<string> { "8:8:0" }, world.Version, "2kk13", 200_000);
+
+        Assert.Equal(["7:25:-1", "5:31:-2"], gone.Select(c => c.key).Order().Reverse());
+        Assert.Equal("grass", world.KindAt(7, 25, -1));
+        Assert.Equal("dirt", world.KindAt(5, 31, -2));
+        Assert.Equal("brick", world.KindAt(8, 8, 0));
+    }
+
+    [Fact]
+    public void A_block_changed_since_the_read_began_or_written_here_a_moment_ago_is_not_forgotten()
+    {
+        var world = new World();
+        world.Apply("upsert", OnServer(Cube(4, 4, 0, "gold", 190_000), "2kk13"));
+        var asOf = world.Version;
+        world.Apply("upsert", Cube(5, 5, 0, "brick", 100_000));
+
+        // Our own write of ten seconds ago is not in the table yet; the brick was heard while the read ran.
+        Assert.Empty(world.Forget(new HashSet<string>(), asOf, "2kk13", 200_000));
+        Assert.True(world.ChangedSince("5:5:0", asOf));
+        Assert.Equal("gold", world.KindAt(4, 4, 0));
+        Assert.Equal("brick", world.KindAt(5, 5, 0));
+    }
+
+    [Fact]
     public void A_server_edits_for_players_in_its_region_or_just_past_its_border_only()
     {
         // Region 3, yellow: x 0..24, y 24..48.
