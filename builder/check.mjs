@@ -33,7 +33,7 @@ export function checkPlan(rx, ry, { verbose = false } = {}) {
         let ground = z - 1, pillar = 0;
         while (ground > b.z - 10 && !solid(x, y, ground)) { if (planKeys.has(key(x, y, ground))) { pillar = -1; break; } ground--; pillar++; }
         if (pillar < 0 || pillar > 8) continue;
-        if (aimPlace(w, eyeOfCell({ x, y, z }), b)) return { x, y, z, pillar };
+        if (aimPlace(w, eyeOfCell({ x, y, z }), b, process.env.FINE === "1")) return { x, y, z, pillar };
       }
     }
     return null;

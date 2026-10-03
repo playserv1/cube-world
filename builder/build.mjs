@@ -53,16 +53,17 @@ const rooms = await bots[0].browse();
 const room = rooms.find(r => r.room_name.startsWith(`${color}-`));
 if (!room) throw new Error(`no ${color} room is up`);
 if (room.capacity - room.players < COUNT) log(`${room.room_name} has ${room.capacity - room.players} places free for ${COUNT} builders: the rest wait their turn`);
-for (const bot of bots) {
+// All in at once, a little apart (the platform takes a burst of sign-ins and joins without trouble).
+await Promise.all(bots.map(async (bot, i) => {
+  await sleep(i * 100);
   if (!bot.player) await bot.signIn();
   bot.roomSlugs = { ...bots[0].roomSlugs };
   for (let attempt = 1; ; attempt++) {
     try { await bot.enter(room.room_name, true); break; }
-    catch (e) { if (attempt >= 10) throw e; await sleep(2000 * attempt); }
+    catch (e) { if (attempt >= 10) throw e; await sleep(1000 * attempt); }
   }
   bot.start();
-  await sleep(300);
-}
+}));
 log(`${bots.length} builders on ${room.room_name}${DRY ? " (dry run)" : ""}`);
 
 const plan = housePlan(rx, ry);
@@ -91,6 +92,20 @@ const buildStart = now();
 left = await work(site, jobs, "place", { label: "building" });
 log(`built in ${((now() - buildStart) / 60000).toFixed(1)} min, ${left.length} not yet right`);
 
+// Anything in the region the plan does not have: a leaf the clearing could not reach, a stray block.
+const strays = () => {
+  const out = [];
+  for (let x = rx; x < rx + 24; x++) for (let y = ry; y < ry + 24; y++) for (let z = 0; z <= ROOF + 2; z++) {
+    const kind = world.onServer(x, y, z), w = want.get(key(x, y, z));
+    if (kind !== "air" && !w && !site.scaffold.has(key(x, y, z))) out.push({ x, y, z, kind });
+  }
+  return out;
+};
+{
+  const extra = strays();
+  if (extra.length) { log(`breaking out ${extra.length} blocks the plan does not have: ${extra.slice(0, 6).map(b => `${cellOf(b)} ${b.kind}`).join(", ")}`); await work(site, extra, "dig", { label: "strays", quiet: true }); }
+}
+
 // 3. Repair what is still not right; take down any scaffolding left standing (it may sit in a plan cell), and repair again.
 const notRight = () => plan.filter(b => world.onServer(b.x, b.y, b.z) !== b.kind);
 for (let round = 1; round <= 2 && (notRight().length || site.scaffold.size); round++) {
@@ -116,6 +131,9 @@ for (let s = -1; s < STOREYS; s++) {
   log(`inspection, ${s < 0 ? "ground" : `storey ${s + 1}`}: ${all.length - bad.length}/${all.length}${bad.length ? `, missing ${bad.slice(0, 20).map(b => `${cellOf(b)} ${b.kind} (${b.role})`).join(", ")}${bad.length > 20 ? " …" : ""}` : ""}`);
 }
 log(`scaffolding left: ${site.scaffold.size}`);
+const extraLeft = strays();
+missing += extraLeft.length;
+log(`blocks the plan does not have: ${extraLeft.length}${extraLeft.length ? ` (${extraLeft.slice(0, 10).map(b => `${cellOf(b)} ${b.kind}`).join(", ")})` : ""}`);
 log(`${missing ? `${missing} blocks missing` : "the house is complete"}; ${((now() - started) / 60000).toFixed(1)} min from the first builder in`);
 for (const b of bots) log(`  ${b.name}: placed ${b.stats.placed}, dug ${b.stats.dug}, scaffolding ${b.stats.scaffold}, fetched blocks ${b.stats.relogs} times`);
 if (fake) log(`server: ${fake.counts.placed} placed, ${fake.counts.refused} refused, ${fake.counts.broken} broken`);

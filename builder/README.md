@@ -1,7 +1,9 @@
 # House builder
 
-A crew of bots builds a ten-storey house over a whole region of the dev world: 24 × 24, ten storeys of rooms
-with furniture, two staircases, a roof with a railing. About 12 000 blocks. The bots are guests of the platform
+A crew of bots builds a five-storey house in the middle of a region of the dev world: 20 × 20, with two blocks of
+open ground all round it to the region's edge; five storeys of rooms with furniture, two staircases, a roof with a
+railing. About 4 600 blocks. The size is three numbers at the top of `plan.mjs` (`STOREYS`, `SIZE`, `MARGIN`);
+the rooms, the corridor, the stairs, the doors and the tables are worked out from them. The bots are guests of the platform
 like any browser player, and they play by the browser client's rules:
 
 - they walk with the client's own physics (`web/physics.js`): no flying, a jump of one block, a fall of up to six;
@@ -21,7 +23,9 @@ Options: `--bots 15` (a room holds 16; one place is left free), `--scale 0.25` (
 (seconds the crew stays on the roof). The region must have a C# room up (`pink`, `purple`, `yellow`, …): the
 crew reads `web/config.js` for the API and the client key. Exit code 0 when the inspection finds the house whole.
 
-It takes about ten to twelve minutes: clearing the oaks, building, a repair pass, the inspection. The log says
+It takes about six minutes on dev (5.8 min, every block in place): clearing the oaks, building, a repair
+pass if needed, the inspection. A region with something already built on it is cleared first, block by block:
+reset it (`CubeWorld.Reset`) for a quick start. The log says
 every 30 s how far the crew is and where the time goes (searching, walking, scaffolding, placing, waiting).
 
 ## How it works
@@ -65,7 +69,7 @@ putting the neighbour back. Then every block of the plan is checked against the 
 `--dry-run` replaces `fetch` and `WebSocket` with `fake.mjs`: an in-process server that keeps the C# server's
 rules (reach 4.5 + 1 to the block a placement goes against, only into air, never into a player, only in its own
 region, starting stacks of 64, break times by hardness, 40 ms of latency each way). The clock is scaled, so a
-twelve-minute build is rehearsed in a few minutes. CPU time counts `1 / scale` times over in a dry run, so its
+five-minute build is rehearsed in a couple of minutes. CPU time counts `1 / scale` times over in a dry run, so its
 timings are on the slow side.
 
 ## The logo

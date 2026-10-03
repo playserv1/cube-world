@@ -152,6 +152,12 @@ export async function work(site, jobs, how, { label, room, quiet = false }) {
   for (const k of [...pending]) hook(k);
   if (how === "dig") site.pendingDig = pending; else site.pendingPlace = pending;
   const anchored = b => how === "dig" || DIRS.some(([dx, dy, dz]) => world.solid(b.x + dx, b.y + dy, b.z + dz));
+  // The slab beside one over a wall waits for it when the slab on the wall's other side is already in, whoever's
+  // zone it is in: with both its neighbours in, that one would be seen from above only, and the storey above covers it.
+  const besideWall = b => b.role === "slab" && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => {
+    const k = key(b.x + dx, b.y + dy, b.z);
+    return pending.has(k) && byKey.get(k).role === "slab over wall" && world.solid(b.x + 2 * dx, b.y + 2 * dy, b.z);
+  });
   const aside = new Set(), tries = new Map(), cool = new Map(), why = {};
   // Where the time goes, for the report: searching for the next job, walking, putting up scaffolding, the bursts.
   const spent = { search: 0, walk: 0, scaffold: 0, burst: 0, bursts: 0, blocks: 0, idle: 0 };
@@ -199,11 +205,11 @@ export async function work(site, jobs, how, { label, room, quiet = false }) {
       const b = byKey.get(k);
       if (how === "place" && b.step !== low) continue;
       if (b.role === "hatch" && (bandOf !== bot || climber.get(b.zone) !== bot)) continue;   // a hatch is its climber's way up
-      if (!anchored(b) || (stock && how === "place" && (bot.inventory[b.kind] ?? 0) <= (b.kind === "dirt" ? DIRT_RESERVE : 0))) continue;
+      if (!anchored(b) || besideWall(b) || (stock && how === "place" && (bot.inventory[b.kind] ?? 0) <= (b.kind === "dirt" ? DIRT_RESERVE : 0))) continue;
       out.push(b);
     }
     // The slab is laid from the far side in: a block already down in between would hide the ones beyond it.
-    const far = b => b.phase === 3 && b.role === "slab";
+    const far = b => b.phase === 3 && (b.role === "slab" || b.role === "slab over wall");
     return out.sort((a, b) => (rank(a) - rank(b)) + (Math.hypot(a.x - c.x, a.y - c.y) - Math.hypot(b.x - c.x, b.y - c.y)) * (far(a) && far(b) ? -1 : 1));
   }
 
@@ -224,7 +230,7 @@ export async function work(site, jobs, how, { label, room, quiet = false }) {
       if (result !== "ok") { because(result); fail(k, target); if (process.env.BUILDER_DEBUG === bot.name) log(`    ${bot.name}: ${result} at ${k} from ${JSON.stringify(bot.cell())}`); if (n === 0) return 0; }
       else n++;
       const open = pool.filter(b => live(cellOf(b)) && !site.claimed.has(cellOf(b)) && !looksDone(b) && !cooled(cellOf(b)) && anchored(b)
-        && (how !== "place" || (bot.inventory[b.kind] ?? 0) > 0) && (b.role !== "hatch") && !site.someoneIn(b));
+        && (how !== "place" || (bot.inventory[b.kind] ?? 0) > 0) && (b.role !== "hatch") && !besideWall(b) && !site.someoneIn(b));
       // the slab from the far side in; walls and the rest the nearest first
       if (open.length && open[0].phase === 3) open.reverse();
       target = open.slice(0, 20).find(b => how === "place" ? aimPlace(world, bot.eye, b) : aimDig(world, bot.eye, b)) ?? null;
@@ -416,7 +422,7 @@ export async function repair(site, plan, { label = "repair" } = {}) {
 
   async function reachAndDo(bot, b, how) {
     await bot.settle();
-    const via = site.stand(bot, b, how) ?? (how === "place" ? site.scaffoldFor(bot, b, how) : null);
+    const via = site.stand(bot, b, how) ?? site.scaffoldFor(bot, b, how);
     if (!via) return false;
     if (!(await bot.go(via.path))) return false;
     if (via.h !== undefined && !(await bot.pillarUp(via.h, site.scaffold))) { await bot.digDown(site.scaffold); return false; }
