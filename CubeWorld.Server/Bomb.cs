@@ -4,7 +4,7 @@ namespace CubeWorld.Server;
 
 /// <summary>
 /// A bomb. The drop function writes it "free" high above the world; it comes down under a parachute, a player picks
-/// it up ("held"), throws it ("flying") and it explodes where it lands ("exploded"). When a sixth bomb is dropped
+/// it up ("held"), throws it ("flying") and it explodes where it lands ("exploded"). When a fourth bomb is dropped
 /// the oldest free one goes up in a puff of smoke ("fizzled"). A bomb only ever moves forward through these states,
 /// so a server applies an update only when it moves the bomb on (<see cref="Bomb.Rank"/>).
 /// </summary>

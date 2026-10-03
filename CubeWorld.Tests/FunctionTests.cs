@@ -86,7 +86,7 @@ public class FunctionTests
     }
 
     [Fact]
-    public void A_region_keeps_at_most_five_free_bombs_and_the_others_regions_are_not_counted()
+    public void A_region_keeps_at_most_three_free_bombs_and_the_others_regions_are_not_counted()
     {
         var bombs = Enumerable.Range(0, 5)
             .Select(i => new Drop.WorldBomb { bomb_id = $"a{i}", state = "free", x = 5, y = 5, dropped_at = 1000 + i })
@@ -96,7 +96,7 @@ public class FunctionTests
 
         var fizzled = DropBombs.OldestFreeToFizzle(bombs, region: 0).Select(b => b.bomb_id).ToList();
 
-        Assert.Equal(["a0", "a1"], fizzled);
+        Assert.Equal(["a0", "a1", "a2", "a3"], fizzled);
         Assert.Empty(DropBombs.OldestFreeToFizzle(bombs, region: 1));
     }
 }

@@ -36,7 +36,7 @@ room's region once a minute, which a player picks up, throws, and blows a crater
 | `CubeWorld.Server/Bomb.cs` | The `WorldBomb` table and how a bomb moves: the parachute, the pickup reach, the throw. |
 | `CubeWorld.Refill/` | The refill function. |
 | `CubeWorld.Reset/` | The reset function: every changed block deleted, the three regions in parallel, so the world is the generated terrain again. |
-| `CubeWorld.Drop/` | The bomb drop function: two bombs a minute over every room's region, at most five free in a region, the oldest fizzles out for a new one; finished bombs are swept after two minutes. |
+| `CubeWorld.Drop/` | The bomb drop function: two bombs a minute over every room's region, at most three free in a region, the oldest fizzles out for a new one; finished bombs are swept after two minutes. |
 | `CubeWorld.Tests/` | The world's rules. |
 | `deploy/web/` | The client's image for the web VM: Caddy serving `web/`. |
 | `infra/vultr/` | Terraform for the web VM (Vultr, Caddy in Docker), and its guide. |

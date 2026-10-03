@@ -955,14 +955,14 @@ function enterOffline() {
     else { overrides.set(cube.key, kind); emit({ type: "cube", op: "upsert", cube, remote: false }); }
   };
   // Bombs as the drop function and the server handle them: two dropped every minute over each room's region (here the
-  // one local room's, region 1; two more to start, near the spawn), at most five free in a region, picked up by walking
+  // one local room's, region 1; two more to start, near the spawn), at most three free in a region, picked up by walking
   // into them, thrown with right click.
   const offBombs = new Map();
     const record = (b, p, extra = {}) => ({ bomb_id: b.id, state: b.state, holder: b.holder ?? "", ...toServer(p), vx: 0, vy: 0, vz: 0, dropped_at: b.dropped, at: Date.now(), ...extra });
   const emitBomb = (b, p, extra) => emit({ type: "bomb", bomb: record(b, p, extra), age: 0, z: p.y });
   const dropBomb = (x, z) => {
     const free = [...offBombs.values()].filter(b => b.state === "free").sort((a, b) => a.dropped - b.dropped);
-    while (free.length >= 5) { const old = free.shift(); old.state = "fizzled"; offBombs.delete(old.id); emitBomb(old, old.p); }
+    while (free.length >= 3) { const old = free.shift(); old.state = "fizzled"; offBombs.delete(old.id); emitBomb(old, old.p); }
     const b = { id: `bomb-${Date.now()}-${offBombs.size}`, state: "free", p: new THREE.Vector3(x, S.DROP_HEIGHT, z), dropped: Date.now() };
     offBombs.set(b.id, b);
     emitBomb(b, b.p);

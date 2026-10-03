@@ -37,10 +37,10 @@ public sealed class WorldRegion
     public long seen_at { get; set; }
 }
 
-/// Every minute: two bombs over every region a server holds, that is over every room. At most five lie free in a region.
+/// Every minute: two bombs over every region a server holds, that is over every room. At most three lie free in a region.
 public sealed class DropBombs : PlatformFunction<object>
 {
-    public const int BombsPerRegion = 2, MaxFreeBombs = 5;
+    public const int BombsPerRegion = 2, MaxFreeBombs = 3;
     private const int PageSize = 200;
 
     /// The world's regions, as CubeWorld.Server's World lays them out: 24 × 24 blocks, three to a row, two rows.
