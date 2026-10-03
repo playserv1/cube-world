@@ -373,6 +373,9 @@ private:
 	void HandleUplinkRefused(const FString& Reason, bool bPermanent);
 	void HandleTicketOffer(const TSharedPtr<FJsonObject>& Frame);
 	void HandleJoinAck(const TSharedPtr<FJsonObject>& Frame);
+	/** An operator removed a player from a room (participant_remove) or closed a room (room_close): OnPlayerRemoved or
+	 *  OnRoomEnded with the operator's reason, and the answer the platform waits for. */
+	void HandleOperatorRoomAction(const FString& Type, const TSharedPtr<FJsonObject>& Frame);
 	void HandleDataUpdate(const TSharedPtr<FJsonObject>& Frame);
 	/** Sends one data subscription on the ready uplink and reports it through OnDataSubscribed. */
 	bool SendDataSubscription(const FString& Entity, const FString& KeyPath);

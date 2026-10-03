@@ -20,6 +20,12 @@ namespace PlayServRoomsWire
 	static const TCHAR* TypeJoinAck = TEXT("join_ack");
 	static const TCHAR* TypeFrameTooLarge = TEXT("frame_too_large");
 	static const TCHAR* TypeDataUpdate = TEXT("data_update");
+	// An operator's room actions (uplink contract §1.4, PSV-2864 / PSV-2862): sent only to a socket that declared them.
+	static const TCHAR* TypeParticipantRemove = TEXT("participant_remove");
+	static const TCHAR* TypeParticipantRemoveResult = TEXT("participant_remove_result");
+	static const TCHAR* TypeRoomClose = TEXT("room_close");
+	static const TCHAR* TypeRoomCloseResult = TEXT("room_close_result");
+	static const TCHAR* FieldRequestId = TEXT("request_id");
 
 	static const TCHAR* FieldType = TEXT("type");
 	static const TCHAR* FieldExecutorSlug = TEXT("executor_slug");
@@ -92,6 +98,10 @@ namespace PlayServRoomsWire
 	static const TCHAR* AdmissionConsume = TEXT("consume");
 	static const TCHAR* CapabilityAdmissionPush = TEXT("admission_push");
 	static const TCHAR* CapabilityRoomCreate = TEXT("room_create");
+	static const TCHAR* CapabilityParticipantRemove = TEXT("participant_remove");
+	static const TCHAR* CapabilityRoomClose = TEXT("room_close");
+	static const TCHAR* ReasonRemovedByOperator = TEXT("removed_by_operator");
+	static const TCHAR* ReasonRoomClosedByOperator = TEXT("room_closed_by_operator");
 	static const TCHAR* RosterCheckMismatch = TEXT("mismatch");
 	static constexpr int32 ProtocolVersion = 1;
 

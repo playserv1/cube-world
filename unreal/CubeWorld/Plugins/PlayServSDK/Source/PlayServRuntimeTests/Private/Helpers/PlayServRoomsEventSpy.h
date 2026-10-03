@@ -24,6 +24,15 @@ public:
 		Removed.Emplace(RoomName, PlayerId, Reason);
 	}
 
+	/** Every OnRoomEnded, in order. */
+	TArray<TTuple<FString, FString>> Ended;
+
+	UFUNCTION()
+	void OnRoomEnded(const FString& RoomName, const FString& Reason)
+	{
+		Ended.Emplace(RoomName, Reason);
+	}
+
 	bool WasRemoved(const FString& PlayerId, const FString& Reason) const
 	{
 		for (const TTuple<FString, FString, FString>& Entry : Removed)

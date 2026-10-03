@@ -292,6 +292,10 @@ void UPlayServRooms::OpenUplink()
 	// for a room); without it the machine stays "ready" and is replaced after the start timeout. A server that opens
 	// its rooms itself declares it too; a room request it does not serve is answered by the platform's own timeout.
 	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityRoomCreate);
+	// An operator's Remove player and Delete room reach this server only when it says it carries them out; without
+	// these the platform tells the operator not_supported and the player plays on (uplink contract §1.4).
+	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityParticipantRemove);
+	Hello.Capabilities.Add(PlayServRoomsWire::CapabilityRoomClose);
 	const FString Credential = ResolveCredential(UPlayServSettings::GetDeploymentToken(), UPlayServSettings::GetServerKey());
 	Uplink->Start(PlayServRoomsPaths::UplinkUrl(UPlayServSettings::GetBaseURL()), Credential, Hello);
 }
@@ -487,6 +491,11 @@ void UPlayServRooms::HandleUplinkFrame(const FString& Type, const TSharedPtr<FJs
 		HandleDataUpdate(Frame);
 		return;
 	}
+	if (Type == PlayServRoomsWire::TypeParticipantRemove || Type == PlayServRoomsWire::TypeRoomClose)
+	{
+		HandleOperatorRoomAction(Type, Frame);
+		return;
+	}
 	// The first frame of a type this module does not serve is logged with the reason it gives: a platform that cannot
 	// serve what this server asked for (a data subscription, say) shows here.
 	if (!UnknownFrames.Contains(Type))
@@ -559,6 +568,51 @@ void UPlayServRooms::HandleTicketOffer(const TSharedPtr<FJsonObject>& Frame)
 				Detail.IsEmpty() ? TEXT("") : TEXT(": "), Detail.IsEmpty() ? TEXT("") : *Detail);
 		}
 	}
+	if (Uplink.IsValid())
+	{
+		Uplink->SendFrame(Result);
+	}
+}
+
+void UPlayServRooms::HandleOperatorRoomAction(const FString& Type, const TSharedPtr<FJsonObject>& Frame)
+{
+	FString RequestId, RoomName, PlayerId;
+	Frame->TryGetStringField(PlayServRoomsWire::FieldRequestId, RequestId);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldRoomName, RoomName);
+	Frame->TryGetStringField(PlayServRoomsWire::FieldPlayerId, PlayerId);
+	const bool bRemove = Type == PlayServRoomsWire::TypeParticipantRemove;
+	if (RequestId.IsEmpty() || RoomName.IsEmpty() || (bRemove && PlayerId.IsEmpty()))
+	{
+		UE_LOG(LogPlayServ, Warning, TEXT("PlayServ rooms: %s without request_id, room_name or player_id ignored"), *Type);
+		return;
+	}
+
+	// The answer is about the outcome: the player is not in that room here any more, or the room is gone, including
+	// when this server never held them. The game is told first, and it is the game that disconnects them.
+	if (bRemove)
+	{
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: an operator removed %s from %s"), *PlayerId, *RoomName);
+		ReportPlayerLeft(RoomName, PlayerId);
+		for (TMap<TWeakObjectPtr<const APlayerController>, FString>::TIterator It(AdmittedPlayers); It; ++It)
+		{
+			if (It.Value() == PlayerId)
+			{
+				It.RemoveCurrent();
+			}
+		}
+		// Told even for a player the roster no longer holds: the game may still have them connected.
+		OnPlayerRemoved.Broadcast(RoomName, PlayerId, PlayServRoomsWire::ReasonRemovedByOperator);
+	}
+	else if (Rooms.Contains(RoomName))
+	{
+		UE_LOG(LogPlayServ, Display, TEXT("PlayServ rooms: an operator closed %s"), *RoomName);
+		EndRoom(RoomName, PlayServRoomsWire::ReasonRoomClosedByOperator, false);
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(PlayServRoomsWire::FieldType, bRemove ? PlayServRoomsWire::TypeParticipantRemoveResult : PlayServRoomsWire::TypeRoomCloseResult);
+	Result->SetStringField(PlayServRoomsWire::FieldRequestId, RequestId);
+	Result->SetBoolField(PlayServRoomsWire::FieldOk, true);
 	if (Uplink.IsValid())
 	{
 		Uplink->SendFrame(Result);

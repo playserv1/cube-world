@@ -783,6 +783,83 @@ bool FPlayServRoomsModuleTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
+// PlayServ.Rooms.Module.OperatorRemovesAPlayerAndClosesARoom
+//
+// The admin's Remove player and Delete room (uplink contract §1.4, PSV-2864 / PSV-2862): the hello
+// declares participant_remove and room_close, so the platform sends them; each reaches the game as
+// OnPlayerRemoved / OnRoomEnded with the operator's reason, and is answered ok with its request_id.
+// Without this the platform told the operator not_supported and the player played on.
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FPlayServRoomsOperatorActionsTest,
+	"PlayServ.Rooms.Module.OperatorRemovesAPlayerAndClosesARoom",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayServRoomsOperatorActionsTest::RunTest(const FString& Parameters)
+{
+	UPlayServSubsystem* PS = UPlayServSubsystem::Get();
+	UPlayServRooms* Server = PS ? PS->GetRooms() : nullptr;
+	if (!TestNotNull(TEXT("rooms module"), Server))
+	{
+		return false;
+	}
+	UPlayServRoomsEventSpy* Spy = NewObject<UPlayServRoomsEventSpy>(GetTransientPackage());
+	Server->OnPlayerRemoved.AddDynamic(Spy, &UPlayServRoomsEventSpy::OnPlayerRemoved);
+	Server->OnRoomEnded.AddDynamic(Spy, &UPlayServRoomsEventSpy::OnRoomEnded);
+
+	FFakeClock Clock;
+	FPlayServFakeUplinkFactory Factory;
+	FPlayServRoomsTestAccess::BeginWithUplink(Server, Factory.Make(), Clock.Fn(), TEXT("blob-arena"));
+	TSharedPtr<FPlayServFakeUplinkTransport> Socket = Factory.Current();
+	Socket->SimulateConnected();
+	// The hello is held here: a range-for over the array of a temporary's object would read it after it is freed.
+	const TSharedPtr<FJsonObject> Hello = Socket->SentJson(0);
+	TSet<FString> Capabilities;
+	for (const TSharedPtr<FJsonValue>& V : Hello->GetArrayField(TEXT("capabilities"))) Capabilities.Add(V->AsString());
+	TestTrue(TEXT("hello declares participant_remove"), Capabilities.Contains(TEXT("participant_remove")));
+	TestTrue(TEXT("hello declares room_close"), Capabilities.Contains(TEXT("room_close")));
+	Socket->SimulateMessage(MakeHelloAck(TEXT("push"), DefaultRoomConfigJson()));
+	FPlayServRoomsTestAccess::AddRegisteredRoom(Server, MakeSnapshot(TEXT("blob-7a3f")), Clock.Now);
+
+	// A member is removed: the roster lets them go with a leave, the game hears the operator's reason, the platform an ok.
+	Socket->SimulateMessage(TEXT("{\"type\":\"ticket_offer\",\"reservation_token\":\"rsv_1\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_a\",\"expires_in\":10}"));
+	APlayerController* PlayerA = NewObject<APlayerController>(GetTransientPackage());
+	Server->VerifyTicket(TEXT("rsv_1"));
+	FPlayServRoomsTestAccess::PostLogin(Server, PlayerA, TEXT("203.0.113.5:7777?rsv=rsv_1"));
+	TestTrue(TEXT("plr_a is on the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_a")));
+	Socket->SimulateMessage(TEXT("{\"type\":\"participant_remove\",\"request_id\":\"req-1\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_a\"}"));
+	TestFalse(TEXT("the removed player is off the roster"), FPlayServRoomsTestAccess::RosterContains(Server, TEXT("blob-7a3f"), TEXT("plr_a")));
+	TestTrue(TEXT("the game hears removed_by_operator"), Spy->WasRemoved(TEXT("plr_a"), TEXT("removed_by_operator")));
+	TSharedPtr<FJsonObject> Leave = Socket->LastSentOfType(TEXT("room_presence"));
+	TestTrue(TEXT("a leave frame"), Leave.IsValid() && Leave->GetStringField(TEXT("event")) == TEXT("leave"));
+	TSharedPtr<FJsonObject> Removed = Socket->LastSentOfType(TEXT("participant_remove_result"));
+	TestTrue(TEXT("answered ok with the request_id"), Removed.IsValid() && Removed->GetBoolField(TEXT("ok")) && Removed->GetStringField(TEXT("request_id")) == TEXT("req-1"));
+
+	// One the roster never held is still told to the game (it may hold them) and is answered ok: the outcome holds.
+	Socket->SimulateMessage(TEXT("{\"type\":\"participant_remove\",\"request_id\":\"req-2\",\"room_name\":\"blob-7a3f\",\"player_id\":\"plr_web\"}"));
+	TestTrue(TEXT("the game hears it for a player off the roster"), Spy->WasRemoved(TEXT("plr_web"), TEXT("removed_by_operator")));
+	Removed = Socket->LastSentOfType(TEXT("participant_remove_result"));
+	TestTrue(TEXT("and it is answered ok"), Removed.IsValid() && Removed->GetBoolField(TEXT("ok")) && Removed->GetStringField(TEXT("request_id")) == TEXT("req-2"));
+
+	// A close ends the room for the game with the operator's reason, and is answered ok; a room not here is ok too.
+	Socket->SimulateMessage(TEXT("{\"type\":\"room_close\",\"request_id\":\"req-3\",\"room_name\":\"blob-7a3f\"}"));
+	TestTrue(TEXT("the game hears room_closed_by_operator"), Spy->Ended.Num() == 1 && Spy->Ended[0].Get<0>() == TEXT("blob-7a3f") && Spy->Ended[0].Get<1>() == TEXT("room_closed_by_operator"));
+	TestEqual(TEXT("the room is gone here"), Server->GetRoomNames().Num(), 0);
+	TSharedPtr<FJsonObject> Closed = Socket->LastSentOfType(TEXT("room_close_result"));
+	TestTrue(TEXT("answered ok with the request_id"), Closed.IsValid() && Closed->GetBoolField(TEXT("ok")) && Closed->GetStringField(TEXT("request_id")) == TEXT("req-3"));
+	Socket->SimulateMessage(TEXT("{\"type\":\"room_close\",\"request_id\":\"req-4\",\"room_name\":\"blob-7a3f\"}"));
+	Closed = Socket->LastSentOfType(TEXT("room_close_result"));
+	TestTrue(TEXT("a room not here is answered ok"), Closed.IsValid() && Closed->GetBoolField(TEXT("ok")) && Closed->GetStringField(TEXT("request_id")) == TEXT("req-4"));
+	TestEqual(TEXT("and the game is not told twice"), Spy->Ended.Num(), 1);
+
+	Server->OnPlayerRemoved.RemoveDynamic(Spy, &UPlayServRoomsEventSpy::OnPlayerRemoved);
+	Server->OnRoomEnded.RemoveDynamic(Spy, &UPlayServRoomsEventSpy::OnRoomEnded);
+	FPlayServRoomsTestAccess::End(Server);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // PlayServ.Rooms.Ticket.VerifyRedeemsOnceAndTypesRefusals
 //
 // The one call a hosting game makes: TicketFromOptions reads the engine's option grammar, and
