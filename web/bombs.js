@@ -35,24 +35,6 @@ export function inPickupReach(body, height, x, y, z) {
   return Math.abs(x - body.x) <= reach && Math.abs(z - body.z) <= reach && y >= body.y - S.PICKUP_REACH_UP && y <= body.y + height + S.PICKUP_REACH_UP;
 }
 
-// A bomb only moves forward (free, held, flying), then it is over. A record behind what the client shows is stale and
-// changes nothing: it never takes a bomb out of the hand, nor a thrown one back into it.
-const BOMB_RANK = { free: 0, held: 1, flying: 2 };
-
-export function isStale(shown, state) {
-  return shown !== undefined && BOMB_RANK[state] < BOMB_RANK[shown];
-}
-
-// The bombs a new server's welcome takes away: those it does not list went off or fizzled while the client was
-// elsewhere. The others stay, and the list's record of each goes through the rule above like any other frame. A bomb
-// thrown on an Unreal server a moment before a crossing is often still "held" in the next server's list, since the
-// Unreal server's row reaches it 0.2-0.4 s later; it flies on rather than coming back into the thrower's hand until then
-// (PSV-3033). The Unreal client keeps the same rules (ACubePlayerPawn::HandleBombList and HandleBomb).
-export function goneAtWelcome(shown, listed) {
-  const known = new Set(listed.map(f => f.bomb?.bomb_id));
-  return [...shown].filter(id => !known.has(id));
-}
-
 // Minecraft's explosion rays (World.Explode): the blocks a blast destroys. resistance(x, y, z) is the block's
 // blast resistance, or null for air or a block that cannot break (whose resistance still stops the ray).
 export function explode(block, cx, cy, cz, power, random = Math.random) {

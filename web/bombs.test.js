@@ -1,7 +1,7 @@
 // node --test web/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { descend, fly, inPickupReach, explode, blastDamage, isStale, goneAtWelcome } from "./bombs.js";
+import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
 import * as S from "./spec.js";
 
 const flat = (x, y, z) => y < 0;
@@ -38,39 +38,6 @@ test("an explosion breaks the block under it and one around, no deeper", () => {
   const destroyed = explode(block, 30.5, 0.3, 12.5, S.CRATER_POWER, () => 0.5);
   assert.equal(destroyed.length, 9);
   assert.ok(destroyed.every(([x, y, z]) => y === -1 && Math.abs(x - 30) <= 1 && Math.abs(z - 12) <= 1));
-});
-
-test("a record behind what the client shows is stale; one level with it or ahead is not", () => {
-  assert.ok(isStale("flying", "held"));
-  assert.ok(isStale("flying", "free"));
-  assert.ok(isStale("held", "free"));
-  assert.ok(!isStale("flying", "flying"));
-  assert.ok(!isStale("held", "flying"));
-  assert.ok(!isStale("free", "held"));
-  assert.ok(!isStale(undefined, "free"), "a bomb the client does not show takes any record");
-});
-
-// What the welcome case of app.js's onFrame does with the bombs the client shows (id → state).
-function welcome(shown, listed) {
-  for (const id of goneAtWelcome(shown.keys(), listed)) shown.delete(id);
-  for (const { bomb } of listed) if (!isStale(shown.get(bomb.bomb_id), bomb.state)) shown.set(bomb.bomb_id, bomb.state);
-  return Object.fromEntries(shown);
-}
-
-test("a bomb thrown just before a crossing flies on when the next server still lists it in the hand (PSV-3033)", () => {
-  const shown = new Map([["thrown", "flying"], ["picked", "held"], ["lying", "free"]]);
-  const listed = [
-    { bomb: { bomb_id: "thrown", state: "held" }, age: 900 },   // the Unreal server's flying row has not reached this server yet
-    { bomb: { bomb_id: "picked", state: "flying" }, age: 40 },
-    { bomb: { bomb_id: "new", state: "free" }, age: 3000 },
-  ];
-  assert.deepEqual(welcome(shown, listed), { thrown: "flying", picked: "flying", new: "free" });
-});
-
-test("a welcome takes away the bombs it does not list: they went off or fizzled while the client was elsewhere", () => {
-  assert.deepEqual(goneAtWelcome(["a", "b", "c"], [{ bomb: { bomb_id: "b", state: "free" } }]), ["a", "c"]);
-  assert.deepEqual(goneAtWelcome(new Map([["a", 1]]).keys(), []), ["a"]);
-  assert.deepEqual(welcome(new Map([["a", "flying"]]), []), {});
 });
 
 test("a blast hurts least at its reach and not beyond", () => {
