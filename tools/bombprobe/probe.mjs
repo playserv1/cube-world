@@ -69,6 +69,9 @@ function candidates(bot) {
   return out.sort((a, b) => a.d - b.d);
 }
 
+/** The bomb in the bot's hand, as its room last said. */
+const inHand = bot => [...bot.bombs.values()].find(x => x.state === "held" && x.holder === bot.id);
+
 function roomLabel(bot, region) {
   const r = bot.regions.find(r => Number(r.region) === region);
   return r ? `${r.room} (${bot.roomSlugs[r.room] ?? r.slug ?? "?"})` : `region ${region}`;
@@ -119,6 +122,9 @@ async function trial(n, used) {
   for (let i = 0; i < 100 && (bot.switching || roomLabel(bot, regionOf(bot.body.x, bot.body.z)).split(" ")[0] !== bot.room); i++) await sleep(100);
   await sleep(1000);
   if (bot.bombs.get(b.bomb_id)?.state !== "free") { log(`trial ${n}: the bomb is ${bot.bombs.get(b.bomb_id)?.state} before the walk, skipped`); bot.stop(); return null; }
+  // A player holds one bomb at a time (both servers): one picked up on the way here leaves the watched one on the ground.
+  const before = inHand(bot);
+  if (before) { log(`trial ${n}: the bot already holds ${before.bomb_id} (picked up on the way), skipped`); bot.stop(); return null; }
 
   bot.watch = b.bomb_id;
   bot.trace = [{ t: Date.now(), ev: `start in ${bot.room}` }];
@@ -135,6 +141,13 @@ async function trial(n, used) {
   const got = mine?.state === "held" && mine.holder === bot.id;
   // Ticks in reach, with whose room the player was in and which region they stood in.
   const reachTicks = ticks.filter(t => t.inReach);
+  if (!got) {
+    // What else stops a pickup: another bomb in the hand, or a bomb resting out of reach up or down (the servers take one
+    // from 0.5 below the feet to 0.5 above the head, Spec.PickupReachUp), e.g. on an oak's leaves over the bot's head.
+    const other = inHand(bot), feet = reachTicks.map(t => t.z);
+    log(`trial ${n}: not in hand; ${other ? `the bot holds ${other.bomb_id}` : "the hand is empty"}; the bomb rests at ${mine?.height?.toFixed(2)}`
+      + (feet.length ? `, the feet in reach at ${Math.min(...feet).toFixed(2)}–${Math.max(...feet).toFixed(2)}` : ""));
+  }
   const byHost = {};
   for (const t of reachTicks) {
     const k = `${t.switching ? "switching, " : ""}host=${t.room} stands in ${roomLabel(bot, t.region).split(" ")[0]}`;
