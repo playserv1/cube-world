@@ -1079,7 +1079,10 @@ void ACubeWorldGameMode::TickBombs()
 				const double Reach = CubeSpec::Width / 2 + CubeSpec::PickupReach;
 				const bool bNear = FMath::Abs(Bomb.X - Box.X) <= Reach && FMath::Abs(Bomb.Y - Box.Y) <= Reach
 					&& Live->Z >= Box.Z - CubeSpec::PickupReachUp && Live->Z <= Box.Z + Box.Height + CubeSpec::PickupReachUp;
-				if (P.bWelcomed && !P.bDead && P.Bomb.IsEmpty() && bNear && InThisRegion(P))
+				// A browser client is handed a bomb only once it said "bombs": until then BroadcastBomb sends it no bomb
+				// frames, and one picked up in the gap after its welcome (a player walking in over a border right where a
+				// bomb lies) was held by them on every server and never shown in their hand until their next room.
+				if (P.bWelcomed && P.bThrows && !P.bDead && P.Bomb.IsEmpty() && bNear && InThisRegion(P))
 				{
 					ShareBomb(Next(Bomb, TEXT("held"), P.Id, Bomb.X, Bomb.Y, Live->Z), false);
 					break;
