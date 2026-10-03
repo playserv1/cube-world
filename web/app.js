@@ -5,7 +5,7 @@ import { createBody, tick as physicsTick, knockback, pushAway, bodyHeight, eyeHe
 import { buildAtlas, blockIcon } from "./textures.js";
 import { buildPlayerModel, animatePlayer, paintSkin } from "./skin.js";
 import { VoxelWorld, meshChunk, chunkMaterials, blockMesh, crackMesh, raycastBlocks, raycastPlayers, buildTreeMap, TREES } from "./voxels.js";
-import { descend, fly, inPickupReach, explode, blastDamage } from "./bombs.js";
+import { descend, fly, inPickupReach, explode, blastDamage, isStale, goneAtWelcome } from "./bombs.js";
 import { buildBomb, buildParachute, animateBomb, spawnExplosion, spawnSmoke, tickEffects } from "./bombfx.js";
 import { buildTombstone } from "./tombstone.js";
 import { refusal, roomOf, downRegions } from "./rooms.js";
@@ -247,7 +247,9 @@ function onFrame(frame, teleport) {
       if (teleport) spawn(frame.you);
       // The old server's dig ended with the player; one still held starts again on this server with the next tick.
       state.dig = null;
-      for (const id of [...bombs.keys()]) removeBomb(id);
+      // The bombs this server does not list are gone; the listed ones go through onBomb, which never takes a bomb back.
+      // Dropping them all first let a stale record win: a bomb in flight came back into the thrower's hand (PSV-3033).
+      for (const id of goneAtWelcome(bombs.keys(), frame.bombs ?? [])) removeBomb(id);
       for (const bomb of frame.bombs ?? []) onBomb(bomb);
       // This client can show a bomb in the hand and throw it, and reads blocks batched in one "cubes" frame; the
       // server hands bombs, and batches, only to clients that say so.
@@ -396,8 +398,6 @@ function overlapsBlocks() {
 // A free bomb comes down under its parachute, a held one sits in its holder's hand, a thrown one flies the
 // path the server flies it. The server says when one is picked up, thrown, explodes or fizzles out.
 
-const BOMB_RANK = { free: 0, held: 1, flying: 2 };
-
 function onBomb({ bomb: b, age = 0, z }) {
   const at = toClient(b);
   let e = bombs.get(b.bomb_id);
@@ -412,8 +412,8 @@ function onBomb({ bomb: b, age = 0, z }) {
     return;
   }
   // A bomb only moves forward (free, held, flying): a frame that would take it back is stale, and never takes a bomb
-  // out of the hand (the Unreal client keeps the same rule).
-  if (e && BOMB_RANK[b.state] < BOMB_RANK[e.state]) return;
+  // out of the hand, nor a thrown one back into it (the Unreal client keeps the same rule).
+  if (e && isStale(e.state, b.state)) return;
   if (!e) {
     e = { id: b.bomb_id, mesh: buildBomb(), parachute: buildParachute(), pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), landed: false };
     e.mesh.add(e.parachute);
