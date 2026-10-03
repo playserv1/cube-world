@@ -403,7 +403,9 @@ function onBomb({ bomb: b, age = 0, z }) {
   e.parachute.visible = false;
   if (b.state === "free") {
     e.pos.set(at.x, z ?? at.y, at.z);
-    e.landed = false;
+    // Already resting on a block: the parachute stays folded, whatever frame repeats the record (a welcome's list at
+    // every crossing). The Unreal client keeps the same rule.
+    e.landed = descend(world.isSolidForPhysics, e.pos.x, e.pos.y, e.pos.z) === e.pos.y;
     scene.add(e.mesh);
   } else if (b.state === "flying") {
     e.pos.set(at.x, at.y, at.z);
