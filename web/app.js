@@ -27,9 +27,11 @@ const ROOM_SLUGS = cfg.slugs ?? [cfg.slug, `${cfg.slug}-ue`];
 const state = { player: null, socket: null, room: null, server: null, color: "grey", region: -1, regions: [],
   regionSize: 24, hotbar: [], slot: 0, inventory: {}, switching: false, pending: null, placed: false,
   health: S.MAX_HEALTH, dead: false, tick: 0, dig: null, digCooldown: 0, hurtUntil: 0, fov: S.FOV, holding: null,
-  stash: [], carry: null, inventoryOpen: false,
+  stash: [], carry: null, inventoryOpen: false, notice: false,
   // A room that turned the player away is not tried again before this time (performance.now()), per room name.
-  notBefore: {}, roomSlugs: {} };
+  notBefore: {}, roomSlugs: {},
+  // A room that holds the player out, by name: what it said (rooms.js), until it lets them in again.
+  barred: {} };
 const world = new VoxelWorld();
 const chunks = new Map();
 const avatars = new Map();
@@ -177,6 +179,7 @@ async function enter(roomName, teleport = true) {
         state.room = roomName;
         if (state.pending === socket) state.pending = null;
         state.switching = false;
+        delete state.barred[roomName];
         previous?.close();
         onFrame(frame, teleport || !state.placed);
         // The new server hears where the player stands with the next tick's move, even if they stand still.
@@ -190,8 +193,9 @@ async function enter(roomName, teleport = true) {
       clearTimeout(giveUp);
       if (state.socket === socket) {
         const turned = refusal({ reason: e.reason });
-        if (turned.message) state.notBefore[roomName] = performance.now() + turned.waitMs;
+        if (turned.message) { state.notBefore[roomName] = performance.now() + turned.waitMs; state.barred[roomName] = turned; notice(turned); }
         state.room = null;
+        renderPanel();
       }
       // A crossing that failed is over; the old room's socket closing ends nothing (see state.pending).
       if (state.socket !== socket && state.pending === socket) { state.pending = null; state.switching = false; if (teleport) curtain(false); }
@@ -338,6 +342,26 @@ function curtain(on, text) {
   c.classList.toggle("lifting", !on);
   if (on) c.classList.add("shown");
   else curtainTimer = setTimeout(() => c.classList.remove("shown"), 250);
+}
+
+// An operator's close or removal is told over the game, as the death screen is, until the player clicks OK or presses
+// Enter; the mouse is freed meanwhile. The Unreal client draws the same notice (CubeHUD).
+function notice(turned) {
+  $("notice-title").textContent = turned.title;
+  $("notice-text").textContent = turned.message;
+  state.notice = true;
+  keys.clear();
+  mouse.left = false;
+  $("menu").hidden = true;
+  $("notice").hidden = false;
+  controls.unlock();
+}
+
+function closeNotice() {
+  if (!state.notice) return;
+  state.notice = false;
+  $("notice").hidden = true;
+  if (state.placed && !state.dead) controls.lock();
 }
 
 function spawn(at) {
@@ -625,7 +649,8 @@ function renderPanel() {
   if (servers.length > 0 || state.placed) {
     $("servers").innerHTML = servers.map(r => {
       const count = players.filter(p => p.color === r.color).length;
-      const here = state.placed && r.color === state.color ? `<small>${esc(state.player.name)} — you are here</small>` : "";
+      const here = state.placed && state.room && r.color === state.color ? `<small>${esc(state.player.name)} — you are here</small>`
+        : state.barred[r.room] ? `<small class="barred">${state.barred[r.room].title}</small>` : "";
       return `<li style="--c:${SERVER_COLORS[r.color] || SERVER_COLORS.grey}"><div><b>${esc(r.room)}</b>${here}</div><span>${count}</span></li>`;
     }).join("");
   }
@@ -641,17 +666,18 @@ function avatarBoxes() {
 // ── input ────────────────────────────────────────────────────────────────────────────────────────
 
 const controls = new PointerLockControls(camera, renderer.domElement);
-renderer.domElement.addEventListener("click", () => { if (!controls.isLocked && !state.dead && !state.inventoryOpen) controls.lock(); });
+renderer.domElement.addEventListener("click", () => { if (!controls.isLocked && !state.dead && !state.inventoryOpen && !state.notice) controls.lock(); });
 // The game menu (Esc), as the Unreal client's: the browser frees the mouse on Esc, and in play that opens the menu.
 // Resume goes back to the game; Exit leaves it for the start page. A click beside the buttons does nothing.
 controls.addEventListener("lock", () => { $("menu").hidden = true; });
 controls.addEventListener("unlock", () => {
-  if (!state.placed || state.dead || state.inventoryOpen) return;
+  if (!state.placed || state.dead || state.inventoryOpen || state.notice) return;
   keys.clear();
   mouse.left = false;
   $("menu").hidden = false;
 });
 $("resume").onclick = () => controls.lock();
+$("notice-ok").onclick = closeNotice;
 $("exit").onclick = () => { const s = state.socket; state.socket = null; s?.close?.(); location.reload(); };
 const keys = new Set();
 const mouse = { left: false };
@@ -659,6 +685,7 @@ addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
   // The console key (` / ~) hides the panel and shows it again, as in the Unreal client.
   if (e.code === "Backquote" || e.key === "`" || e.key === "~") { $("panel").hidden = !$("panel").hidden; return; }
+  if (state.notice) { if (e.code === "Enter" || e.code === "NumpadEnter" || e.code === "Escape") closeNotice(); return; }
   if (e.code === "KeyI" && state.placed) { toggleInventory(); return; }
   if (e.code === "Escape" && state.inventoryOpen) { closeInventory(); return; }
   if (state.inventoryOpen) return;
@@ -855,16 +882,27 @@ function gameTick() {
     }
   }
 
-  // A crossing that fails is tried again three seconds later, not on every tick; a room an operator closed, or
-  // removed the player from, waits longer (rooms.js).
+  // A crossing that fails is tried again three seconds later, not on every tick; a room an operator closed waits
+  // longer. One that removed the player is asked again on the short delay, since a Delete room lets them back in
+  // under the same name at once; meanwhile the line over the game says why they are held out (rooms.js).
   const here = roomOfRegion(regionAt(me.x, me.z));
   const now = performance.now();
   if (!OFFLINE && here && here !== state.room && !state.switching && now >= (state.crossAfter ?? 0) && now >= (state.notBefore[here] ?? 0))
     enter(here, false).catch(e => {
       state.switching = false;
       const turned = refusal({ code: e.code });
-      if (turned.message) state.notBefore[here] = now + turned.waitMs; else state.crossAfter = now + 3000;
+      if (turned.message) { state.notBefore[here] = now + turned.waitMs; state.barred[here] = turned; renderPanel(); }
+      else state.crossAfter = now + 3000;
     });
+  showBarred(here);
+}
+
+// While the player stands in the region of a room that holds them out, a line over the game says why (rooms.js).
+function showBarred(here) {
+  const turned = !OFFLINE && here && here !== state.room ? state.barred[here] : null;
+  const text = turned ? `${here}: ${turned.barred}` : "";
+  if ($("barred").textContent !== text) $("barred").textContent = text;
+  $("barred").hidden = !text;
 }
 
 let accumulator = 0;
@@ -1083,6 +1121,23 @@ renderHotbar();
 renderHearts();
 requestAnimationFrame(frame);
 $("name").value = sessionStorage.getItem("cubeworld.name") || "";
+// Play enters the first room that lets the player in. A room that holds them out (an operator removed them, or
+// closed it) is marked in the panel and the next is tried; only when every room holds them out does the notice say why.
+async function enterFirst(names) {
+  let first = null;
+  for (const name of names) {
+    try { await enter(name); return; }
+    catch (e) {
+      const turned = refusal({ code: e.code });
+      if (!turned.message) throw e;
+      state.notBefore[name] = performance.now() + turned.waitMs;
+      state.barred[name] = turned;
+      first ??= turned;
+    }
+  }
+  if (first) notice(first);
+}
+
 $("join").onsubmit = async e => {
   e.preventDefault();
   curtain(true, "Signing in...");
@@ -1090,7 +1145,7 @@ $("join").onsubmit = async e => {
     await signIn($("name").value.trim());
     if (OFFLINE) { enterOffline(); return; }
     const rooms = await refreshServers();
-    if (rooms.length) await enter(rooms[0].room_name);
+    if (rooms.length) await enterFirst(rooms.map(r => r.room_name));
     else curtain(false);
     setInterval(() => refreshServers().catch(() => {}), 5000);
   } catch { curtain(false); }

@@ -50,6 +50,16 @@ main { position: absolute; inset: 0; overflow: hidden; }
 #menu h2 { font-size: 28px; margin: 0 0 8px; color: #fff; text-transform: none; letter-spacing: 0; text-shadow: 2px 2px 0 #000; }
 #menu button { width: 240px; font-size: 18px; padding: 8px 0; background: #595960; border: 2px solid #1a1a1a; border-radius: 0; color: #fff; }
 #menu button:hover { background: #7380bf; color: #ffffa0; }
+#barred { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); max-width: 80%; padding: 6px 14px; background: rgba(120,20,20,.8);
+  border: 2px solid #1a1a1a; color: #fff; font-size: 16px; font-weight: 600; text-align: center; text-shadow: 1px 1px 0 #000; pointer-events: none; }
+#barred[hidden] { display: none; }
+#servers li small.barred { color: #fca5a5; }
+#notice { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(0,0,0,.65); }
+#notice[hidden] { display: none; }
+#notice h2 { font-size: 32px; margin: 0; color: #fff; text-transform: none; letter-spacing: 0; text-shadow: 2px 2px 0 #000; }
+#notice p { margin: 0 0 8px; max-width: 560px; text-align: center; font-size: 18px; font-weight: 600; color: #cfd8e3; }
+#notice button { width: 240px; font-size: 18px; padding: 8px 0; background: #595960; border: 2px solid #1a1a1a; border-radius: 0; color: #fff; }
+#notice button:hover { background: #7380bf; color: #ffffa0; }
 #death { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: rgba(120,0,0,.55); }
 #death[hidden] { display: none; }
 #death h2 { font-size: 36px; margin: 0; color: #fff; text-shadow: 2px 2px 0 #000; }

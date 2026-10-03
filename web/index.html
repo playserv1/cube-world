@@ -38,6 +38,7 @@
     <div id="view"></div>
     <div id="hurt"></div>
     <div id="crosshair"></div>
+    <div id="barred" hidden></div>
     <div id="hud">
       <div id="hearts"></div>
       <div id="hotbar"></div>
@@ -59,6 +60,12 @@
       <h2>Game menu</h2>
       <button id="resume">Resume</button>
       <button id="exit">Exit</button>
+    </div>
+    <!-- An operator's close or removal, told over the game until the player clicks it away (rooms.js). -->
+    <div id="notice" hidden>
+      <h2 id="notice-title"></h2>
+      <p id="notice-text"></p>
+      <button id="notice-ok">OK</button>
     </div>
     <div id="death" hidden>
       <h2>You died!</h2>
