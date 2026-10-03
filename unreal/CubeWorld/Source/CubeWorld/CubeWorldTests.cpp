@@ -46,6 +46,41 @@ bool FCubeWorldGeneratedKindTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCubeWorldRefusalTest,
+	"CubeWorld.Client.OperatorRefusalsAreToldAndRetried",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+// The same rules as web/rooms.test.js.
+bool FCubeWorldRefusalTest::RunTest(const FString& Parameters)
+{
+	for (const TCHAR* Why : { TEXT("room_closed_by_operator"), TEXT("room_closed") })
+	{
+		const FCubeRefusal R = FCubeRefusal::Of(Why);
+		TestEqual(TEXT("a closed room is tried again in half a minute"), R.Wait, 30.0);
+		TestEqual(TEXT("its notice"), R.Title, FString(TEXT("Room closed")));
+		TestTrue(TEXT("says an operator closed it"), R.Message.Contains(TEXT("closed by an operator")));
+		TestTrue(TEXT("and its line says it is closed"), R.Barred.Contains(TEXT("closed")));
+	}
+	// A Delete room lets a removed player back in at once, under the same name: they knock again on the short delay.
+	for (const TCHAR* Why : { TEXT("removed_by_operator"), TEXT("removed_from_room") })
+	{
+		const FCubeRefusal R = FCubeRefusal::Of(Why);
+		TestEqual(TEXT("a removed player knocks again in three seconds"), R.Wait, 3.0);
+		TestEqual(TEXT("its notice"), R.Title, FString(TEXT("Removed from the room")));
+		TestTrue(TEXT("says an operator removed them"), R.Message.Contains(TEXT("removed you")));
+		TestTrue(TEXT("and its line says so"), R.Barred.Contains(TEXT("removed you from it")));
+	}
+	for (const TCHAR* Why : { TEXT(""), TEXT("room_full") })
+	{
+		const FCubeRefusal R = FCubeRefusal::Of(Why);
+		TestFalse(TEXT("anything else is no operator's doing"), R.IsSet());
+		TestEqual(TEXT("and is retried in three seconds"), R.Wait, 3.0);
+		TestTrue(TEXT("with no line of its own"), R.Barred.IsEmpty());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCubeWorldForgetTest,
 	"CubeWorld.Server.DeletedRowsGoBackToTheTerrain",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)

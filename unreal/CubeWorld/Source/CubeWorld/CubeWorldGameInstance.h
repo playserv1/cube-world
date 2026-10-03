@@ -55,6 +55,25 @@ struct FCubeCrossing
 	float Forward = 0, Strafe = 0;
 };
 
+/**
+ * What a room said when it turned the player away: the server closed the connection with a reason, or the platform
+ * refused the join with a code. The same rules and words as web/rooms.js. An operator's close is followed by the room
+ * opening again fresh within a minute or two. An operator's removal holds until the room is closed: a Delete room lets
+ * the player back in at once, under the same room name, and the browse names no registration time to see that by, so a
+ * removed player knocks again on the short delay (a 409 removed_from_room is cheap).
+ */
+struct FCubeRefusal
+{
+	/** Seconds before the room is tried again. */
+	double Wait = 3;
+	/** The notice over the game: its title and its message. Empty for a refusal that is no operator's doing. */
+	FString Title, Message;
+	/** The line over the game while the player stands in the region of a room that holds them out. */
+	FString Barred;
+	bool IsSet() const { return !Message.IsEmpty(); }
+	static FCubeRefusal Of(const FString& ReasonOrCode);
+};
+
 DECLARE_MULTICAST_DELEGATE_TwoParams(FCubeOnWelcome, const FCubePose& /*You*/, bool /*bTeleport*/);
 DECLARE_MULTICAST_DELEGATE_FourParams(FCubeOnCube, int32, int32, int32, FName /*Kind, None = generated*/);
 /** After one batch of changes, every block it changed: rebuild each chunk once. */
@@ -174,6 +193,14 @@ public:
 	FString Holding;
 	FString Status = TEXT("Press Enter to play");
 	TArray<FString> LogLines;
+	/** An operator's close or removal, told over the game until the player clicks OK or presses Enter or Esc (as #notice on the web). */
+	FCubeRefusal Notice;
+	void ShowNotice(const FCubeRefusal& Turned) { Notice = Turned; }
+	void CloseNotice() { Notice = FCubeRefusal(); }
+	/** Rooms that hold the player out, by name: what each said, until it lets them in again. */
+	TMap<FString, FCubeRefusal> Barred;
+	/** The line over the game while the player stands in the region of a room that holds them out; empty otherwise. */
+	FString BarredLine() const;
 	TArray<FCubePresence> Players;
 	/** Where the body is, written by the pawn every tick; the position a crossing keeps. */
 	FCubeCrossing LastBody;
@@ -269,8 +296,8 @@ private:
 	TMap<FString, TWeakObjectPtr<ACubeBomb>> CarriedBombs;
 	TWeakObjectPtr<ACubeTombstone> CarriedTomb;
 	FString RoomOfRegion(int32 InRegion) const;
-	/** Notes an operator's close or removal of RoomName; returns the message for the player, empty for anything else. */
-	FString TurnedAway(const FString& RoomName, const FString& ReasonOrCode);
+	/** Notes an operator's close or removal of RoomName (when it is not tried again, and that it holds the player out); unset for anything else. */
+	FCubeRefusal TurnedAway(const FString& RoomName, const FString& ReasonOrCode);
 	/** Whether RoomName may be tried now. */
 	bool MayTry(const FString& RoomName) const { return FPlatformTime::Seconds() >= NotBefore.FindRef(RoomName); }
 	void Disconnected(const FString& Why);
@@ -332,6 +359,8 @@ private:
 	double CrossAfter = 0;
 	/** A room that turned the player away (an operator closed it, or removed them) is not tried again before this time. */
 	TMap<FString, double> NotBefore;
+	/** The first operator's refusal met while Play goes through the rooms; told once every room has held the player out. */
+	FCubeRefusal FirstRefusal;
 	TArray<FString> Candidates;
 	/** The room type each known room is registered under (the C# servers' or the Unreal servers'), from the browse and the regions. */
 	TMap<FString, FString> RoomSlugs;

@@ -70,7 +70,14 @@ void ACubeHUD::DrawPanel()
 	const float RowH = NameH + 4, RowHereH = NameH + SmallH + 4, LineH = NameH + 2;
 
 	float Height = Pad + HeadH + 3 + Pad + HeadH + 3 + Pad;
-	for (const FCubeRegion& R : Servers) Height += (R.Color == Game->Color ? RowHereH : RowH) + 2;
+	// A row says "you are here" under the room the player is in, or why a room holds them out (an operator's doing).
+	const auto Under = [Game](const FCubeRegion& S) -> FString
+	{
+		if (!Game->Room.IsEmpty() && S.Color == Game->Color) return FString::Printf(TEXT("%s — you are here"), *Game->PlayerName);
+		const FCubeRefusal* Turned = Game->Barred.Find(S.Room);
+		return Turned ? Turned->Title : FString();
+	};
+	for (const FCubeRegion& R : Servers) Height += (Under(R).IsEmpty() ? RowH : RowHereH) + 2;
 	if (Servers.Num() == 0) Height += LineH;
 	Height += FMath::Max(1, Game->Players.Num()) * LineH;
 	DrawRect(FLinearColor(0.03f, 0.05f, 0.07f, 0.55f), X, Y, Width, Height);
@@ -82,8 +89,9 @@ void ACubeHUD::DrawPanel()
 	if (Servers.Num() == 0) { DrawLabel(TEXT("Not connected"), L, CY, Small, Grey); CY += LineH; }
 	for (const FCubeRegion& S : Servers)
 	{
-		const bool bHere = S.Color == Game->Color;
-		const float H = bHere ? RowHereH : RowH;
+		const FString Line = Under(S);
+		const bool bBarred = Game->Barred.Contains(S.Room) && !(S.Color == Game->Color && !Game->Room.IsEmpty());
+		const float H = Line.IsEmpty() ? RowH : RowHereH;
 		int32 Count = 0;
 		for (const FCubePresence& P : Game->Players) if (P.Color == S.Color) Count++;
 		DrawRect(FLinearColor(0.09f, 0.14f, 0.20f, 0.6f), L, CY, R - L, H);
@@ -91,7 +99,7 @@ void ACubeHUD::DrawPanel()
 		DrawLabel(S.Room, L + 7, CY + 2, Name, FLinearColor::White, true);
 		const FString CountText = FString::FromInt(Count);
 		DrawLabel(CountText, R - 4 - TextSize(CountText, Name, true).X, CY + 2, Name, FLinearColor::White, true);
-		if (bHere) DrawLabel(FString::Printf(TEXT("%s — you are here"), *Game->PlayerName), L + 7, CY + 2 + NameH, Small, Light);
+		if (!Line.IsEmpty()) DrawLabel(Line, L + 7, CY + 2 + NameH, Small, bBarred ? FLinearColor(0.99f, 0.65f, 0.65f) : Light);
 		CY += H + 2;
 	}
 
@@ -181,6 +189,16 @@ void ACubeHUD::DrawHUD()
 		DrawLabel(Debug, 12, 60, 8, FLinearColor::Yellow);
 	}
 
+	// While the player stands in the region of a room that holds them out, a line at the top says why (#barred on the web).
+	const FString BarredLine = Game->IsInPlay() ? Game->BarredLine() : FString();
+	if (!BarredLine.IsEmpty())
+	{
+		const FVector2D BS = TextSize(BarredLine, 11, true);
+		DrawRect(FLinearColor(0.1f, 0.1f, 0.1f, 0.8f), W / 2 - BS.X / 2 - 9, 10, BS.X + 18, BS.Y + 10);
+		DrawRect(FLinearColor(0.47f, 0.08f, 0.08f, 0.8f), W / 2 - BS.X / 2 - 8, 11, BS.X + 16, BS.Y + 8);
+		DrawCentered(BarredLine, 15, 11, FLinearColor::White, true);
+	}
+
 	// Log, bottom left.
 	float LY = H - 24;
 	for (const FString& Line : Game->LogLines)
@@ -223,6 +241,16 @@ void ACubeHUD::DrawHUD()
 		DrawCentered(TEXT("You died!"), H / 2 - 44, 28, FLinearColor::White, true);
 		DrawCentered(TEXT("Press Enter or click to respawn"), H / 2 + 10, 12, FLinearColor::White);
 	}
+	else if (Game->Notice.IsSet())
+	{
+		// An operator's close or removal, over the game until OK, Enter or Esc (#notice on the web). The mouse is free meanwhile.
+		FVector2D Mouse(-1, -1);
+		if (APlayerController* PC = GetOwningPlayerController()) { float MX, MY; if (PC->GetMousePosition(MX, MY)) Mouse = FVector2D(MX, MY) / UiScale; }
+		DrawRect(FLinearColor(0, 0, 0, 0.65f), 0, 0, W, H);
+		DrawCentered(Game->Notice.Title, H / 2 - 60, 24, FLinearColor::White, true);
+		DrawCentered(Game->Notice.Message, H / 2 - 22, 11, FLinearColor(0.81f, 0.85f, 0.89f), true);
+		DrawButton(TEXT("OK"), H / 2 + 8, OkRect, Mouse);
+	}
 	else if (!Game->bPlaced)
 	{
 		// Until the player is placed: a welcome comes before the world does, and nothing of the game shows meanwhile.
@@ -243,7 +271,8 @@ void ACubeHUD::DrawHUD()
 		DrawButton(TEXT("Resume"), H / 2 - 30, ResumeRect, Mouse);
 		DrawButton(TEXT("Exit"), H / 2 + 10, ExitRect, Mouse);
 	}
-	else ResumeRect = ExitRect = FBox2D(ForceInit);
+	if (!Game->Notice.IsSet()) OkRect = FBox2D(ForceInit);
+	if (Game->Notice.IsSet() || !Pawn || Pawn->bMouseCaptured || Game->bDead || !Game->bPlaced) ResumeRect = ExitRect = FBox2D(ForceInit);
 
 	// The curtain, over everything: down from Play (or a jump from the server list) until the player stands where the
 	// server put them, then it lifts and the game fades in. Its title and status stand where the start screen has them,
@@ -281,5 +310,6 @@ int32 ACubeHUD::MenuButtonAt(FVector2D ScreenPoint) const
 {
 	if (ResumeRect.bIsValid && ResumeRect.IsInsideOrOn(ScreenPoint)) return 1;
 	if (ExitRect.bIsValid && ExitRect.IsInsideOrOn(ScreenPoint)) return 2;
+	if (OkRect.bIsValid && OkRect.IsInsideOrOn(ScreenPoint)) return 3;
 	return 0;
 }

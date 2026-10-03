@@ -136,6 +136,7 @@ private:
 	bool bTestSprint = false;
 	void CaptureMouse(bool bCapture);
 	void ClickMenu();
+	void CloseNotice();
 	void SetupUnattended();
 	ACubeWorldActor* WorldActor() const;
 

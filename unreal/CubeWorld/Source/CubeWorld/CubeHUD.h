@@ -40,5 +40,5 @@ private:
 	/** Draws a menu button and remembers where it is on the screen, for a click to find it. */
 	void DrawButton(const FString& Label, float Y, FBox2D& OutRect, FVector2D Mouse);
 
-	FBox2D ResumeRect = FBox2D(ForceInit), ExitRect = FBox2D(ForceInit);
+	FBox2D ResumeRect = FBox2D(ForceInit), ExitRect = FBox2D(ForceInit), OkRect = FBox2D(ForceInit);
 };

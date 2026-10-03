@@ -271,6 +271,7 @@ void ACubePlayerPawn::OnSlot(int32 Index) { if (Game) Game->Slot = FMath::Clamp(
 void ACubePlayerPawn::OnConfirm()
 {
 	if (!Game) return;
+	if (Game->Notice.IsSet()) { CloseNotice(); return; }
 	if (Game->bDead) { CmdRespawn(); return; }
 	if (!Game->IsConnected() && !Game->IsSigningIn()) { Game->StartPlay(Game->PlayerName); return; }
 	if (Game->IsConnected()) CaptureMouse(true);
@@ -279,6 +280,7 @@ void ACubePlayerPawn::OnConfirm()
 /** Esc opens the game menu and shuts it again. */
 void ACubePlayerPawn::OnRelease()
 {
+	if (Game && Game->Notice.IsSet()) { CloseNotice(); return; }
 	if (!bMouseCaptured && Game && Game->IsConnected() && !Game->bDead) { CaptureMouse(true); return; }
 	CaptureMouse(false);
 }
@@ -289,6 +291,13 @@ void ACubePlayerPawn::OnTogglePanel()
 	if (Game) Game->bPanelHidden = !Game->bPanelHidden;
 }
 
+/** OK, Enter or Esc puts an operator's notice away; the game goes on with the mouse captured again, if there is one. */
+void ACubePlayerPawn::CloseNotice()
+{
+	Game->CloseNotice();
+	if (Game->IsConnected() && Game->bPlaced && !Game->bDead) CaptureMouse(true);
+}
+
 /** A click while the game menu is open: Resume goes back to the game, Exit closes it; anywhere else does nothing. */
 void ACubePlayerPawn::ClickMenu()
 {
@@ -297,6 +306,7 @@ void ACubePlayerPawn::ClickMenu()
 	float MX, MY;
 	if (!Hud || !PC->GetMousePosition(MX, MY)) { CaptureMouse(true); return; }
 	const int32 Button = Hud->MenuButtonAt(FVector2D(MX, MY));
+	if (Game && Game->Notice.IsSet()) { if (Button == 3) CloseNotice(); return; }
 	if (Button == 1) CaptureMouse(true);
 	else if (Button == 2) UKismetSystemLibrary::QuitGame(this, PC, EQuitPreference::Quit, false);
 }
@@ -307,6 +317,7 @@ void ACubePlayerPawn::OnDig(bool bHeld)
 	if (!Game || !bHeld) return;
 	if (!bMouseCaptured)
 	{
+		if (Game->Notice.IsSet()) { ClickMenu(); return; }
 		if (Game->bDead) { OnConfirm(); return; }
 		if (Game->IsConnected()) ClickMenu();
 		else OnConfirm();
@@ -687,6 +698,8 @@ void ACubePlayerPawn::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	if (!bBound) Bind();
 	if (!Game || !bBound) return;
+	// An operator's notice frees the mouse while it is up, whatever captured it since (a welcome does).
+	if (Game->Notice.IsSet() && bMouseCaptured) { CaptureMouse(false); AxisForward = AxisRight = 0; bDigHeld = false; }
 	Accumulator += FMath::Min(DeltaSeconds, 0.25f);
 	while (Accumulator >= CubeSpec::TickSeconds) { GameTick(); Accumulator -= CubeSpec::TickSeconds; }
 	TakeUnreadMouse();

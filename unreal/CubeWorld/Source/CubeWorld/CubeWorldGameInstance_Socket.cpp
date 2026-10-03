@@ -225,6 +225,8 @@ void UCubeWorldGameInstance::OnSocketWelcome(const TSharedPtr<FJsonObject>& Fram
 	bViaSocket = true;
 	Server = Str(Frame, TEXT("server")); Color = Str(Frame, TEXT("color")); Region = (int32)Num(Frame, TEXT("region"), -1);
 	Room = RoomName;
+	Barred.Remove(RoomName);
+	FirstRefusal = FCubeRefusal();
 	Travelling.Empty();
 	bSwitching = false;
 	bSigningIn = false;

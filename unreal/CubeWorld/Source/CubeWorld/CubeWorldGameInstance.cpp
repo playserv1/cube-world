@@ -579,30 +579,50 @@ void UCubeWorldGameInstance::SignInAsNewGuest()
 	}));
 }
 
-// An operator's close is followed by the room opening again fresh within a minute or two; an operator's removal holds
-// for as long as that room lives. The same rules as web/rooms.js.
-FString UCubeWorldGameInstance::TurnedAway(const FString& RoomName, const FString& ReasonOrCode)
+FCubeRefusal FCubeRefusal::Of(const FString& ReasonOrCode)
 {
-	double Wait = 0;
-	FString Message;
+	FCubeRefusal R;
+	// Loose: a kick over Iris comes back wrapped in the engine's own words.
 	if (ReasonOrCode.Contains(TEXT("room_closed")))
 	{
-		Wait = 30;
-		Message = TEXT("This room was closed by an operator. It opens again fresh in a minute or two.");
+		R.Wait = 30;
+		R.Title = TEXT("Room closed");
+		R.Message = TEXT("This room was closed by an operator. It opens again fresh in a minute or two.");
+		R.Barred = TEXT("This room was closed by an operator and is opening again: you can enter once it is back.");
 	}
 	else if (ReasonOrCode.Contains(TEXT("removed")))
 	{
-		Wait = 60;
-		Message = TEXT("An operator removed you from this room. You can still walk into the other regions.");
+		R.Title = TEXT("Removed from the room");
+		R.Message = TEXT("An operator removed you from this room. You can still walk into the other regions.");
+		R.Barred = TEXT("You can't enter this room: an operator removed you from it.");
 	}
-	if (!Message.IsEmpty() && !RoomName.IsEmpty()) NotBefore.Add(RoomName, FPlatformTime::Seconds() + Wait);
-	return Message;
+	return R;
+}
+
+FCubeRefusal UCubeWorldGameInstance::TurnedAway(const FString& RoomName, const FString& ReasonOrCode)
+{
+	const FCubeRefusal Turned = FCubeRefusal::Of(ReasonOrCode);
+	if (Turned.IsSet() && !RoomName.IsEmpty())
+	{
+		NotBefore.Add(RoomName, FPlatformTime::Seconds() + Turned.Wait);
+		Barred.Add(RoomName, Turned);
+	}
+	return Turned;
+}
+
+FString UCubeWorldGameInstance::BarredLine() const
+{
+	if (!LastBody.bSet || CubeIsOffline()) return FString();
+	const FString Here = RoomOfRegion(CubeSpec::RegionOf(LastBody.X, LastBody.Y));
+	const FCubeRefusal* Turned = Here.IsEmpty() || Here == Room ? nullptr : Barred.Find(Here);
+	return Turned ? FString::Printf(TEXT("%s: %s"), *Here, *Turned->Barred) : FString();
 }
 
 void UCubeWorldGameInstance::TurnedAwayBy(const FString& Reason)
 {
-	const FString Message = TurnedAway(Room.IsEmpty() ? Travelling : Room, Reason);
-	Log(Message.IsEmpty() ? FString::Printf(TEXT("turned away: %s"), *Reason) : Message);
+	const FCubeRefusal Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Reason);
+	Log(Turned.IsSet() ? Turned.Message : FString::Printf(TEXT("turned away: %s"), *Reason));
+	if (Turned.IsSet()) ShowNotice(Turned);
 }
 
 void UCubeWorldGameInstance::Browse()
@@ -724,12 +744,19 @@ void UCubeWorldGameInstance::Enter(const FString& RoomName, bool bTeleport)
 			}
 			Self->bSwitching = false;
 			Self->CrossAfter = FPlatformTime::Seconds() + 3;
-			const FString Turned = Self->TurnedAway(RoomName, Error.ProblemCode);
-			Self->Log(Turned.IsEmpty() ? FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message) : Turned);
+			const FCubeRefusal Turned = Self->TurnedAway(RoomName, Error.ProblemCode);
+			Self->Log(Turned.IsSet() ? Turned.Message : FString::Printf(TEXT("%s refused the join: %s"), *RoomName, *Error.Message));
 			if (!Self->IsConnected())
 			{
+				// Play goes on to the next room that may let the player in; a room that holds them out is marked in the panel,
+				// and only when every room has held them out does the notice say why (as enterFirst on the web).
+				if (Turned.IsSet() && !Self->FirstRefusal.IsSet()) Self->FirstRefusal = Turned;
 				if (Self->Candidates.Num() > 0) { const FString NextRoom = Self->Candidates[0]; Self->Candidates.RemoveAt(0); Self->Enter(NextRoom, bTeleport); }
-				else Self->GetTimerManager().SetTimer(Self->RetryTimer, [Weak]() { if (Weak.IsValid()) Weak->Browse(); }, 3.f, false);
+				else
+				{
+					if (Self->FirstRefusal.IsSet()) { Self->ShowNotice(Self->FirstRefusal); Self->FirstRefusal = FCubeRefusal(); }
+					Self->GetTimerManager().SetTimer(Self->RetryTimer, [Weak]() { if (Weak.IsValid()) Weak->Browse(); }, 3.f, false);
+				}
 			}
 			return;
 		}
@@ -843,8 +870,9 @@ void UCubeWorldGameInstance::Disconnected(const FString& Why)
 	Crossing = FCubeCrossing();
 	if (Socket.IsValid()) { Socket->Close(); Socket.Reset(); }
 	bViaSocket = false;
-	const FString Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Why);
-	Log(Turned.IsEmpty() ? FString::Printf(TEXT("disconnected: %s"), *Why) : Turned);
+	const FCubeRefusal Turned = TurnedAway(Room.IsEmpty() ? Travelling : Room, Why);
+	Log(Turned.IsSet() ? Turned.Message : FString::Printf(TEXT("disconnected: %s"), *Why));
+	if (Turned.IsSet()) ShowNotice(Turned);
 	bWelcomed = false;
 	bSwitching = false;
 	bSigningIn = false;
@@ -889,6 +917,8 @@ void UCubeWorldGameInstance::OnWelcomed(const FString& InServer, const FString& 
 	const bool bCrossed = Crossing.bSet;
 	if (bCrossed) bCrossedOnce = true;
 	RetriedOtherType.Remove(InRoom);
+	Barred.Remove(InRoom);
+	FirstRefusal = FCubeRefusal();
 	Server = InServer; Color = InColor; Room = InRoom; Region = InRegion;
 	Travelling.Empty();
 	bSwitching = false;
