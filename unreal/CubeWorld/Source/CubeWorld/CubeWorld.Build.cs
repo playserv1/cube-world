@@ -10,12 +10,16 @@ public class CubeWorld : ModuleRules
 		// file by file anyway; a source-built engine (the one with the Linux Server target) put it in one unity file, and
 		// neither clang nor MSVC compiled it.
 		bUseUnity = false;
+		// GasLab/ includes the module's own headers by their folder ("GasLab/GasLabBorder.h", "CubeShapes.h").
+		PublicIncludePaths.Add(ModuleDirectory);
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core", "CoreUObject", "Engine", "InputCore", "NetCore",
 			"ProceduralMeshComponent", "Json", "JsonUtilities", "Sockets", "Networking",
 			"RenderCore", "RHI", "PlayServRuntime",
+			// GasLab (Source/CubeWorld/GasLab): the Gameplay Ability System across servers.
+			"GameplayAbilities", "GameplayTags", "GameplayTasks", "WebSockets", "AIModule",
 		});
 
 		// The dedicated server replicates over Iris (net.Iris.UseIrisReplication=1 in DefaultEngine.ini).
