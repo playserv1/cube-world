@@ -25,6 +25,9 @@ public class CubeWorld : ModuleRules
 		PrivateDependencyModuleNames.Add("SSL");
 		// The keys and the mouse are read straight from the system around a border crossing (CubeKeys.cpp).
 		PrivateDependencyModuleNames.AddRange(new string[] { "ApplicationCore", "Slate", "SlateCore" });
+		// The server-to-server replication spike (S2SSpike/): a second net driver between servers (OnlineSubsystemUtils'
+		// IpNetDriver and beacons) and the Gameplay Ability System on the actors it mirrors.
+		PrivateDependencyModuleNames.AddRange(new string[] { "OnlineSubsystemUtils", "GameplayAbilities", "GameplayTags", "GameplayTasks" });
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 	}
 }
