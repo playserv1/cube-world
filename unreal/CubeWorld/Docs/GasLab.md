@@ -43,14 +43,16 @@ Switches:
 - `-TickRate 120`: the servers run at 120 Hz.
 - `-Client -Window -ClientExtra "-gasshotevery=0.25"`: a visible client that takes screenshots into `Saved/Screenshots/GasLab`.
 
-## What it showed (one machine, loopback)
+## What it showed (one machine, loopback, editor-run servers, bots and one headless client)
 
-- **The corner case.** One blast hit players on four servers. The damage on the other servers matched the thrower's
-  server exactly, and the credit came back.
-- **One cross-server hop costs about one server frame.** Median 21 ms over the direct link and 65 ms over the relay
-  at 30 Hz; 16 and 31.5 ms at 120 Hz. Today's data tables take 130–200 ms.
-- **Handoffs with the shared clock** restored every effect's end and next tick with 0.0 ms error. Without it, each
-  effect ran long by its time on the wire (46 ms).
-- **The soak.** 32 bots made 634 crossings in a minute with nothing lost.
-- **The client.** The stock estimate of server time was off by a median of 0.9 s, and GAS never recomputes from
-  it. `AGasLabGameState` fixes both.
+- **The corner case.** All 15 blasts hit players on four servers. The damage on the other servers matched the
+  thrower's server to the logged 0.01, including the thrower's snapshotted BlastPower, and the credit came back.
+- **One cross-server hop costs one to two server frames.** At 30 Hz the median was 21 ms over the direct link and
+  65 ms over the relay; at 120 Hz, 16 and 31.5 ms. Today's data tables carry positions in 130–200 ms (dev).
+- **Handoffs with the shared clock.** The restored timers added no error of their own (0.0 ms; every server read one
+  machine's clock). Without the shared clock each effect ran long by its time on the wire (46 ms). Abilities halfway
+  through a crossing are cancelled.
+- **The soak.** 32 bots made 634 crossings in a minute, with 0 of 1,570 forwarded effects lost. This was loopback TCP
+  with no faults injected; reconnects are untested.
+- **The client.** The stock estimate of server time was off by a median of 0.9 s (editor-run client), and GAS never
+  recomputes from it. `AGasLabGameState` fixes both.
