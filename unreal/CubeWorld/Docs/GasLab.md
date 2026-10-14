@@ -2,7 +2,7 @@
 
 Research prototype, 2026-10-07. Question from Crazybit after the Cube World demo: "how will it work with GAS?".
 Jira: PSV-3107. The write-up (approaches, measurements, open questions) is the page "GAS Across Servers",
-https://claude.ai/artifact/5gbQH6yctSuQDv6boiJwY1, which replaces the earlier report and primer docs.
+https://claude.ai/artifact/8oPc3YhepvQVLK3ytX37jh, which replaces the earlier report and primer docs.
 
 ## What it is
 
