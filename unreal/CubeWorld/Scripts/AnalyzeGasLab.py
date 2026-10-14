@@ -88,7 +88,7 @@ def analyze(tag):
         for x in explodes:
             t = num(x["at"])
             owner = int(x["region"])
-            group = [h for h in blasts if 0 <= num(h["at"]) - t < 1.0]
+            group = [h for h in blasts if 0 <= num(h["at"]) - t < 1.0 and h.get("by") == x.get("by")]
             by_kind = {}
             for h in group:
                 kind = re.sub(r"\d+$", "", h["target"])
@@ -101,10 +101,10 @@ def analyze(tag):
             rows.append({"creeper": x["creeper"], "mode": x.get("mode"), "servers_hit": len({h["_server"] for h in group}),
                          "targets_hit": len(group), "max_damage_difference": round(spread, 3)})
         out["blasts"] = rows
-        remote = [num(h["lag"]) for x in explodes for h in blasts
-                  if 0 <= num(h["at"]) - num(x["at"]) < 1.0 and h["_server"] != int(x["region"])]
-        local = [num(h["lag"]) for x in explodes for h in blasts
-                 if 0 <= num(h["at"]) - num(x["at"]) < 1.0 and h["_server"] == int(x["region"])]
+        # A hit belongs to an explosion by the same thrower in the second before it (a thrower's cooldown is 4 s).
+        mine = lambda x, h: 0 <= num(h["at"]) - num(x["at"]) < 1.0 and h.get("by") == x.get("by")
+        remote = [num(h["lag"]) for x in explodes for h in blasts if mine(x, h) and h["_server"] != int(x["region"])]
+        local = [num(h["lag"]) for x in explodes for h in blasts if mine(x, h) and h["_server"] == int(x["region"])]
         out["blast_lag_local_ms"] = dist(local)
         out["blast_lag_remote_ms"] = dist(remote)
         out["credit_lag_ms"] = dist([num(e["lag"]) for e in of("credit")])
