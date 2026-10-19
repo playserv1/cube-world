@@ -399,6 +399,20 @@ public sealed class World
     }
 
     /// <summary>
+    /// A bulk delete heard as one <c>delete_where</c> (cubeworld-reset clears the whole table): every block it covers goes
+    /// back to the terrain, and is returned. This server's own write of the last minute stays: the platform does not
+    /// send a server its own writes back, so it has no version for them and would count them as older than the delete;
+    /// the table keeps a row written after the delete began, and the read-back settles any other.
+    /// </summary>
+    public List<WorldCube> ForgetCovered(Func<WorldCube, bool> covers, string self, long now)
+    {
+        var gone = _overrides.Values.Where(cube => covers(cube)
+            && !(cube.placed_on == self && cube.at is { } at && now - at < 60_000)).ToList();
+        foreach (var cube in gone) Apply("delete", cube);
+        return gone;
+    }
+
+    /// <summary>
     /// A row read back from the table: applied only when it is newer than what this server holds, so a read that
     /// crossed one of this server's own writes does not undo it. Returns whether it changed anything here.
     /// </summary>

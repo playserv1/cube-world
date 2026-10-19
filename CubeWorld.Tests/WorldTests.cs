@@ -1,4 +1,6 @@
+using System.Text.Json;
 using CubeWorld.Server;
+using PlayServ.Sdk;
 using Xunit;
 
 namespace CubeWorld.Tests;
@@ -242,5 +244,54 @@ public class WorldTests
         Assert.Equal(4, World.RegionOf(24, 24));
         Assert.Equal(5, World.RegionOf(71.5, 47.5));
         Assert.Equal((36, 36), World.Centre(4));
+    }
+
+    private static WorldCube Placed(int x, int y, int z, string kind, string on, double at) =>
+        new() { key = $"{x}:{y}:{z}", x = x, y = y, z = z, kind = kind, placed_by = "p", placed_on = on, at = at };
+
+    private static Platform.RuntimeDataUpdate DeleteWhere(string filter, long before) =>
+        new("prj_cw", "pk_cw", "WorldCube", "",
+            JsonDocument.Parse($$"""{"filter":{{filter}},"before":{{before}},"deleted":3}""").RootElement.Clone(),
+            Op: "delete_where");
+
+    [Fact]
+    public void A_reset_heard_as_one_delete_where_takes_every_changed_block_back_to_the_terrain()
+    {
+        var world = new World();
+        world.Load([Placed(3, 4, 0, "stone", "8we6h", 1_000), Placed(30, 4, 0, "wood", "2kk13", 2_000), Placed(5, 5, -1, "air", "8we6h", 3_000)]);
+        var reset = DeleteWhere("[]", 500_000);
+
+        var gone = world.ForgetCovered(cube => reset.Covers(cube.key, cube), "self0", 500_000);
+
+        Assert.Equal(["3:4:0", "30:4:0", "5:5:-1"], gone.Select(c => c.key).Order());
+        Assert.Empty(world.Overrides);
+        Assert.Equal("air", world.KindAt(3, 4, 0));
+        Assert.Equal("grass", world.KindAt(5, 5, -1));
+    }
+
+    [Fact]
+    public void A_block_this_server_placed_in_the_last_minute_survives_a_reset()
+    {
+        var world = new World();
+        world.Load([Placed(3, 4, 0, "stone", "self0", 470_000), Placed(4, 4, 0, "stone", "self0", 400_000)]);
+        var reset = DeleteWhere("[]", 480_000);
+
+        var gone = world.ForgetCovered(cube => reset.Covers(cube.key, cube), "self0", 500_000);
+
+        Assert.Equal("4:4:0", Assert.Single(gone).key);
+        Assert.Equal("stone", world.KindAt(3, 4, 0));
+    }
+
+    [Fact]
+    public void A_delete_where_with_a_filter_leaves_the_blocks_it_does_not_match()
+    {
+        var world = new World();
+        world.Load([Placed(3, 4, 0, "stone", "8we6h", 1_000), Placed(4, 4, 0, "wood", "8we6h", 1_000)]);
+        var stoneOnly = DeleteWhere("""[{"field":"kind","op":"eq","value":"stone"}]""", 500_000);
+
+        var gone = world.ForgetCovered(cube => stoneOnly.Covers(cube.key, cube), "self0", 500_000);
+
+        Assert.Equal("3:4:0", Assert.Single(gone).key);
+        Assert.Equal("wood", world.KindAt(4, 4, 0));
     }
 }

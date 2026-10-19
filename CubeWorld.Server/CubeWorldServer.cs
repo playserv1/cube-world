@@ -35,6 +35,8 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     /// <summary>The bombs in play here that the last read of the bomb table had no row of, and since when (<see cref="Bomb.GoneFromTable"/>).</summary>
     private readonly Dictionary<string, long> _bombsMissingSince = new();
     private readonly List<Change> _heard = new();
+    /// <summary>Blocks a reset took back to the terrain here that the players have not been told of yet.</summary>
+    private readonly Queue<WorldCube> _vanishing = new();
     private readonly RoomHost<WorldRoom, WorldPlayer, object> _rooms = new(name => new WorldRoom(name), tickHz: 1);
     private readonly string _server = ServerName(Environment.GetEnvironmentVariable("PLAYSERV_MACHINE_ID"));
     private int _region = -1;
@@ -227,6 +229,9 @@ public sealed partial class CubeWorldServer : PlatformGameServer
     {
         switch (update.Entity)
         {
+            case "WorldCube" when update.IsDeleteWhere:
+                HearReset(update);
+                break;
             case "WorldCube" when update.Data.Deserialize<WorldCube>() is { } cube:
                 HearCube(update.Op, cube);
                 break;

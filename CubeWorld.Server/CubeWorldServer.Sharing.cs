@@ -53,7 +53,7 @@ public sealed partial class CubeWorldServer
 
     private static void Subscribe()
     {
-        Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key");
+        Platform.RuntimeData.Subscribe(Uplink, "WorldCube", "field:key", handlesDeleteWhere: true);
         Platform.RuntimeData.Subscribe(Uplink, "CubeInventory", "field:player_id");
         Platform.RuntimeData.Subscribe(Uplink, "WorldPresence", "field:player_id");
         Platform.RuntimeData.Subscribe(Uplink, "WorldHit", "field:hit_id");
@@ -201,11 +201,30 @@ public sealed partial class CubeWorldServer
         }
     }
 
+    /// <summary>
+    /// A reset (cubeworld-reset) arrives as one <c>delete_where</c> for the whole table: the blocks it covers go back to
+    /// the terrain here at once, and the players see them go <see cref="Spec.ResetBlocksPerTick"/> a tick.
+    /// </summary>
+    private void HearReset(Platform.RuntimeDataUpdate update)
+    {
+        int gone;
+        lock (_world)
+        {
+            var forgotten = _world.ForgetCovered(cube => update.Covers(cube.key, cube), _server, Now);
+            foreach (var cube in forgotten) _vanishing.Enqueue(cube);
+            gone = forgotten.Count;
+        }
+        _ = Platform.Log($"{RoomName}: world reset heard, {update.DeletedCount} rows deleted, {gone} blocks back to the terrain");
+    }
+
     /// <summary>What the other servers changed this tick goes out together (a blast elsewhere is a hundred blocks).</summary>
     private void SendWhatOtherServersChanged()
     {
         lock (_world)
         {
+            for (var sent = 0; sent < Spec.ResetBlocksPerTick && _vanishing.TryDequeue(out var cube); sent++)
+                if (_world.KindAt(cube.x, cube.y, cube.z) == World.Generated(cube.x, cube.y, cube.z))
+                    _heard.Add(new Change("delete", cube));
             if (_heard.Count == 0) return;
             BroadcastCubes([], _heard.ToList(), remote: true);
             _heard.Clear();

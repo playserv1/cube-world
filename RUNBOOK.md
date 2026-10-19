@@ -24,7 +24,7 @@ playserv functions deploy --slug cubeworld-drop-<suffix> --kind cloud_function -
 playserv functions deploy --slug cubeworld-reset-<suffix> --kind cloud_function --src CubeWorld.Reset
 ```
 
-Live in about 150 s. Both crons in `platform.json` fire every minute. A drop fire drops two bombs over every region whose server is up (`WorldRegion.seen_at` under 30 s old) and ends within a second or two. The reset has no trigger and takes the server key (a player's `pk_` is refused `403`): `curl -X POST $PLAYSERV_HOST/fn/cubeworld-reset-<suffix> -H "Authorization: Bearer $SK" -d '{}'` puts the world back to its default state and answers `{"ok":true,"deleted":N,"regions":{"0":…,"1":…,"2":…}}`.
+Live in about 150 s. Both crons in `platform.json` fire every minute. A drop fire drops two bombs over every region whose server is up (`WorldRegion.seen_at` under 30 s old) and ends within a second or two. The reset has no trigger and takes the server key (a player's `pk_` is refused `403`): `curl -X POST $PLAYSERV_HOST/fn/cubeworld-reset-<suffix> -H "Authorization: Bearer $SK" -d '{}'` puts the world back to its default state with one clear of `WorldCube` (up to 100 000 rows, all or none) and answers `{"ok":true,"deleted":N}` within a second or two.
 
 ## Part C — the servers on Vultr
 
@@ -78,7 +78,7 @@ Needs Docker with `buildx` (Docker Desktop on macOS and Windows) and the CLI ses
 | D8 | Never more than three bombs in a region | leave a region's bombs lying: the drop that would make a fourth makes the oldest go up in a puff of smoke |
 | D9 | The operator removes a player | admin → the room → **Remove player** (or `remove_room_participant`): that tab says an operator removed it; walking back into that region is refused, the other regions still let it in |
 | D10 | The operator closes a room, and it comes back | build something in a region, then admin → **Delete room** (or `close_room`): its tabs say the room was closed; within a minute or two the room is back under the same name, empty, and what was built there is still there. `list_function_logs` of the server shows `was closed: restarting` |
-| D11 | The world goes back to its default state | build and dig in every region, then `curl -X POST $PLAYSERV_HOST/fn/cubeworld-reset-<suffix> -H "Authorization: Bearer $SK" -d '{}'`: in every tab the changed blocks of all three regions disappear a few at a time, together, until the terrain and the oaks are as generated; the answer counts the deleted blocks, in all and per region |
+| D11 | The world goes back to its default state | build and dig in every region, then `curl -X POST $PLAYSERV_HOST/fn/cubeworld-reset-<suffix> -H "Authorization: Bearer $SK" -d '{}'`: the answer comes back within a second or two and counts the deleted blocks; in every tab of a C# room the changed blocks of every region disappear a hundred a tick, together, until the terrain and the oaks are as generated (about five seconds for ten thousand blocks); the Unreal rooms get there too, one delete per block (PSV-3172), and stay up |
 
 To take a region away for good, remove its machine: `remove_pool_machine` closes its room, destroys the
 machine and lowers the pool's size by one, so no replacement is requested. Closing the room alone brings it

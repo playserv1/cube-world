@@ -19,6 +19,12 @@ public static class Spec
 {
     public const int TicksPerSecond = 20;
 
+    /// <summary>
+    /// Blocks a world reset takes away from the players' view per tick: 2 000 a second, so a world of ten thousand
+    /// changed blocks is back to the terrain in about five seconds and still goes block by block.
+    /// </summary>
+    public const int ResetBlocksPerTick = 100;
+
     // Reach: 4.5 blocks for blocks, 3 for entities; the server allows a little extra for latency.
     public const double BlockReach = 4.5, EntityReach = 3.0, ReachTolerance = 1.0;
 
